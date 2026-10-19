@@ -7,7 +7,7 @@
 #![no_main]
 #![forbid(unsafe_code)]
 
-use frame::bootinfo::BootInfo;
+use frame::bootinfo::{self, BootInfo, MemoryKind};
 use frame::kprintln;
 
 frame::entry_point!(kernel_main);
@@ -23,6 +23,17 @@ fn kernel_main(info: &'static BootInfo) -> ! {
         );
         frame::halt();
     }
+    let usable: u64 = info
+        .regions()
+        .iter()
+        .filter(|r| r.kind() == Some(MemoryKind::Usable))
+        .map(|r| r.page_count)
+        .sum();
+    kprintln!(
+        "kernel: {} memory regions, {} MiB usable",
+        info.regions().len(),
+        (usable * bootinfo::PAGE_SIZE) >> 20
+    );
     let fb = &info.framebuffer;
     kprintln!(
         "kernel: framebuffer {}x{}, pitch {}",

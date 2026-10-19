@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["boot", "bootinfo", "frame", "kernel"]
+members = ["boot", "bootinfo", "elfload", "frame", "kernel"]
 
 [workspace.package]
 version = "0.1.0"

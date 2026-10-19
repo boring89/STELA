@@ -58,7 +58,7 @@ tools/         開發工具與測試腳本
   // SPDX-License-Identifier: GPL-3.0-or-later
   ```
 - `cargo fmt` 的預設格式；`cargo clippy` 零警告（`make clippy`）。
-- `unsafe` 只能出現在 `frame/` 與 `arch/`；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
+- `unsafe` 只能出現在 `frame/`，以及 `boot/` 的兩處（`exit_boot_services` 與跳進 kernel 的 inline asm；`boot/` 用 `#![deny(unsafe_code)]` 加局部 `#[allow(unsafe_code)]`）；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
 - 不用 `unwrap()`／`expect()` 處理可能失敗的情況；錯誤用 `Result` 傳回。無法恢復的錯誤用 `panic!`（kernel 的 panic handler 負責顯示）。
 - 與既有程式碼保持一致；不要只為了風格而修改無關的程式碼。
 

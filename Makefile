@@ -21,7 +21,7 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
                -device isa-debug-exit,iobase=0xf4,iosize=0x04 -display none -serial stdio
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := bootinfo frame
+HOST_CRATES := bootinfo elfload frame
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := bootinfo frame kernel
 
@@ -62,7 +62,7 @@ test-host:
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --expect "STELA boot loader" -- $(QEMU) $(QEMU_TEST_FLAGS)
+	python3 tools/qemu_test.py --expect "STELA boot loader" --expect "STELA kernel" -- $(QEMU) $(QEMU_TEST_FLAGS)
 
 clippy:
 	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings

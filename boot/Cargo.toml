@@ -8,7 +8,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-uefi = { version = "0.41", features = ["panic_handler", "logger"] }
+bootinfo = { path = "../bootinfo" }
+elfload = { path = "../elfload" }
+uefi = { version = "0.41", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
 
 [lints]
 workspace = true

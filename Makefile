@@ -19,13 +19,16 @@ QEMU_FLAGS  := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP)
 # 0xF4 exits with status (v << 1) | 1, so 0x10 (success) gives 33.
 QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
                -device isa-debug-exit,iobase=0xf4,iosize=0x04 -display none -serial stdio
+# The hardware baseline (docs/architecture.md section 3): a Core 2 class CPU
+# without the NX bit, 256 MiB, no KVM. -m comes last and overrides 512M.
+QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
 HOST_CRATES := bootinfo elfload frame
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := bootinfo frame kernel
 
-.PHONY: all boot kernel esp esp-test run test test-host test-qemu test-fb clippy fmt clean
+.PHONY: all boot kernel esp esp-test run test test-host test-qemu test-qemu-min test-fb clippy fmt clean
 
 all: esp
 
@@ -56,13 +59,17 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-fb
+test: test-host test-qemu test-qemu-min test-fb
 
 test-host:
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --exit-code 33 --expect "STELA boot loader" --expect "STELA kernel" --expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS)
+
+test-qemu-min: esp-test $(BUILD)/OVMF_VARS.fd
+	python3 tools/qemu_test.py --exit-code 33 --expect "NX off" --expect "selftest: OK" \
+		-- $(QEMU) $(QEMU_MIN_FLAGS)
 
 # Boot the normal kernel, save the screen once it is idle, and check that the
 # framebuffer console drew text.

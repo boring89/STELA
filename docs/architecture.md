@@ -109,3 +109,4 @@ P10 Classic 環境、網路、音效、SMP 啟動 AP
 ## 6. 待修（P1 審核時）
 
 - P1 無條件設定 `IA32_EFER.NXE`；要改成 CPUID 偵測（`CPUID.80000001H:EDX[20]`），沒有 NX 就不設 NX 位元。
+  - P1 已照此實作（loader 以 CPUID 偵測，`BootInfo::nx_enabled` 告知 kernel；`make test-qemu-min` 用 `-cpu Conroe,-nx` 測試），審核時確認即可。

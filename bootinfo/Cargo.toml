@@ -1,0 +1,11 @@
+[package]
+name = "bootinfo"
+description = "The boot information block the STELA loader hands to the kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

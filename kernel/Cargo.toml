@@ -1,0 +1,24 @@
+[package]
+name = "kernel"
+description = "The STELA kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+# Run the built-in self tests at boot and exit QEMU with the result.
+selftest = []
+
+[dependencies]
+frame = { path = "../frame" }
+
+[lints]
+workspace = true

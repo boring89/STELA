@@ -1,2 +1,8 @@
 [build]
 target-dir = "build/target"
+
+# The kernel is linked at a fixed higher-half address (kernel/linker.ld):
+# no position-independent code. The target already defaults to
+# code-model=kernel, no red zone and soft-float (no SSE).
+[target.x86_64-unknown-none]
+rustflags = ["-C", "relocation-model=static"]

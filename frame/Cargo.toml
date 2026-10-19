@@ -1,0 +1,14 @@
+[package]
+name = "frame"
+description = "STELA's framework crate: the only home of unsafe code, exposing safe APIs over the hardware"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bootinfo = { path = "../bootinfo" }
+
+[lints]
+workspace = true

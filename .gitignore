@@ -1,0 +1,20 @@
+# Build output
+build/
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.swp
+
+# Python
+__pycache__/
+
+# Claude Code local settings
+.claude/settings.local.json

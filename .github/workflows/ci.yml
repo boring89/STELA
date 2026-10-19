@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3
+      - name: Install Rust toolchain
+        run: rustup show  # installs the toolchain pinned by rust-toolchain.toml
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: make clippy
+      - name: Test
+        run: make test

@@ -25,7 +25,7 @@ HOST_CRATES := bootinfo elfload frame
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := bootinfo frame kernel
 
-.PHONY: all boot kernel kernel-test esp esp-test run test test-host test-qemu clippy fmt clean
+.PHONY: all boot kernel esp esp-test run test test-host test-qemu test-fb clippy fmt clean
 
 all: esp
 
@@ -56,13 +56,20 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu
+test: test-host test-qemu test-fb
 
 test-host:
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --exit-code 33 --expect "STELA boot loader" --expect "STELA kernel" --expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS)
+
+# Boot the normal kernel, save the screen once it is idle, and check that the
+# framebuffer console drew text.
+test-fb: esp $(BUILD)/OVMF_VARS.fd
+	python3 tools/qemu_test.py --screendump $(BUILD)/screen.ppm --expect "STELA kernel" \
+		--expect "nothing more to do" -- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
+	python3 tools/fb_check.py $(BUILD)/screen.ppm
 
 clippy:
 	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings

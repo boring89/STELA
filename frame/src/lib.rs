@@ -13,7 +13,6 @@
 
 #[cfg(target_os = "none")]
 pub mod arch;
-#[cfg(target_os = "none")]
 pub mod console;
 pub mod mm;
 #[cfg(target_os = "none")]
@@ -31,6 +30,7 @@ pub fn init(info: &'static bootinfo::BootInfo) {
     serial::init();
     arch::x86_64::init();
     mm::init(info);
+    console::fb::init(info);
 }
 
 /// Executes `int3`. The breakpoint handler counts it and returns, so this
@@ -47,20 +47,36 @@ pub fn breakpoint_count() -> u64 {
     arch::x86_64::breakpoint_count()
 }
 
-/// Prints a panic message to the console. The kernel's `#[panic_handler]`
-/// calls this, then halts (or, in a self test, exits QEMU).
+/// Reports a panic: the message and location go to the serial port, and the
+/// framebuffer shows the panic screen. The kernel's `#[panic_handler]` calls
+/// this, then halts (or, in a self test, exits QEMU).
 #[cfg(target_os = "none")]
 pub fn report_panic(info: &core::panic::PanicInfo) {
-    kprintln!("\n*** STELA kernel panic ***");
+    use core::fmt::Write;
+    // Straight to the serial port: the console lock may be held by the code
+    // that panicked.
+    let mut serial = serial::Serial;
+    let _ = writeln!(serial, "\n*** STELA kernel panic ***");
     if let Some(location) = info.location() {
-        kprintln!(
+        let _ = writeln!(
+            serial,
             "at {}:{}:{}",
             location.file(),
             location.line(),
             location.column()
         );
     }
-    kprintln!("{}", info.message());
+    let _ = writeln!(serial, "{}", info.message());
+    match info.location() {
+        Some(l) => console::fb::panic_screen(format_args!(
+            "{}\n\nat {}:{}:{}",
+            info.message(),
+            l.file(),
+            l.line(),
+            l.column()
+        )),
+        None => console::fb::panic_screen(format_args!("{}", info.message())),
+    }
 }
 
 /// Stops the processor for good: interrupts off, then `hlt` in a loop.

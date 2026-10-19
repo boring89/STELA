@@ -19,7 +19,6 @@ frame::entry_point!(kernel_main);
 
 fn kernel_main(info: &'static BootInfo) -> ! {
     frame::serial::init();
-    kprintln!("STELA kernel {}", env!("CARGO_PKG_VERSION"));
     if !info.is_valid() {
         kprintln!(
             "kernel: bad boot information (magic {:#x}, version {})",
@@ -29,6 +28,7 @@ fn kernel_main(info: &'static BootInfo) -> ! {
         frame::halt();
     }
     frame::init(info);
+    kprintln!("STELA kernel {}", env!("CARGO_PKG_VERSION"));
     let usable: u64 = info
         .regions()
         .iter()

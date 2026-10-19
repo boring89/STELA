@@ -20,34 +20,40 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 ## 建置與執行
 
 ```bash
-make            # 建置 loader 與 kernel → build/
-make run        # QEMU + OVMF 開機，serial 輸出到 stdio
-make test       # host 單元測試（cargo test）+ QEMU 整合測試，修改後必須通過
-make clippy     # cargo clippy，警告視為錯誤
+make            # 建置 loader 與 kernel → build/esp/（EFI/BOOT/BOOTX64.EFI、STELA/kernel.elf）
+make run        # QEMU + OVMF 開機（一般 kernel），serial 輸出到 stdio
+make test       # host 單元測試 + QEMU selftest + 最低硬體 selftest + 畫面檢查，修改後必須通過
+make clippy     # cargo clippy（loader、kernel 端 crate 含 selftest feature、host 測試），警告視為錯誤
 make fmt        # cargo fmt
 make clean
 ```
 
 - 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）。
 - cargo 的輸出在 `build/target/`（`.cargo/config.toml`）。
-- CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `make test` 與 `make clippy`。
+- CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `cargo fmt --check`、`make clippy` 與 `make test`。
+- `make test` 的組成：`test-host`（`HOST_CRATES` = bootinfo、elfload、frame 的 `cargo test`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，檢查 `selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`）、`test-fb`（一般 kernel 開機後 screendump，`tools/fb_check.py` 檢查畫面有字）。`make run` 永遠跑沒有 selftest 的 kernel。
 
 ### 測試
 
 - 不碰硬體的 crate（純邏輯：資料結構、檔案系統、協定解析）要能在 host 上以 `cargo test` 測試；硬體相關的 crate 把邏輯與硬體存取分開，讓邏輯的部分可以在 host 測。
-- 需要硬體的測試放在 kernel 的 selftest（QEMU + OVMF 開機，檢查 serial 輸出）。
+- 需要硬體的測試放在 kernel 的 selftest（`kernel/src/selftest.rs`，`selftest` feature；QEMU + OVMF 開機，檢查 serial 輸出，結束時經 `isa-debug-exit` 回報 exit code）。
 - 需要使用者自己的檔案（Mac ROM、磁碟映像）的測試只放在本機專用目標，不進 `make test` 或 CI。
 
 ## 目錄結構（規劃，隨進度更新）
 
 ```
-boot/          UEFI loader（x86_64-unknown-uefi）：載入 kernel、取得記憶體表與 framebuffer、交棒
-frame/         框架 crate：所有 unsafe 的家（分頁、中斷、port I/O、MMIO、context 切換），對外只提供 safe API
-arch/x86_64/   架構相關的實作（frame 之下）
-kernel/        kernel 主體（safe Rust）：記憶體、行程、排程、VFS、syscall
-drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）
+boot/          UEFI loader（x86_64-unknown-uefi）：讀 kernel.elf、建分頁表、取得記憶體表與 framebuffer、交棒（docs/boot.md）
+bootinfo/      loader 與 kernel 共用的 BootInfo 結構（no_std，host 測試）
+elfload/       最小 ELF64 解析（只處理 PT_LOAD，host 測試）
+frame/         框架 crate：所有 unsafe 的家，對外只提供 safe API（docs/frame.md）
+  src/arch/x86_64/  架構相關：port I/O、GDT/TSS、IDT、例外 stub
+  src/mm/           頁框配置（bitmap）、kernel 分頁、heap
+  src/console/      字型、文字主控台、framebuffer、panic 畫面
+kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）：之後的記憶體、行程、排程、VFS、syscall
+drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）（尚未建立）
+third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause）
 docs/          設計文件（每個元件完成後寫 docs/<元件>.md）
-tools/         開發工具與測試腳本
+tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、font_to_rs.py）
 ```
 
 ## 程式風格
@@ -109,8 +115,12 @@ Claude 依照上方工作規則直接實作。
 解釋方式：先用比喻再說明實際運作；專有名詞第一次出現時要解釋；多用 ASCII 圖和本專案的實際數字；一次一個概念，保持簡短。
 
 協作模式的元件（之後新增的加入此清單）：
-- （尚無）
+- P1（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：開機載入器（`docs/boot.md`）、frame 的 GDT/IDT/分頁/記憶體/主控台（`docs/frame.md`）
 
 ## 已知問題（尚未修正）
 
-- （尚無）
+- 單核、沒有中斷與計時器（P2 再做）；`SpinLock` 不關中斷，P2 讓中斷處理程式拿鎖之前要改。
+- 沒有設定 PAT：framebuffer 是 write-back 而不是 write-combining，捲動要讀 framebuffer，實機上會慢。
+- loader 不切換 GOP 模式（OVMF 預設 1280x800）；不支援 Bitmask 像素格式。
+- 記憶體表合併後最多 256 個區段（`regions_truncated`）；`KernelAndBoot`（含 loader 自己）與 identity map 用過的分頁表不回收。
+- kernel heap 固定 4 MiB；空掉的中間分頁表不回收；`alloc_contiguous` 是線性 first-fit。

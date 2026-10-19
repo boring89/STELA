@@ -13,10 +13,15 @@ jobs:
       - name: Install packages
         run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3
       - name: Install Rust toolchain
-        run: rustup show  # installs the toolchain pinned by rust-toolchain.toml
+        # Any cargo call makes rustup install the toolchain, targets and
+        # components pinned by rust-toolchain.toml (`rustup show` stopped
+        # doing so in rustup 1.28).
+        run: cargo --version
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
         run: make clippy
       - name: Test
+        # Host unit tests, QEMU self tests (default and minimal CPU without
+        # NX), and a framebuffer screendump check. No KVM needed.
         run: make test

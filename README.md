@@ -11,7 +11,13 @@ whose experience it reuses and whose code it does not.
 
 ## Status
 
-Early: a UEFI boot loader that prints a banner. Nothing else yet.
+Early (phase P1 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+kernel ELF, builds its page tables (higher-half kernel and a direct map of physical memory) and
+hands over a boot information block. The kernel sets up its GDT/TSS and exception handlers, a
+bitmap physical frame allocator, its page tables and a heap, and prints to the serial port and
+to a framebuffer text console (Spleen font); a kernel panic shows a panic screen. There are no
+interrupts, timers, processes or drivers yet. See [docs/boot.md](docs/boot.md) and
+[docs/frame.md](docs/frame.md).
 
 ## Building
 
@@ -19,14 +25,17 @@ Requirements: `rustup` (the pinned toolchain and targets are installed automatic
 `rust-toolchain.toml`), `qemu-system-x86`, `ovmf`, `python3`, `make`.
 
 ```bash
-make        # build the loader into build/esp/
+make        # build the loader and the kernel into build/esp/
 make run    # boot it in QEMU with OVMF, serial on stdio
-make test   # host unit tests + a QEMU boot test
+make test   # host unit tests + QEMU self tests + a screen check
 ```
 
 ## License
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
+The Spleen font in `third_party/spleen/` is by Frederic Cambus and is under the BSD 2-Clause
+license (see [third_party/spleen/LICENSE](third_party/spleen/LICENSE)).
 
 ## Author
 

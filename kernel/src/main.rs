@@ -7,6 +7,8 @@
 #![no_main]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 #[cfg(feature = "selftest")]
 mod selftest;
 
@@ -37,6 +39,12 @@ fn kernel_main(info: &'static BootInfo) -> ! {
         "kernel: {} memory regions, {} MiB usable",
         info.regions().len(),
         (usable * bootinfo::PAGE_SIZE) >> 20
+    );
+    let (free, _) = frame::mm::pmm::stats();
+    kprintln!(
+        "kernel: {} MiB free after setup, heap {} KiB",
+        (free as u64 * bootinfo::PAGE_SIZE) >> 20,
+        frame::mm::heap::stats().size / 1024
     );
     let fb = &info.framebuffer;
     kprintln!(

@@ -15,20 +15,22 @@
 pub mod arch;
 #[cfg(target_os = "none")]
 pub mod console;
+pub mod mm;
 #[cfg(target_os = "none")]
 pub mod qemu;
 #[cfg(target_os = "none")]
 pub mod serial;
-#[cfg(target_os = "none")]
-pub(crate) mod sync;
+pub mod sync;
 pub mod trap;
 
-/// Brings up the processor state the kernel relies on: serial console, GDT,
-/// TSS and IDT (exceptions). Call once, first thing in the kernel.
+/// Brings up what the kernel relies on: serial console, GDT, TSS and IDT
+/// (exceptions), the frame allocator, the page tables and the heap. Call
+/// once, first thing in the kernel.
 #[cfg(target_os = "none")]
-pub fn init(_info: &'static bootinfo::BootInfo) {
+pub fn init(info: &'static bootinfo::BootInfo) {
     serial::init();
     arch::x86_64::init();
+    mm::init(info);
 }
 
 /// Executes `int3`. The breakpoint handler counts it and returns, so this

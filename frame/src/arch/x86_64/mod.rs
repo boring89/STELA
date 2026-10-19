@@ -3,9 +3,47 @@
 
 //! x86-64 support.
 
+pub(crate) mod exceptions;
+pub(crate) mod gdt;
+pub(crate) mod idt;
 pub(crate) mod io;
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Loads STELA's GDT, TSS and IDT. Only the first call does anything.
+pub(crate) fn init() {
+    if INITIALIZED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    // SAFETY: the flag above makes this the only call; P1 runs on the boot
+    // processor alone with interrupts disabled (the loader executed `cli`).
+    unsafe {
+        gdt::init();
+        idt::init(exceptions::stubs());
+    }
+}
+
+/// Whether [`init`] has run.
+pub(crate) fn initialized() -> bool {
+    INITIALIZED.load(Ordering::Acquire)
+}
+
+/// Raises a breakpoint exception (`int3`), which the handler counts and
+/// returns from.
+pub(crate) fn breakpoint() {
+    assert!(initialized(), "breakpoint() before frame::init()");
+    // SAFETY: STELA's IDT is loaded (checked above) and its vector 3
+    // handler saves and restores all registers and returns.
+    unsafe { asm!("int3", options(nomem)) };
+}
+
+/// Number of breakpoints handled so far.
+pub(crate) fn breakpoint_count() -> u64 {
+    exceptions::breakpoint_count()
+}
 
 /// Disables maskable interrupts and halts forever.
 pub(crate) fn halt_forever() -> ! {

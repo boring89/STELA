@@ -62,7 +62,7 @@ test-host:
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --expect "STELA boot loader" --expect "STELA kernel" -- $(QEMU) $(QEMU_TEST_FLAGS)
+	python3 tools/qemu_test.py --exit-code 33 --expect "STELA boot loader" --expect "STELA kernel" --expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS)
 
 clippy:
 	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings

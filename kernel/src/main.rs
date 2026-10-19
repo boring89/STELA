@@ -7,6 +7,9 @@
 #![no_main]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "selftest")]
+mod selftest;
+
 use frame::bootinfo::{self, BootInfo, MemoryKind};
 use frame::kprintln;
 
@@ -23,6 +26,7 @@ fn kernel_main(info: &'static BootInfo) -> ! {
         );
         frame::halt();
     }
+    frame::init(info);
     let usable: u64 = info
         .regions()
         .iter()
@@ -41,11 +45,22 @@ fn kernel_main(info: &'static BootInfo) -> ! {
         fb.height,
         fb.pitch
     );
-    frame::halt();
+
+    #[cfg(feature = "selftest")]
+    selftest::run(info);
+
+    #[cfg(not(feature = "selftest"))]
+    {
+        kprintln!("kernel: nothing more to do; halting");
+        frame::halt();
+    }
 }
 
 #[panic_handler]
 fn panic(panic: &core::panic::PanicInfo) -> ! {
-    kprintln!("kernel panic: {}", panic);
+    frame::report_panic(panic);
+    #[cfg(feature = "selftest")]
+    frame::qemu::exit(frame::qemu::ExitCode::Failure);
+    #[cfg(not(feature = "selftest"))]
     frame::halt();
 }

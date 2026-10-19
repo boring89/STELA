@@ -16,7 +16,50 @@ pub mod arch;
 #[cfg(target_os = "none")]
 pub mod console;
 #[cfg(target_os = "none")]
+pub mod qemu;
+#[cfg(target_os = "none")]
 pub mod serial;
+#[cfg(target_os = "none")]
+pub(crate) mod sync;
+pub mod trap;
+
+/// Brings up the processor state the kernel relies on: serial console, GDT,
+/// TSS and IDT (exceptions). Call once, first thing in the kernel.
+#[cfg(target_os = "none")]
+pub fn init(_info: &'static bootinfo::BootInfo) {
+    serial::init();
+    arch::x86_64::init();
+}
+
+/// Executes `int3`. The breakpoint handler counts it and returns, so this
+/// is a harmless way to check that exceptions work. Panics if called before
+/// [`init`].
+#[cfg(target_os = "none")]
+pub fn breakpoint() {
+    arch::x86_64::breakpoint();
+}
+
+/// Number of breakpoint exceptions handled so far.
+#[cfg(target_os = "none")]
+pub fn breakpoint_count() -> u64 {
+    arch::x86_64::breakpoint_count()
+}
+
+/// Prints a panic message to the console. The kernel's `#[panic_handler]`
+/// calls this, then halts (or, in a self test, exits QEMU).
+#[cfg(target_os = "none")]
+pub fn report_panic(info: &core::panic::PanicInfo) {
+    kprintln!("\n*** STELA kernel panic ***");
+    if let Some(location) = info.location() {
+        kprintln!(
+            "at {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        );
+    }
+    kprintln!("{}", info.message());
+}
 
 /// Stops the processor for good: interrupts off, then `hlt` in a loop.
 #[cfg(target_os = "none")]

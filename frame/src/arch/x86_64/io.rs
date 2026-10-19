@@ -40,3 +40,16 @@ pub(crate) unsafe fn inb(port: u16) -> u8 {
     };
     value
 }
+
+/// Writes one 32-bit value to an I/O port.
+///
+/// # Safety
+///
+/// Same as [`outb`].
+pub(crate) unsafe fn outl(port: u16, value: u32) {
+    // SAFETY: the caller guarantees the write is harmless; `out` does not
+    // touch memory or the stack.
+    unsafe {
+        asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags))
+    };
+}

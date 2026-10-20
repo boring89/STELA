@@ -208,9 +208,5 @@ unsafe impl GlobalAlloc for Heap {
     }
 }
 
-#[cfg(not(test))]
-#[global_allocator]
-static HEAP: Heap = Heap::new();
-
-#[cfg(test)]
+#[cfg_attr(target_os = "none", global_allocator)]
 static HEAP: Heap = Heap::new();

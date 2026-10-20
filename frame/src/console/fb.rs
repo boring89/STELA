@@ -200,6 +200,35 @@ pub(crate) fn write_str(s: &str) {
     }
 }
 
+/// Rows of the screen with something other than the console background
+/// on them (a self test checks that the console drew text).
+pub fn ink_rows() -> usize {
+    let Some(info) = PANIC_INFO.try_lock().and_then(|i| *i) else {
+        return 0;
+    };
+    let Some(canvas) = FbCanvas::new(info) else {
+        return 0;
+    };
+    let background = canvas.encode(CONSOLE_BG);
+    (0..canvas.height)
+        .filter(|&y| {
+            (0..canvas.width).any(|x| {
+                // SAFETY: (x, y) is inside the visible area (see
+                // `FbCanvas::set_pixel`); reading the framebuffer has no
+                // side effects.
+                let p = unsafe {
+                    canvas
+                        .base
+                        .add(y * canvas.pitch + x * 4)
+                        .cast::<u32>()
+                        .read_volatile()
+                };
+                p & 0x00FF_FFFF != background
+            })
+        })
+        .count()
+}
+
 /// Collects panic text without allocating.
 struct PanicText {
     bytes: [u8; 4096],

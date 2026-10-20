@@ -49,6 +49,9 @@ impl Drop for Owned {
 
 struct Shell {
     cwd: Location,
+    /// The window server, when the shell runs in a terminal window: given
+    /// to the programs it starts as their `[2]`.
+    window_server: Option<Handle>,
 }
 
 fn describe(e: Error) -> &'static str {
@@ -269,7 +272,9 @@ impl Shell {
         };
         let handles = [
             pass(tty.0, Rights::SEND | Rights::DUPLICATE),
-            Handle::NONE,
+            self.window_server.map_or(Handle::NONE, |ws| {
+                pass(ws, Rights::SEND | Rights::DUPLICATE)
+            }),
             pass(cwd.0, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
         ];
         let child =
@@ -393,6 +398,7 @@ fn start_volume() -> String {
 fn main() -> i64 {
     let mut shell = Shell {
         cwd: Location::root(&start_volume()),
+        window_server: None,
     };
     // Report in to whoever started us (init attaches the keyboard).
     let reported = handle_duplicate(bootstrap::MAIN_PORT, Rights::SEND | Rights::TRANSFER)
@@ -412,6 +418,14 @@ fn main() -> i64 {
     loop {
         if port_receive(bootstrap::MAIN_PORT, &mut msg, libstela::ipc::FOREVER).is_err() {
             return 1;
+        }
+        if msg.tag == tag::WINDOW_SERVER
+            && let Some(&ws) = msg.carried().first()
+        {
+            if let Some(old) = shell.window_server.replace(ws) {
+                let _ = handle_close(old);
+            }
+            continue;
         }
         if msg.tag != tag::INPUT_KEY {
             for &h in msg.carried() {

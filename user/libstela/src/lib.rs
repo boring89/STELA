@@ -279,7 +279,7 @@ pub fn spawn<const N: usize>(
     )
 }
 
-#[cfg(not(test))]
+#[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     debug_println!("panic: {}", info);

@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 pub mod key;
+pub mod window;
 
 /// System-call numbers (RAX).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -575,6 +576,9 @@ pub mod tag {
     /// A mouse event (`key::MouseEvent::encode`, 8 bytes), from the kernel
     /// to the port attached with `InputAttach`.
     pub const INPUT_MOUSE: u32 = 5;
+    /// From a terminal to its shell: handle slot 0 is a `SEND` handle to
+    /// the window server, for the programs the shell starts (their `[2]`).
+    pub const WINDOW_SERVER: u32 = 6;
 }
 
 /// The exit code of a process ended by `ProcessKill`.

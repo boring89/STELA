@@ -9,7 +9,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 
@@ -46,15 +46,15 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela
+HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela toolbox
 # Crates with a bare-metal binary whose library part has host unit tests.
-HOST_LIB_CRATES := kernel
+HOST_LIB_CRATES := kernel windowserver terminal
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 # User-space crates (same target).
-USER_CRATES := libstela $(USER_PROGRAMS)
+USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd musl linux-tests esp esp-test run test test-host test-qemu test-qemu-min test-fb \
+.PHONY: all boot kernel user initrd musl linux-tests esp esp-test run test test-host test-qemu test-qemu-min test-window \
 	host-images test-images test-storage test-shell test-shutdown test-linux ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
@@ -122,7 +122,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-fb test-storage test-shell test-shutdown test-linux
+test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -157,15 +157,25 @@ test-qemu-min: esp-test test-images $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-min.img
 
-# Boot the normal kernel (init starts the shell), type a command, save the
-# screen once its answer is printed, and check that the framebuffer console
-# drew text.
-test-fb: esp $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --screendump $(BUILD)/screen.ppm \
-		--type "STELA shell" "uptime\n" --expect "STELA kernel" \
-		--expect "STELA shell" --expect "uptime:" \
+# The desktop: boot the normal kernel (init starts the window server and
+# the terminal, the terminal the shell), type a command, start echo_win
+# from the shell and type a line into it, then save the screen and check
+# the desktop, the menu bar, the terminal's (inactive) title bar and its
+# text, echo_win's (active) title bar and its contents. The geometry is
+# that of the 2560x1600 OVMF mode: 16x32 font, menu bar 40, title bar 38;
+# the terminal's content at 40,108 (1288x808), echo_win's at 1844,140
+# (656x448).
+WINDOW_CHECKS := --expect-rect 1000,1100,300,300,\#5b7b86 --expect-rect 1300,8,400,20,\#f2e8d5 \
+	--expect-rect 300,72,100,10,\#d8cdb8 --expect-text 44,112,1280,800,\#f2e8d5,4 \
+	--expect-rect 1864,104,80,8,\#c8763c --expect-text 1848,144,648,440,\#f2e8d5,3
+test-window: esp $(BUILD)/OVMF_VARS.fd
+	python3 tools/qemu_test.py --timeout 90 --screendump $(BUILD)/screen.ppm --log $(BUILD)/test-window.log \
+		--type "STELA shell" "uptime\n" --type "uptime:" "run echo_win\n" \
+		--type "> run echo_win" "hello\n" \
+		--expect "windowserver: " --expect "STELA shell" --expect "uptime:" \
+		--expect "echo_win: hello" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
-	python3 tools/fb_check.py $(BUILD)/screen.ppm
+	python3 tools/fb_check.py $(BUILD)/screen.ppm $(WINDOW_CHECKS)
 
 # The shell on the normal kernel with the AHCI test disk (a copy of its
 # own): commands typed through QMP, their answers checked on the serial

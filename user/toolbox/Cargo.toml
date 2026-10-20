@@ -1,0 +1,19 @@
+[package]
+name = "toolbox"
+description = "The STELA UI toolbox: drawing, windows, menus, controls and the event loop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+doctest = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

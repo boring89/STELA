@@ -115,6 +115,41 @@ impl Mapping {
         Ok(())
     }
 
+    /// The mapping as 32-bit words (pixels), for memory this process alone
+    /// writes: its windows' buffers, the window server's back buffer and
+    /// the framebuffer. Another process may read the memory meanwhile (it
+    /// sees whatever is there, torn pixels at worst). If another process
+    /// wrote it too, the words could change under the slice: use
+    /// [`Mapping::read_words`] for memory others write. `InvalidArgument`
+    /// if the mapping is read-only.
+    pub fn words_mut(&mut self) -> Result<&mut [u32], Error> {
+        if !self.writable {
+            return Err(Error::InvalidArgument);
+        }
+        // SAFETY: the mapping is `size` bytes of writable memory at a
+        // page-aligned address (so aligned for u32), mapped while `self`
+        // lives; `&mut self` makes this the only reference through this
+        // mapping. Other processes' accesses are not Rust accesses of this
+        // program (see the documentation above for the contract).
+        Ok(unsafe {
+            core::slice::from_raw_parts_mut(self.addr as *mut u32, self.size as usize / 4)
+        })
+    }
+
+    /// Copies `out.len()` words starting at word `index` (for memory
+    /// another process may be writing: a client's window buffer).
+    pub fn read_words(&self, index: usize, out: &mut [u32]) -> Result<(), Error> {
+        let offset = (index as u64)
+            .checked_mul(4)
+            .ok_or(Error::InvalidArgument)?;
+        let at = self.range(offset, out.len() * 4)?;
+        // SAFETY: inside the mapping (checked above), aligned (page-aligned
+        // base, word offsets); copied as plain data even while another
+        // process writes it.
+        unsafe { core::ptr::copy_nonoverlapping(at as *const u32, out.as_mut_ptr(), out.len()) };
+        Ok(())
+    }
+
     /// Copies `data` to `offset` (the mapping must be writable).
     pub fn write(&self, offset: u64, data: &[u8]) -> Result<(), Error> {
         if !self.writable {

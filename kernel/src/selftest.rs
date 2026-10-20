@@ -1312,6 +1312,11 @@ fn framebuffer_object(_: &'static BootInfo) {
     let Some(fb) = frame::console::framebuffer() else {
         panic!("no framebuffer");
     };
+    // The text console has drawn the boot messages (what test-fb checked
+    // on a screendump before the desktop took the screen).
+    let rows = frame::console::ink_rows();
+    kprintln!("selftest:   the console drew on {rows} pixel rows");
+    assert!(rows >= 3 * 32, "the console drew too little ({rows} rows)");
     assert!(
         fb.width >= 640 && fb.height >= 480,
         "{}x{}",

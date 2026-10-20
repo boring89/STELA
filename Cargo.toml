@@ -21,6 +21,10 @@ members = [
     "user/proctest",
     "user/init",
     "user/shell",
+    "user/toolbox",
+    "user/windowserver",
+    "user/terminal",
+    "user/echo_win",
     "tools/ehfs",
 ]
 

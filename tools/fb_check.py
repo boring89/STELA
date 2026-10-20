@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 YuanChi Hsieh
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Rough check that a QEMU screendump (binary PPM, P6) shows console text.
+"""Rough checks of a QEMU screendump (binary PPM, P6).
 
 Usage: fb_check.py <screen.ppm> [--min-ink 0.001] [--max-ink 0.3]
+                   [--expect-rect X,Y,W,H,#RRGGBB] ...
+                   [--expect-text X,Y,W,H,#RRGGBB,BANDS] ...
 
-The most common colour is taken as the background; "ink" is every other
-pixel. The screen passes if it is not blank (ink fraction at least
---min-ink) and not noise (at most --max-ink), and if the ink is spread over
-several text rows (at least 3 separate bands of rows with ink).
+Without rectangle options (the text console): the most common colour is
+taken as the background; "ink" is every other pixel. The screen passes if
+it is not blank (ink fraction at least --min-ink) and not noise (at most
+--max-ink), and if the ink is spread over several text rows (at least 3
+separate bands of rows with ink).
+
+--expect-rect: the most common colour inside the rectangle must be the
+given one (the desktop, a menu bar, a title bar). --expect-text: inside
+the rectangle, the pixels that are not the given background colour must
+form at least BANDS separate bands of rows (lines of text in a window).
 """
 import argparse
 import sys
@@ -47,9 +55,13 @@ def main():
     ap.add_argument("ppm")
     ap.add_argument("--min-ink", type=float, default=0.001)
     ap.add_argument("--max-ink", type=float, default=0.3)
+    ap.add_argument("--expect-rect", action="append", default=[])
+    ap.add_argument("--expect-text", action="append", default=[])
     args = ap.parse_args()
 
     width, height, pixels = read_ppm(args.ppm)
+    if args.expect_rect or args.expect_text:
+        return check_rects(args, width, height, pixels)
     colours = [pixels[i:i + 3] for i in range(0, len(pixels), 3)]
     background, _ = Counter(colours).most_common(1)[0]
     ink_rows = [any(colours[y * width + x] != background for x in range(width))
@@ -67,6 +79,52 @@ def main():
         return 1
     print("fb_check: OK")
     return 0
+
+
+def parse_rect(spec, extra):
+    parts = spec.split(",")
+    if len(parts) != 5 + extra:
+        sys.exit(f"bad rectangle {spec!r}")
+    x, y, w, h = (int(p) for p in parts[:4])
+    colour = bytes.fromhex(parts[4].lstrip("#"))
+    return x, y, w, h, colour, parts[5:]
+
+
+def region(width, height, pixels, x, y, w, h):
+    """The rows of a rectangle (clipped to the screen), as lists of RGB."""
+    rows = []
+    for py in range(max(0, y), min(height, y + h)):
+        row = pixels[(py * width + max(0, x)) * 3:(py * width + min(width, x + w)) * 3]
+        rows.append([row[i:i + 3] for i in range(0, len(row), 3)])
+    return rows
+
+
+def check_rects(args, width, height, pixels):
+    ok = True
+    for spec in args.expect_rect:
+        x, y, w, h, colour, _ = parse_rect(spec, 0)
+        counts = Counter(c for row in region(width, height, pixels, x, y, w, h) for c in row)
+        if not counts:
+            print(f"fb_check: FAIL rectangle {spec} is off the screen", file=sys.stderr)
+            ok = False
+            continue
+        common, n = counts.most_common(1)[0]
+        total = sum(counts.values())
+        print(f"fb_check: {x},{y} {w}x{h}: mostly #{common.hex()} ({n / total:.0%})")
+        if common != colour:
+            print(f"fb_check: FAIL expected #{colour.hex()} there", file=sys.stderr)
+            ok = False
+    for spec in args.expect_text:
+        x, y, w, h, colour, extra = parse_rect(spec, 1)
+        rows = region(width, height, pixels, x, y, w, h)
+        inked = [any(c != colour for c in row) for row in rows]
+        bands = sum(1 for i, r in enumerate(inked) if r and (i == 0 or not inked[i - 1]))
+        print(f"fb_check: {x},{y} {w}x{h}: {bands} bands of text on #{colour.hex()}")
+        if bands < int(extra[0]):
+            print(f"fb_check: FAIL expected at least {extra[0]} lines", file=sys.stderr)
+            ok = False
+    print("fb_check: OK" if ok else "fb_check: FAIL")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

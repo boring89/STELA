@@ -60,6 +60,10 @@ pub struct Thread {
     slice: u32,
     /// A wake-up that arrived before the thread blocked.
     wake_pending: bool,
+    /// Its process was killed: the thread ends the next time it would
+    /// return to user mode (not earlier, so that nothing it holds on its
+    /// kernel stack is lost).
+    killed: bool,
     context: Arc<TaskContext>,
     /// What a kernel thread runs, taken on its first start.
     start: Option<Box<dyn FnOnce() + Send>>,
@@ -125,6 +129,7 @@ pub fn init() {
         priority: 0,
         slice: TIME_SLICE,
         wake_pending: false,
+        killed: false,
         context: frame::task::current(),
         start: None,
         user_start: None,
@@ -139,6 +144,7 @@ pub fn init() {
             priority: u8::MAX,
             slice: TIME_SLICE,
             wake_pending: false,
+            killed: false,
             context,
             start: None,
             user_start: None,
@@ -161,6 +167,7 @@ pub fn init() {
     frame::time::set_tick_hook(tick);
     frame::task::set_scheduler(preempt);
     frame::task::set_user_fault_handler(user_fault);
+    frame::task::set_user_return_hook(user_return);
 }
 
 /// Runs on every timer tick (1 ms), inside the interrupt: wakes the
@@ -237,10 +244,14 @@ fn idle_entry(_: usize) -> ! {
 /// then runs the kernel thread's function (and exits), or enters user mode.
 fn thread_entry(_: usize) -> ! {
     reap();
-    let (start, user) = with(|s| {
+    let (start, user, killed) = with(|s| {
         let t = current_mut(s);
-        (t.start.take(), t.user_start.take())
+        (t.start.take(), t.user_start.take(), t.killed)
     });
+    if killed {
+        // Killed before it ever ran.
+        exit();
+    }
     if let Some((entry, rsp, arg)) = user {
         // The scheduler activated the process's address space.
         frame::task::enter_user(entry, rsp, arg);
@@ -265,6 +276,7 @@ pub fn spawn(
         priority: 0,
         slice: TIME_SLICE,
         wake_pending: false,
+        killed: false,
         context,
         start: Some(Box::new(f)),
         user_start: None,
@@ -301,6 +313,7 @@ pub fn spawn_user(
         priority: 0,
         slice: TIME_SLICE,
         wake_pending: false,
+        killed: false,
         context,
         start: None,
         user_start: Some((entry, rsp, arg)),
@@ -339,9 +352,17 @@ pub fn exit_process(code: i64) -> ! {
 }
 
 /// Ends every thread of `process` with exit code `code` (unless one was
-/// already decided). Threads that are not running become zombies at once;
-/// if the running thread belongs to it, it becomes a zombie too and the
-/// caller must call [`schedule`] (it does not return to user mode).
+/// already decided).
+///
+/// A thread that is not running may be suspended in the middle of kernel
+/// code (preempted in a system call, sleeping), holding references and
+/// allocations on its kernel stack; freeing that stack would leak them. So
+/// such threads are only marked: sleeping and blocked ones are made ready,
+/// and each one ends itself when it next reaches the way back to user
+/// mode (`user_return`, or before its first entry). If the running thread
+/// belongs to the process, it becomes a zombie at once and the caller must
+/// call [`schedule`]; only callers at that boundary (`exit_process`, the
+/// user-fault handler) do this.
 pub fn kill(process: &Arc<Process>, code: i64) {
     process.set_exit_code(code);
     let pid = process.id();
@@ -349,20 +370,32 @@ pub fn kill(process: &Arc<Process>, code: i64) {
     #[allow(clippy::borrowed_box)]
     let ours = |t: &Box<Thread>| belongs_to(t, pid);
     with(|s| {
-        let mut doomed = s.ready.take_where(ours);
-        doomed.append(&mut s.sleeping.take_where(ours));
+        let mut waiting = s.sleeping.take_where(ours);
         let (mut blocked, others): (Vec<_>, Vec<_>) =
             core::mem::take(&mut s.blocked).into_iter().partition(ours);
         s.blocked = others;
-        doomed.append(&mut blocked);
-        for mut t in doomed {
-            t.state = State::Zombie;
-            s.zombies.push(t);
+        waiting.append(&mut blocked);
+        for mut t in waiting {
+            t.state = State::Ready;
+            s.ready.push(t);
+        }
+        for t in s.ready.iter_mut().filter(|t| ours(t)) {
+            t.killed = true;
         }
         if let Some(t) = s.current.as_mut().filter(|t| ours(t)) {
+            t.killed = true;
             t.state = State::Zombie;
         }
     });
+}
+
+/// Registered with frame: runs on every way back to ring 3 (end of a
+/// system call, end of an interrupt that arrived in ring 3). A thread of a
+/// killed process ends here, where nothing is left on its kernel stack.
+fn user_return() {
+    if with(|s| current_mut(s).killed) {
+        exit();
+    }
 }
 
 /// Whether `thread` is one of process `pid`'s.

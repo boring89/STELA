@@ -409,10 +409,19 @@ PerCpu 新增的欄位（`frame/src/cpu.rs`）：
    → frame::task::user_fault → kernel user_fault(frame, cr2)：
        印：process 12 (fault): exception 14 (#PF page fault), error code 0x4 at RIP=0x400015 RSP=0x7fffffefffd0 CR2=0x0; killed
        exit_process(128 + vector)
-         kill(process)：exit code（第一個決定的算數）；ready／sleeping／blocked 裡屬於它的執行緒 → zombies；
-                        目前的執行緒 → Zombie
+         kill(process)：exit code（第一個決定的算數）；
+                        目前的執行緒 → Zombie；
+                        其他屬於它的執行緒標 killed（sleeping／blocked 的搬回 ready）
          schedule()（永不返回）
 ```
+
+為什麼其他執行緒只「標記」而不直接變 Zombie：它們可能停在 kernel 程式碼的中間（syscall 裡被搶佔、`SleepNs` 睡著），kernel 堆疊上有 `Arc<Process>`、`Vec` 之類的東西；直接釋放那個堆疊，這些東西永遠不會被 drop（`Arc<Process>` 漏掉 = 整個位址空間漏掉）。所以被標記的執行緒繼續跑到**回 ring 3 的邊界**才結束自己：
+
+- syscall 處理完、`sysretq` 之前（`frame::syscall::dispatch`，從檢查到 `sysretq` 中斷都關著）；
+- 來自 ring 3 的中斷處理完（含搶佔）、`iretq` 之前（`irq::dispatch`）；
+- 還沒進過 ring 3 的新執行緒在 `thread_entry`。
+
+這幾個點 kernel 堆疊上已經沒有 kernel 的物件，frame 呼叫 kernel 註冊的 `user_return`（`frame::task::set_user_return_hook`），被標記就 `exit()`。selftest：一個不斷 `SleepNs(1 ms)` 的程式在睡著時被 `kill`，以 77 結束，記憶體全部回來。
 
 ring 0 的例外照舊 panic。exit code 的慣例：`128 + 向量`（#UD 134、#GP 141、#PF 142），`ProcessExit(code)` 自己給，使用者程式 panic 是 101，執行緒全部自己結束是 0，載入失敗（從沒跑過）是 −1。
 
@@ -539,7 +548,7 @@ echo 迴圈沒有輸入時 `sleep_ms(4)`（之前是 `hlt`，現在 CPU 讓給�
 - 位址空間：只有 4 KiB 頁；沒有需求分頁、copy-on-write、`mmap`／`munmap` 類的 syscall；空掉的中間表不回收（只在整個位址空間 drop 時一起釋放）。kernel 半部不能新增 PML4 項目（§7.1）。
 - 使用者 FPU 只有 FXSAVE（x87/SSE），沒有 XSAVE/AVX。
 - NMI、#MC 若剛好發生在 `swapgs` 前後或 `sysret` 前（使用者 RSP 已載入）會用錯 GS／堆疊；它們沒有 IST（NMI 現在被遮蔽在 LINT1）。之後給 NMI/#MC/#DB 各自的 IST，並在 stub 裡用 GS_BASE 的值判斷而不是 CS。
-- 行程結束時，屬於它的執行緒若正在另一顆 CPU 上跑（SMP 之後）不會立刻停下；現在單顆 CPU 沒有這個情況。
+- 被 kill 的行程的其他執行緒要等到下一次回 ring 3 才結束；若有一個停在 kernel 裡永遠不回來（例如之後的 IPC 無限期 block 而沒有被叫醒），它就不會結束——`kill` 會把 blocked 的搬回 ready，但之後的阻塞點要記得醒來後檢查。SMP 時，正在別顆 CPU 上跑的執行緒要靠 IPI 讓它進 kernel。
 - 行程表的 `Exited` 狀態永遠不清（沒有「回收狀態」的動作，P4 有 handle 之後再定）。
 - 使用者程式的 `.data`／`.bss` 若是空的，連結出來的空 PT_LOAD 會被 `elfload` 拒絕（目前三個程式都有資料，未實際遇到）。
 - `DebugWrite` 是暫時的（P4 之後改成 console 服務的 handle）。

@@ -84,6 +84,10 @@ pub(crate) extern "C" fn dispatch(frame: &mut SyscallFrame) {
         Some(handler) => handler(frame),
         None => frame.set_return(u64::MAX, 0),
     }
+    // From here to `sysretq` interrupts stay off, so nothing can kill the
+    // thread between this check and the return to ring 3.
+    crate::arch::x86_64::interrupts::save_and_disable();
+    crate::task::user_return();
     // `sysret` to a non-canonical RCX would fault in ring 0 with the user
     // stack loaded (Intel SDM Vol. 2B "SYSRET", #GP). RIP was the address
     // after the user's `syscall`, so this only happens for a `syscall` at

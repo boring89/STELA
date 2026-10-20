@@ -140,6 +140,26 @@ pub(crate) fn user_fault(frame: &crate::trap::TrapFrame, cr2: u64) -> ! {
     }
 }
 
+/// The kernel's check before returning to ring 3, see
+/// [`set_user_return_hook`].
+static USER_RETURN: Once<fn()> = Once::new();
+
+/// Registers a function called on every return to ring 3 from a system
+/// call or an interrupt, with interrupts disabled, after any reschedule.
+/// Nothing of the kernel is on the thread's stack below it then, so it may
+/// end the thread (never return). Only the first registration counts.
+pub fn set_user_return_hook(hook: fn()) {
+    let _ = USER_RETURN.set(hook);
+}
+
+/// Called by `irq::dispatch` and `syscall::dispatch` before going back to
+/// ring 3.
+pub(crate) fn user_return() {
+    if let Some(hook) = USER_RETURN.get() {
+        hook();
+    }
+}
+
 /// Lowest address the user stack pointer and entry point may have
 /// (inclusive) and the end of the user half (exclusive).
 const USER_RANGE: core::ops::Range<u64> = 0..crate::mm::USER_END;

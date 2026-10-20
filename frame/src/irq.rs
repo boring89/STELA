@@ -112,6 +112,9 @@ pub(crate) fn dispatch(frame: &TrapFrame) {
     if crate::cpu::current().take_need_resched() {
         crate::task::preempt();
     }
+    if frame.cs & 3 == 3 {
+        crate::task::user_return();
+    }
 }
 
 /// Masks the 8259s, enables the local APIC of the boot processor, sets up

@@ -677,6 +677,22 @@ fn user_mode_faults(_: &'static BootInfo) {
     let pid = process.id();
     drop(process);
     assert_eq!(task::wait_process(pid), Some(99));
+    // A thread killed while it sleeps inside a system call ends on its way
+    // back to user mode, with nothing left behind on its kernel stack.
+    // loop: mov eax, 4 (SleepNs); mov edi, 1000000; syscall; jmp loop
+    let process = task::process::create("sleeper").expect("no address space");
+    let page = pmm::alloc_zeroed_frame().expect("no frame");
+    process.space().map(CODE_BASE, page, flags).expect("map");
+    let code = [
+        0xB8, 0x04, 0, 0, 0, 0xBF, 0x40, 0x42, 0x0F, 0x00, 0x0F, 0x05, 0xEB, 0xF2,
+    ];
+    process.space().load(CODE_BASE, &code).expect("load");
+    task::spawn_user(&process, CODE_BASE, STACK_TOP - 8, 0).expect("spawn");
+    task::sleep_ms(20);
+    task::kill(&process, 77);
+    let pid = process.id();
+    drop(process);
+    assert_eq!(task::wait_process(pid), Some(77));
     // Everything (address spaces, page tables, kernel stacks) went back.
     assert_eq!(pmm::stats().0, free, "process memory not freed");
     assert!(interrupts_enabled());

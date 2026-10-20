@@ -14,8 +14,10 @@
 //! ```
 
 use crate::initrd;
-use crate::task::{self, ProcessId, SpawnError};
+use crate::object::Entry;
+use crate::task::{self, Process, ProcessId, SpawnError};
 use abi::layout::{STACK_GUARD, STACK_SIZE, STACK_TOP};
+use alloc::sync::Arc;
 use elfload::Elf;
 use frame::mm::paging::MapError;
 use frame::mm::pmm;
@@ -89,19 +91,38 @@ fn load(space: &AddressSpace, elf: &Elf) -> Result<(), LoadError> {
 
 /// Starts the ELF executable `image` as a new process named `name`.
 pub fn spawn(name: &str, image: &[u8]) -> Result<ProcessId, LoadError> {
+    spawn_process(name, image, None).map(|p| p.id())
+}
+
+/// Starts the ELF executable `image` as a new process named `name`, with
+/// `bootstrap` as its handle `[2]`, and returns the process.
+pub fn spawn_process(
+    name: &str,
+    image: &[u8],
+    bootstrap: Option<Entry>,
+) -> Result<Arc<Process>, LoadError> {
     let elf = Elf::parse(image).map_err(LoadError::BadElf)?;
-    let process = task::process::create(name)?;
+    let process = task::process::create_with(name, bootstrap)?;
     // On failure the process has no thread; dropping it frees what was
     // mapped and ends it with code -1.
     load(process.space(), &elf)?;
     match task::spawn_user(&process, elf.entry(), STACK_TOP - 8, 0) {
-        Ok(_) => Ok(process.id()),
+        Ok(_) => Ok(process),
         Err(SpawnError::OutOfMemory | SpawnError::Exiting) => Err(LoadError::OutOfMemory),
     }
 }
 
 /// Starts the program `name` from the initrd.
 pub fn spawn_from_initrd(name: &str) -> Result<ProcessId, LoadError> {
+    spawn_initrd_process(name, None).map(|p| p.id())
+}
+
+/// Starts the program `name` from the initrd with `bootstrap` as its
+/// handle `[2]`, and returns the process.
+pub fn spawn_initrd_process(
+    name: &str,
+    bootstrap: Option<Entry>,
+) -> Result<Arc<Process>, LoadError> {
     let image = initrd::find(frame::mm::initrd(), name).ok_or(LoadError::NotFound)?;
-    spawn(name, image)
+    spawn_process(name, image, bootstrap)
 }

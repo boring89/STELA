@@ -50,6 +50,8 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("system calls", system_calls),
         ("elf loading", elf_loading),
         ("initrd programs", initrd_programs),
+        ("ports", ports),
+        ("ipc programs", ipc_programs),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -883,4 +885,114 @@ fn initrd_programs(_: &'static BootInfo) {
     // Every process's memory came back.
     assert_eq!(task::stats().zombies, 0);
     assert_eq!(pmm::stats().0, free, "program memory not freed");
+}
+
+fn ports(_: &'static BootInfo) {
+    use abi::{Error, Message, PORT_QUEUE_DEPTH};
+    use alloc::sync::Arc;
+    use kernel::object::port::{KERNEL_OWNER, Port, QueuedMessage};
+    let msg = |tag: u32| QueuedMessage::plain(Message::with_data(tag, b"x"));
+    // The console service waits on its port all the time.
+    let blocked = task::stats().blocked;
+    let port = Port::new(KERNEL_OWNER);
+    // Fills up to the depth, then Full; first in, first out.
+    for i in 0..PORT_QUEUE_DEPTH as u32 {
+        port.send(msg(i)).expect("send");
+    }
+    assert_eq!(port.send(msg(999)).err(), Some(Error::Full));
+    for i in 0..PORT_QUEUE_DEPTH as u32 {
+        assert_eq!(port.receive(None, 0).ok().map(|m| m.msg.tag), Some(i));
+    }
+    // Empty: no wait, then a 5 ms wait.
+    let now = time::now_ns();
+    assert_eq!(port.receive(Some(now), 0).err(), Some(Error::TimedOut));
+    let start = time::now_ns();
+    assert_eq!(
+        port.receive(Some(start + 5_000_000), 0).err(),
+        Some(Error::TimedOut)
+    );
+    assert!(time::now_ns() - start >= 5_000_000, "timed out early");
+    assert_eq!(task::stats().sleeping, 0);
+    // A receiver blocked forever, and one with a long deadline, are woken
+    // by sends (the second leaves the sleep list early).
+    static GOT: AtomicU64 = AtomicU64::new(0);
+    for deadline in [None, Some(time::now_ns() + 10_000_000_000)] {
+        GOT.store(0, Ordering::SeqCst);
+        let p = Arc::clone(&port);
+        task::spawn("receiver", move || {
+            let tag = p.receive(deadline, 0).map_or(1, |m| m.msg.tag);
+            GOT.store(u64::from(tag), Ordering::SeqCst);
+        })
+        .expect("spawn");
+        task::sleep_ms(5);
+        assert_eq!(GOT.load(Ordering::SeqCst), 0);
+        let sent_at = time::now_ns();
+        port.send(msg(7)).expect("send");
+        while GOT.load(Ordering::SeqCst) == 0 {
+            task::sleep_ms(1);
+        }
+        assert_eq!(GOT.load(Ordering::SeqCst), 7);
+        assert!(time::now_ns() - sent_at < 1_000_000_000, "woken late");
+    }
+    // Closing wakes a blocked receiver with PeerClosed; queued messages
+    // are still delivered first.
+    GOT.store(0, Ordering::SeqCst);
+    let p = Arc::clone(&port);
+    task::spawn("receiver", move || {
+        let closed = p.receive(None, 0).err() == Some(Error::PeerClosed);
+        GOT.store(if closed { 2 } else { 1 }, Ordering::SeqCst);
+    })
+    .expect("spawn");
+    task::sleep_ms(5);
+    port.close();
+    while GOT.load(Ordering::SeqCst) == 0 {
+        task::sleep_ms(1);
+    }
+    assert_eq!(GOT.load(Ordering::SeqCst), 2);
+    let port = Port::new(KERNEL_OWNER);
+    port.send(msg(5)).expect("send");
+    port.close();
+    assert_eq!(port.send(msg(6)).err(), Some(Error::PeerClosed));
+    assert_eq!(port.receive(None, 0).ok().map(|m| m.msg.tag), Some(5));
+    assert_eq!(port.receive(None, 0).err(), Some(Error::PeerClosed));
+    task::sleep_ms(1);
+    assert_eq!(task::stats().blocked, blocked);
+}
+
+/// Runs ipc_server and ipc_client (bootstrap: SEND to the server's main
+/// port) and checks that both exit with 0.
+fn run_ipc_pair() {
+    use abi::Rights;
+    use alloc::sync::Arc;
+    use kernel::object::{Entry, KernelObject};
+    use kernel::program::spawn_initrd_process;
+    let server = spawn_initrd_process("ipc_server", None).expect("cannot start ipc_server");
+    let to_server = Entry {
+        object: KernelObject::Port(Arc::clone(server.main_port())),
+        rights: Rights::SEND,
+    };
+    let client =
+        spawn_initrd_process("ipc_client", Some(to_server)).expect("cannot start ipc_client");
+    let (server, client) = (server.id(), client.id());
+    assert_eq!(task::wait_process(client), Some(0), "ipc_client failed");
+    assert_eq!(task::wait_process(server), Some(0), "ipc_server failed");
+}
+
+fn ipc_programs(_: &'static BootInfo) {
+    use kernel::program::spawn_initrd_process;
+    run_ipc_pair();
+    let (free, _) = pmm::stats();
+    run_ipc_pair();
+    // A server blocked in PortReceive is killed: it ends with the kill's
+    // exit code and leaves nothing behind.
+    let server = spawn_initrd_process("ipc_server", None).expect("cannot start ipc_server");
+    task::sleep_ms(20);
+    assert_eq!(task::process::exit_status(server.id()), None);
+    task::kill(&server, 99);
+    let pid = server.id();
+    drop(server);
+    assert_eq!(task::wait_process(pid), Some(99));
+    task::sleep_ms(1);
+    assert_eq!(task::stats().zombies, 0);
+    assert_eq!(pmm::stats().0, free, "ipc memory not freed");
 }

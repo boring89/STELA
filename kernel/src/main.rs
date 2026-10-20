@@ -30,6 +30,7 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     frame::init(info);
     kernel::task::init();
     kernel::syscall::init();
+    kernel::console::start();
     kprintln!("STELA kernel {}", env!("CARGO_PKG_VERSION"));
     let usable: u64 = info
         .regions()

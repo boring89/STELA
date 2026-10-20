@@ -11,9 +11,12 @@
 //! process dropped without ever running a thread ends with code -1.
 
 use super::ThreadId;
+use crate::object::port::Port;
+use crate::object::{Entry, HandleTable, KernelObject};
+use abi::Rights;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use frame::mm::paging::MapError;
@@ -32,6 +35,12 @@ pub struct Process {
     live: AtomicUsize,
     /// The exit code once one is decided (first exit or kill wins).
     exit_code: SpinLock<Option<i64>>,
+    /// The process's handles.
+    handles: SpinLock<HandleTable>,
+    /// Its main port (also handle `[0]`).
+    main_port: Arc<Port>,
+    /// Ports it created: closed when it ends.
+    ports: SpinLock<Vec<Weak<Port>>>,
 }
 
 impl Process {
@@ -48,6 +57,37 @@ impl Process {
     /// Its address space.
     pub fn space(&self) -> &AddressSpace {
         &self.space
+    }
+
+    /// Its handle table.
+    pub fn handles(&self) -> &SpinLock<HandleTable> {
+        &self.handles
+    }
+
+    /// Its main port.
+    pub fn main_port(&self) -> &Arc<Port> {
+        &self.main_port
+    }
+
+    /// A new port owned by this process, closed when it ends.
+    pub fn new_port(&self) -> Arc<Port> {
+        let port = Port::new(self.id);
+        let mut ports = self.ports.lock();
+        ports.retain(|p| p.strong_count() > 0);
+        ports.push(Arc::downgrade(&port));
+        port
+    }
+
+    /// Releases what the process holds when it ends: its handles (dropped
+    /// after the lock is released) and its ports (closed).
+    fn release(&self) {
+        let entries = self.handles.lock().drain();
+        drop(entries);
+        self.main_port.close();
+        let ports = core::mem::take(&mut *self.ports.lock());
+        for port in ports.iter().filter_map(Weak::upgrade) {
+            port.close();
+        }
     }
 
     /// Records `code` unless an exit code was already decided. Returns
@@ -74,6 +114,7 @@ impl Process {
     /// the process.
     pub(crate) fn thread_reaped(&self) {
         if self.live.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.release();
             let code = self.exit_code.lock().unwrap_or(0);
             finish(self.id, code);
         }
@@ -86,6 +127,7 @@ impl Drop for Process {
         // ends here, so that waiting for it does not hang.
         let never_ran = matches!(TABLE.lock().get(&self.id), Some(Status::Running { .. }));
         if never_ran {
+            self.release();
             finish(self.id, -1);
         }
     }
@@ -100,10 +142,27 @@ enum Status {
 static TABLE: SpinLock<BTreeMap<ProcessId, Status>> = SpinLock::new(BTreeMap::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Creates a process with an empty address space and no threads.
+/// Creates a process with an empty address space, no threads and the
+/// bootstrap handles: `[0]` its main port, `[1]` the console service (if
+/// it runs), `[2]` nothing.
 pub fn create(name: &str) -> Result<Arc<Process>, MapError> {
+    create_with(name, None)
+}
+
+/// Like [`create`], with `bootstrap` as handle `[2]`.
+pub fn create_with(name: &str, bootstrap: Option<Entry>) -> Result<Arc<Process>, MapError> {
     let space = AddressSpace::new()?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let main_port = Port::new(id);
+    let main = Entry {
+        object: KernelObject::Port(Arc::clone(&main_port)),
+        rights: Rights::RECEIVE | Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+    };
+    let console = crate::console::service_port().map(|port| Entry {
+        object: KernelObject::Port(port),
+        rights: Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+    });
+    let handles = HandleTable::with_initial([Some(main), console, bootstrap]);
     TABLE.lock().insert(
         id,
         Status::Running {
@@ -116,6 +175,9 @@ pub fn create(name: &str) -> Result<Arc<Process>, MapError> {
         space,
         live: AtomicUsize::new(0),
         exit_code: SpinLock::new(None),
+        handles: SpinLock::new(handles),
+        main_port,
+        ports: SpinLock::new(Vec::new()),
     }))
 }
 

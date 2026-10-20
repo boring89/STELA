@@ -11,6 +11,8 @@ members = [
     "user/hello",
     "user/spin",
     "user/fault",
+    "user/ipc_server",
+    "user/ipc_client",
 ]
 
 [workspace.package]

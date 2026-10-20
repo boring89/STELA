@@ -1,9 +1,9 @@
 // Copyright (C) 2026 YuanChi Hsieh
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Keyboard events: STELA's own key names ([`KeyCode`], US layout), the
-//! PS/2 scan code set 1 decoder and the US character mapping. Pure logic,
-//! tested on the host.
+//! The PS/2 scan code set 1 decoder: bytes from the keyboard become
+//! [`KeyEvent`]s (the key names and the character mapping are in
+//! `abi::key`, shared with user programs). Pure logic, tested on the host.
 //!
 //! Scan code set 1 (OSDev Wiki "PS/2 Keyboard", "Scan Code Set 1"): each key
 //! sends a one-byte make code when pressed and the same code with bit 7 set
@@ -12,129 +12,7 @@
 //! i8042 translates the keyboard's native set 2 into set 1 by default, so
 //! this is what arrives at port 0x60.
 
-/// A key, named after its position on a US keyboard (not the character it
-/// produces).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(missing_docs)]
-pub enum KeyCode {
-    Escape,
-    F1,
-    F2,
-    F3,
-    F4,
-    F5,
-    F6,
-    F7,
-    F8,
-    F9,
-    F10,
-    F11,
-    F12,
-    Backquote,
-    Digit1,
-    Digit2,
-    Digit3,
-    Digit4,
-    Digit5,
-    Digit6,
-    Digit7,
-    Digit8,
-    Digit9,
-    Digit0,
-    Minus,
-    Equal,
-    Backspace,
-    Tab,
-    Q,
-    W,
-    E,
-    R,
-    T,
-    Y,
-    U,
-    I,
-    O,
-    P,
-    LeftBracket,
-    RightBracket,
-    Backslash,
-    CapsLock,
-    A,
-    S,
-    D,
-    F,
-    G,
-    H,
-    J,
-    K,
-    L,
-    Semicolon,
-    Quote,
-    Enter,
-    LeftShift,
-    Z,
-    X,
-    C,
-    V,
-    B,
-    N,
-    M,
-    Comma,
-    Period,
-    Slash,
-    RightShift,
-    LeftCtrl,
-    LeftMeta,
-    LeftAlt,
-    Space,
-    RightAlt,
-    RightMeta,
-    Menu,
-    RightCtrl,
-    PrintScreen,
-    ScrollLock,
-    Pause,
-    Insert,
-    Home,
-    PageUp,
-    Delete,
-    End,
-    PageDown,
-    Up,
-    Left,
-    Down,
-    Right,
-    NumLock,
-    /// A key STELA does not name yet (the numeric keypad, multimedia
-    /// keys): the make code, with 0x100 added for `0xE0`-prefixed keys.
-    Unknown(u16),
-}
-
-/// Which modifier keys are down (and whether Caps Lock is on).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Modifiers {
-    /// Either Shift.
-    pub shift: bool,
-    /// Either Ctrl.
-    pub ctrl: bool,
-    /// Either Alt.
-    pub alt: bool,
-    /// Either Meta (the Windows key).
-    pub meta: bool,
-    /// Caps Lock is toggled on.
-    pub caps_lock: bool,
-}
-
-/// A key was pressed or released.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KeyEvent {
-    /// The key.
-    pub code: KeyCode,
-    /// Pressed (true) or released (false).
-    pub pressed: bool,
-    /// Modifier state after this event.
-    pub modifiers: Modifiers,
-}
+use abi::key::{KeyCode, KeyEvent, Modifiers};
 
 /// Keys without the `0xE0` prefix, indexed by make code (0x00-0x58).
 const PLAIN: [Option<KeyCode>; 0x59] = {
@@ -360,105 +238,10 @@ impl Decoder {
     }
 }
 
-/// The letter of a letter key, lower case.
-const fn letter(code: KeyCode) -> Option<u8> {
-    use KeyCode::*;
-    Some(match code {
-        A => b'a',
-        B => b'b',
-        C => b'c',
-        D => b'd',
-        E => b'e',
-        F => b'f',
-        G => b'g',
-        H => b'h',
-        I => b'i',
-        J => b'j',
-        K => b'k',
-        L => b'l',
-        M => b'm',
-        N => b'n',
-        O => b'o',
-        P => b'p',
-        Q => b'q',
-        R => b'r',
-        S => b's',
-        T => b't',
-        U => b'u',
-        V => b'v',
-        W => b'w',
-        X => b'x',
-        Y => b'y',
-        Z => b'z',
-        _ => return None,
-    })
-}
-
-/// The unshifted and shifted characters of the other printing keys (US).
-const fn symbol(code: KeyCode) -> Option<(char, char)> {
-    use KeyCode::*;
-    Some(match code {
-        Backquote => ('`', '~'),
-        Digit1 => ('1', '!'),
-        Digit2 => ('2', '@'),
-        Digit3 => ('3', '#'),
-        Digit4 => ('4', '$'),
-        Digit5 => ('5', '%'),
-        Digit6 => ('6', '^'),
-        Digit7 => ('7', '&'),
-        Digit8 => ('8', '*'),
-        Digit9 => ('9', '('),
-        Digit0 => ('0', ')'),
-        Minus => ('-', '_'),
-        Equal => ('=', '+'),
-        LeftBracket => ('[', '{'),
-        RightBracket => (']', '}'),
-        Backslash => ('\\', '|'),
-        Semicolon => (';', ':'),
-        Quote => ('\'', '"'),
-        Comma => (',', '<'),
-        Period => ('.', '>'),
-        Slash => ('/', '?'),
-        Space => (' ', ' '),
-        _ => return None,
-    })
-}
-
-/// The character a key press types on a US layout: letters follow Shift
-/// XOR Caps Lock; Ctrl + letter gives the control character (Ctrl-A =
-/// 0x01 ... Ctrl-Z = 0x1A); Enter, Tab, Backspace and Escape give `\n`,
-/// `\t`, 0x08 and 0x1B. Releases and other keys give `None`.
-pub fn key_to_char(event: &KeyEvent) -> Option<char> {
-    if !event.pressed {
-        return None;
-    }
-    let m = event.modifiers;
-    if let Some(lower) = letter(event.code) {
-        if m.ctrl {
-            return Some(char::from(lower & 0x1F));
-        }
-        let upper = m.shift != m.caps_lock;
-        return Some(char::from(if upper {
-            lower.to_ascii_uppercase()
-        } else {
-            lower
-        }));
-    }
-    if let Some((plain, shifted)) = symbol(event.code) {
-        return Some(if m.shift { shifted } else { plain });
-    }
-    match event.code {
-        KeyCode::Enter => Some('\n'),
-        KeyCode::Tab => Some('\t'),
-        KeyCode::Backspace => Some('\u{8}'),
-        KeyCode::Escape => Some('\u{1b}'),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use abi::key::key_to_char;
 
     fn feed_all(decoder: &mut Decoder, bytes: &[u8]) -> Vec<KeyEvent> {
         bytes.iter().filter_map(|&b| decoder.feed(b)).collect()

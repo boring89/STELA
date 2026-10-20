@@ -15,6 +15,7 @@ mod sched;
 
 #[cfg(target_os = "none")]
 pub use process::{Process, ProcessId, wait_process};
+pub use queue::WaitQueue;
 #[cfg(target_os = "none")]
 pub use sched::*;
 

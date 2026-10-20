@@ -7,6 +7,7 @@
 //!   the process with the code it returns.
 //! - Safe wrappers for every system call ([`exit`], [`thread_exit`],
 //!   [`spawn`], [`yield_now`], [`sleep_ns`], [`now_ns`], [`debug_write`]).
+//! - Handles, ports and messages ([`ipc`]).
 //! - [`debug_print!`] / [`debug_println!`]: formatted output to the kernel
 //!   console (temporary, like `DebugWrite`).
 //! - The panic handler: prints the message and exits with code 101.
@@ -16,8 +17,9 @@
 
 #![no_std]
 
-pub use abi::Error;
+pub use abi::{Error, Handle, MESSAGE_DATA, Message, PORT_QUEUE_DEPTH, Rights, bootstrap, tag};
 
+pub mod ipc;
 pub mod sys;
 
 use core::cell::UnsafeCell;

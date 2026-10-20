@@ -9,7 +9,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault
+USER_PROGRAMS := hello spin fault ipc_server ipc_client
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 
@@ -96,7 +96,7 @@ test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 		--expect "STELA kernel" --expect "input: OK" \
 		--expect "user: hello from built-in user code" --expect "hello from user mode" \
 		--expect "hello from a second thread" --expect "fault: reading address 0" \
-		--expect "spin: " --expect "selftest: OK" \
+		--expect "spin: " --expect "ipc_client: OK" --expect "selftest: OK" \
 		-- $(QEMU) $(QEMU_TEST_FLAGS)
 
 test-qemu-min: esp-test $(BUILD)/OVMF_VARS.fd

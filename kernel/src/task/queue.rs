@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The scheduler's containers, as pure logic: the run queue (first in,
-//! first out) and the sleep list (ordered by wake-up time).
+//! first out), the sleep list (ordered by wake-up time) and the wait
+//! queue (threads blocked on one object, such as a port).
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
@@ -137,6 +138,61 @@ impl<T> Default for SleepList<T> {
     }
 }
 
+/// The ids of the threads waiting for one object, first come first
+/// served. A thread is in it at most once.
+#[derive(Debug, Default)]
+pub struct WaitQueue {
+    ids: VecDeque<u64>,
+}
+
+impl WaitQueue {
+    /// An empty queue.
+    pub const fn new() -> WaitQueue {
+        WaitQueue {
+            ids: VecDeque::new(),
+        }
+    }
+
+    /// Adds thread `id` at the back, unless it is already waiting.
+    pub fn add(&mut self, id: u64) {
+        if !self.ids.contains(&id) {
+            self.ids.push_back(id);
+        }
+    }
+
+    /// Takes the thread that has waited longest.
+    pub fn pop(&mut self) -> Option<u64> {
+        self.ids.pop_front()
+    }
+
+    /// Removes thread `id` (it stopped waiting: woken by someone else, or
+    /// timed out). Returns whether it was there.
+    pub fn remove(&mut self, id: u64) -> bool {
+        match self.ids.iter().position(|&i| i == id) {
+            Some(at) => {
+                self.ids.remove(at);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Takes every waiting thread, longest waiting first.
+    pub fn drain(&mut self) -> Vec<u64> {
+        self.ids.drain(..).collect()
+    }
+
+    /// Number of waiting threads.
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// Whether nobody waits.
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +279,22 @@ mod tests {
         assert_eq!(s.take_where(|i| *i >= 3), [3, 4]);
         assert_eq!(s.next_wake(), Some(0));
         assert_eq!(s.len(), 3);
+    }
+
+    #[test]
+    fn wait_queue() {
+        let mut w = WaitQueue::new();
+        assert!(w.is_empty());
+        w.add(3);
+        w.add(1);
+        w.add(3);
+        w.add(2);
+        assert_eq!(w.len(), 3);
+        assert!(w.remove(1));
+        assert!(!w.remove(1));
+        assert_eq!(w.pop(), Some(3));
+        w.add(4);
+        assert_eq!(w.drain(), [2, 4]);
+        assert_eq!(w.pop(), None);
     }
 }

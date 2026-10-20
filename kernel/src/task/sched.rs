@@ -60,6 +60,10 @@ pub struct Thread {
     slice: u32,
     /// A wake-up that arrived before the thread blocked.
     wake_pending: bool,
+    /// Sleeping in [`block_until`]: [`wake`] may end the sleep early.
+    wakeable: bool,
+    /// The [`block_until`] sleep ran out without a [`wake`].
+    timed_out: bool,
     /// Its process was killed: the thread ends the next time it would
     /// return to user mode (not earlier, so that nothing it holds on its
     /// kernel stack is lost).
@@ -129,6 +133,8 @@ pub fn init() {
         priority: 0,
         slice: TIME_SLICE,
         wake_pending: false,
+        wakeable: false,
+        timed_out: false,
         killed: false,
         context: frame::task::current(),
         start: None,
@@ -144,6 +150,8 @@ pub fn init() {
             priority: u8::MAX,
             slice: TIME_SLICE,
             wake_pending: false,
+            wakeable: false,
+            timed_out: false,
             killed: false,
             context,
             start: None,
@@ -179,6 +187,9 @@ fn tick() {
     let now = frame::time::now_ns();
     let resched = with(|s| {
         while let Some(mut t) = s.sleeping.pop_expired(now) {
+            if t.wakeable {
+                t.timed_out = true;
+            }
             t.state = State::Ready;
             s.ready.push(t);
         }
@@ -276,6 +287,8 @@ pub fn spawn(
         priority: 0,
         slice: TIME_SLICE,
         wake_pending: false,
+        wakeable: false,
+        timed_out: false,
         killed: false,
         context,
         start: Some(Box::new(f)),
@@ -313,6 +326,8 @@ pub fn spawn_user(
         priority: 0,
         slice: TIME_SLICE,
         wake_pending: false,
+        wakeable: false,
+        timed_out: false,
         killed: false,
         context,
         start: None,
@@ -471,22 +486,69 @@ pub fn block() {
     }
 }
 
-/// Makes thread `id` ready if it is blocked; if it is running or ready,
-/// its next [`block`] returns at once. Unknown ids are ignored.
+/// Like [`block`], but gives up at `deadline` (`now_ns`; `None` waits
+/// forever). Returns `true` when woken by [`wake`] (or a kill), `false`
+/// when the time ran out. The thread sits in the sleep list meanwhile, and
+/// [`wake`] takes it out early.
+pub fn block_until(deadline: Option<u64>) -> bool {
+    let Some(deadline) = deadline else {
+        block();
+        return true;
+    };
+    let _irq = IrqGuard::new();
+    let pending = with(|s| {
+        let t = current_mut(s);
+        if t.wake_pending {
+            t.wake_pending = false;
+            true
+        } else {
+            t.state = State::Sleeping(deadline);
+            t.wakeable = true;
+            t.timed_out = false;
+            false
+        }
+    });
+    if pending {
+        return true;
+    }
+    schedule();
+    with(|s| {
+        let t = current_mut(s);
+        t.wakeable = false;
+        !core::mem::take(&mut t.timed_out)
+    })
+}
+
+/// Whether the running thread's process was killed: a thread blocked in a
+/// system call checks this after waking, and gives up so that it can end
+/// on its way back to user mode.
+pub fn current_killed() -> bool {
+    with(|s| current_mut(s).killed)
+}
+
+/// Makes thread `id` ready if it is blocked (or in [`block_until`]); if it
+/// is running or ready, its next [`block`] returns at once. Unknown ids
+/// are ignored.
 pub fn wake(id: ThreadId) {
     with(|s| {
         if let Some(t) = s.current.as_mut().filter(|t| t.id == id) {
             // Blocked but not switched away yet (between `block` deciding
             // and `schedule` running, with interrupts off): just run on.
-            if t.state == State::Blocked {
-                t.state = State::Running;
-            } else {
-                t.wake_pending = true;
+            match t.state {
+                State::Blocked => t.state = State::Running,
+                State::Sleeping(_) if t.wakeable => t.state = State::Running,
+                _ => t.wake_pending = true,
             }
             return;
         }
         if let Some(i) = s.blocked.iter().position(|t| t.id == id) {
             let mut t = s.blocked.swap_remove(i);
+            t.state = State::Ready;
+            s.ready.push(t);
+            return;
+        }
+        let mut woken = s.sleeping.take_where(|t| t.id == id && t.wakeable);
+        if let Some(mut t) = woken.pop() {
             t.state = State::Ready;
             s.ready.push(t);
             return;

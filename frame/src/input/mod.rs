@@ -20,7 +20,7 @@
 pub mod keyboard;
 pub mod queue;
 
-pub use keyboard::{KeyCode, KeyEvent, Modifiers, key_to_char};
+pub use abi::key::{KeyCode, KeyEvent, Modifiers, key_to_char};
 
 use crate::sync::SpinLock;
 use queue::EventQueue;

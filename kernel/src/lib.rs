@@ -11,7 +11,10 @@
 
 extern crate alloc;
 
+#[cfg(target_os = "none")]
+pub mod console;
 pub mod initrd;
+pub mod object;
 #[cfg(target_os = "none")]
 pub mod program;
 #[cfg(target_os = "none")]

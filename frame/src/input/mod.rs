@@ -10,10 +10,11 @@
 //!                        EventQueue (256, drops the oldest when full)
 //!                                                  │ pop
 //!                                                  ▼
-//!                                           the kernel's main loop
+//!                          the kernel's input router (woken by the
+//!                          notify hook after every push)
 //! ```
 //!
-//! The interrupt handler pushes and the main loop pops; both go through a
+//! The interrupt handler pushes and the router pops; both go through a
 //! [`SpinLock`], which disables interrupts while held, so the two never wait
 //! for each other on one processor.
 
@@ -22,7 +23,7 @@ pub mod queue;
 
 pub use abi::key::{KeyCode, KeyEvent, Modifiers, key_to_char};
 
-use crate::sync::SpinLock;
+use crate::sync::{Once, SpinLock};
 use queue::EventQueue;
 
 /// Something the user did.
@@ -37,9 +38,21 @@ pub const QUEUE_SIZE: usize = 256;
 
 static QUEUE: SpinLock<EventQueue<InputEvent, QUEUE_SIZE>> = SpinLock::new(EventQueue::new());
 
+static NOTIFY: Once<fn()> = Once::new();
+
+/// Registers a function called after every [`push`] (from the interrupt
+/// handler, so it must be short: the kernel wakes a thread). Only the
+/// first registration counts.
+pub fn set_notify(hook: fn()) {
+    let _ = NOTIFY.set(hook);
+}
+
 /// Adds an event (from a device driver or interrupt handler).
 pub fn push(event: InputEvent) {
     QUEUE.lock().push(event);
+    if let Some(hook) = NOTIFY.get() {
+        hook();
+    }
 }
 
 /// Takes the oldest event, if any.

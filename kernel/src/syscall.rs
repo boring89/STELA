@@ -49,7 +49,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::MemoryCreate) => memory_create(a0),
         Some(Syscall::MemoryMap) => memory_map(a0, a1),
         Some(Syscall::MemoryUnmap) => memory_unmap(a0),
-        Some(Syscall::InputAttach) => Err(Error::NotSupported),
+        Some(Syscall::InputAttach) => input_attach(a0),
         None => Err(Error::InvalidSyscall),
     };
     let (status, value) = abi::encode(result);
@@ -259,5 +259,13 @@ fn memory_unmap(addr: u64) -> Result<u64, Error> {
         .map_err(|_| Error::InvalidArgument)?;
     process.maps().lock().free(addr);
     drop(memory);
+    Ok(0)
+}
+
+/// `InputAttach(port)`.
+fn input_attach(handle: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let port = port_of(&process, handle, Rights::SEND)?;
+    crate::input::attach(port);
     Ok(0)
 }

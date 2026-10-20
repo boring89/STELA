@@ -70,56 +70,26 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     }
 }
 
-/// The first kernel thread: runs `hello` from the initrd, waits for it,
-/// then becomes the echo loop.
+/// The first kernel thread: runs `hello` from the initrd and waits for
+/// it, then starts the input router and runs `echo` (a placeholder until
+/// there is a shell, P6).
 #[cfg(not(feature = "selftest"))]
 fn init() {
-    match kernel::program::spawn_from_initrd("hello") {
+    run("hello");
+    kernel::input::start();
+    run("echo");
+}
+
+/// Runs program `name` from the initrd and waits for it to end.
+#[cfg(not(feature = "selftest"))]
+fn run(name: &str) {
+    match kernel::program::spawn_from_initrd(name) {
         Ok(pid) => {
             let code = kernel::task::wait_process(pid).unwrap_or(-1);
-            kprintln!("kernel: hello (process {pid}) exited with code {code}");
+            kprintln!("kernel: {name} (process {pid}) exited with code {code}");
         }
-        Err(e) => kprintln!("kernel: cannot start hello from the initrd: {e:?}"),
+        Err(e) => kprintln!("kernel: cannot start {name} from the initrd: {e:?}"),
     }
-    echo_loop();
-}
-
-/// Echoes what is typed and prints the uptime on Enter, sleeping between
-/// events. A kernel thread; a placeholder until there is a shell (P6).
-#[cfg(not(feature = "selftest"))]
-fn echo_loop() {
-    use frame::input::{self, InputEvent};
-    kprintln!("kernel: ready; type to echo, Enter prints the uptime");
-    loop {
-        let Some(InputEvent::Key(event)) = input::pop() else {
-            // Poll the input queue every few milliseconds.
-            kernel::task::sleep_ms(4);
-            continue;
-        };
-        match input::key_to_char(&event) {
-            Some('\n') => {
-                kprintln!();
-                print_uptime();
-            }
-            // Control characters in caret notation (Backspace = ^H).
-            Some(c) if c.is_ascii_control() && c != '\t' => {
-                frame::kprint!("^{}", char::from(c as u8 ^ 0x40));
-            }
-            Some(c) => frame::kprint!("{c}"),
-            None => {}
-        }
-    }
-}
-
-#[cfg(not(feature = "selftest"))]
-fn print_uptime() {
-    let ns = frame::time::now_ns();
-    kprintln!(
-        "uptime: {}.{:03} s, {} ticks",
-        ns / 1_000_000_000,
-        ns / 1_000_000 % 1_000,
-        frame::time::ticks()
-    );
 }
 
 #[panic_handler]

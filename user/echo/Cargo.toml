@@ -1,0 +1,20 @@
+[package]
+name = "echo"
+description = "STELA program: echoes typed keys, Enter prints the uptime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "echo"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

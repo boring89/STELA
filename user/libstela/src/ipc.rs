@@ -127,3 +127,9 @@ impl Drop for Mapping {
         let _ = memory_unmap(self.addr);
     }
 }
+
+/// Keyboard events go to `port` (a handle with `SEND`) as `INPUT_KEY`
+/// messages from now on, replacing whoever was attached before.
+pub fn input_attach(port: Handle) -> Result<(), Error> {
+    syscall1(Syscall::InputAttach, port.raw()).map(|_| ())
+}

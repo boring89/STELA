@@ -9,7 +9,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 
@@ -103,13 +103,13 @@ test-qemu-min: esp-test $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --expect "NX off" \
 		--expect "input: OK" --expect "selftest: OK" -- $(QEMU) $(QEMU_MIN_FLAGS)
 
-# Boot the normal kernel (which runs hello from the initrd first), type a
-# line into its echo loop, save the screen once the uptime is printed, and
-# check that the framebuffer console drew text.
+# Boot the normal kernel (which runs hello from the initrd first, then
+# echo), type a line into echo, save the screen once the uptime is printed,
+# and check that the framebuffer console drew text.
 test-fb: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --screendump $(BUILD)/screen.ppm \
-		--send-keys "kernel: ready" "h i ret" --expect "STELA kernel" \
-		--expect "hello from user mode" --expect "exited with code 0" --expect "kernel: ready" \
+		--send-keys "echo: ready" "h i ret" --expect "STELA kernel" \
+		--expect "hello from user mode" --expect "exited with code 0" --expect "echo: ready" \
 		--expect "uptime:" -- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm
 

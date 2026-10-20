@@ -70,6 +70,8 @@ struct HostOps {
     ctx: *mut c_void,
     disk_blocks: u32,
     disk_read_only: bool,
+    audio: extern "C" fn(ctx: *mut c_void, samples: *const u8, count: u32, rate: u32),
+    audio_ctx: *mut c_void,
 }
 
 unsafe extern "C" {
@@ -90,6 +92,7 @@ unsafe extern "C" {
     fn classic_key(adb_code: u8, down: bool);
     fn classic_xpram(out: *mut u8) -> bool;
     fn classic_milestones() -> u32;
+    fn classic_sysbeep() -> c_int;
     fn m68k_vm_init(ram: *mut u8, size: u32, cpu: u32) -> c_int;
     fn m68k_vm_load(addr: u32, data: *const u8, len: u32) -> c_int;
     fn m68k_vm_reset(entry: u32, sp: u32) -> c_int;
@@ -323,6 +326,36 @@ extern "C" fn disk_write_trampoline(
     if disk.write(offset, data) { 0 } else { -1 }
 }
 
+/// The sound chip's output collected between frames (unsigned 8-bit
+/// mono samples and their rate).
+#[derive(Default)]
+struct AudioSink {
+    samples: alloc::vec::Vec<u8>,
+    rate: u32,
+}
+
+/// Most samples kept between two takes (about a second); older ones are
+/// dropped.
+const AUDIO_KEEP: usize = 32 * 1024;
+
+extern "C" fn audio_trampoline(ctx: *mut c_void, samples: *const u8, count: u32, rate: u32) {
+    // SAFETY: `ctx` is the boxed AudioSink the running Mac owns (set in
+    // `Mac::start`, called back only from inside `Mac::frame`); `samples`
+    // is valid for `count` bytes (the model's own buffer).
+    let (sink, data) = unsafe {
+        (
+            &mut *(ctx as *mut AudioSink),
+            core::slice::from_raw_parts(samples, count as usize),
+        )
+    };
+    sink.rate = rate;
+    if sink.samples.len() + data.len() > AUDIO_KEEP {
+        let drop = (sink.samples.len() + data.len() - AUDIO_KEEP).min(sink.samples.len());
+        sink.samples.drain(..drop);
+    }
+    sink.samples.extend_from_slice(data);
+}
+
 /// The Macintosh IIci of `c/mac` with the built-in video (640x480).
 pub struct Mac {
     // The C side holds pointers into all of these until the Mac is
@@ -331,6 +364,7 @@ pub struct Mac {
     _ram: Box<[u8]>,
     _vram: Box<[u8]>,
     _disk: Box<Box<dyn MacDisk>>,
+    audio: Box<AudioSink>,
 }
 
 impl Mac {
@@ -351,7 +385,10 @@ impl Mac {
         let mut ram = vec![0u8; ram_size as usize].into_boxed_slice();
         let mut vram = vec![0u8; VRAM_SIZE].into_boxed_slice();
         let mut disk = Box::new(disk);
+        let mut audio = Box::new(AudioSink::default());
         let ops = HostOps {
+            audio: audio_trampoline,
+            audio_ctx: &mut *audio as *mut AudioSink as *mut c_void,
             disk_read: disk_read_trampoline,
             disk_write: disk_write_trampoline,
             disk_blocks: disk.blocks(),
@@ -385,6 +422,7 @@ impl Mac {
                 _ram: ram,
                 _vram: vram,
                 _disk: disk,
+                audio,
             }),
             e => {
                 VM_IN_USE.store(false, Ordering::Release);
@@ -449,6 +487,19 @@ impl Mac {
         // SAFETY: `out` is 256 writable bytes.
         let dirty = unsafe { classic_xpram(out.as_mut_ptr()) };
         (out, dirty)
+    }
+
+    /// The sound the Mac made since the last call: unsigned 8-bit mono
+    /// samples and their rate (0 if none yet).
+    pub fn take_audio(&mut self) -> (alloc::vec::Vec<u8>, u32) {
+        (core::mem::take(&mut self.audio.samples), self.audio.rate)
+    }
+
+    /// Makes the system beep (SysBeep), as an application would; `false`
+    /// if a call is under way. For tests, on an idle desktop.
+    pub fn sysbeep(&mut self) -> bool {
+        // SAFETY: plain call; the model queues the call for its next run.
+        unsafe { classic_sysbeep() == 0 }
     }
 
     /// Whether the Finder runs (low memory CurApName).

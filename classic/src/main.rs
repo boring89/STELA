@@ -13,7 +13,11 @@
 //! The main loop runs the Mac one 60 Hz frame at a time (416,000 cycles
 //! of the 25 MHz 68030), handles the window's events in between, and every
 //! second frame converts the picture and copies the rows that changed into
-//! the window. Ahead of real time it sleeps; behind, it yields.
+//! the window; the sound chip's output goes to the sound output when there
+//! is one. Ahead of real time it sleeps; behind, it yields.
+//!
+//! `Classic.app --test-beep` (make test-classic): once the Finder's desktop
+//! is shown, the Mac beeps, and two seconds later Classic.app ends.
 
 #![no_std]
 #![no_main]
@@ -28,6 +32,8 @@ use alloc::vec::Vec;
 use classic::ffi::{Mac, MacDisk, Power, StartError};
 use classic::keys::adb_code;
 use classic::screen::{Screen, mac_seconds};
+use classic::sound::Resampler;
+use libstela::audio::Audio;
 use libstela::fs::{self, open};
 use libstela::ipc::handle_close;
 use libstela::{Error, Handle, println, process};
@@ -249,6 +255,20 @@ fn main() -> i64 {
     let mut menus = MenuBar::new();
     menus.add("File", &["Quit"]);
     let _ = conn.set_menubar(&menus.to_text());
+    let test_beep = process::args().iter().any(|a| a == "--test-beep");
+    // The sound output is optional: without it (no card, or another
+    // program has it) the Mac's sound is dropped.
+    let audio = match Audio::open() {
+        Ok(a) => {
+            println!("classic: sound on");
+            Some(a)
+        }
+        Err(e) => {
+            println!("classic: no sound ({})", e.name());
+            None
+        }
+    };
+    let mut resampler = Resampler::default();
     let mut screen = Screen::new(w as usize, h as usize);
     let mut picture = vec![0u32; (w * h) as usize];
     let start_ns = libstela::now_ns();
@@ -285,6 +305,13 @@ fn main() -> i64 {
         }
         let power = mac.frame();
         frame += 1;
+        let (samples, rate) = mac.take_audio();
+        if let Some(out) = &audio {
+            let frames = resampler.convert(&samples, rate);
+            // What does not fit is dropped (the Mac runs slower than real
+            // time under emulation; better a gap than a growing delay).
+            out.write(&frames);
+        }
         if frame.is_multiple_of(2) && mac.render(&mut picture) {
             show(&conn, &mut window, &mut screen, &picture);
         }
@@ -292,6 +319,19 @@ fn main() -> i64 {
             // Three seconds later the desktop has been drawn and shown
             // (make test-classic saves the screen now).
             println!("classic: finder desktop shown");
+            if test_beep {
+                println!(
+                    "classic: beep ({})",
+                    if mac.sysbeep() { "sent" } else { "busy" }
+                );
+            }
+        }
+        if test_beep && finder && finder_frame + 300 == frame {
+            println!("classic: test done");
+            let (xpram, _) = mac.xpram();
+            save_pram(&xpram);
+            let _ = conn.close(window);
+            return 0;
         }
         if !finder && frame.is_multiple_of(30) && mac.finder_running() {
             finder = true;

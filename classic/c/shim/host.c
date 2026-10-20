@@ -40,7 +40,8 @@ int classic_start(uint8_t *rom, uint32_t rom_size, uint8_t *ram, uint32_t ram_si
     machine.disk.ctx = ops->ctx;
     machine.disk.blocks = ops->disk_blocks;
     machine.disk.read_only = ops->disk_read_only;
-    machine.audio = NULL;
+    machine.audio = ops->audio;
+    machine.audio_ctx = ops->audio_ctx;
     machine.rtc_seconds = rtc_seconds;
     k_memcpy(machine.xpram, xpram, sizeof machine.xpram);
     machine.xpram_dirty = false;
@@ -102,6 +103,12 @@ uint32_t classic_milestones(void)
         m |= 1;
     }
     return m;
+}
+
+
+int classic_sysbeep(void)
+{
+    return mac_sysbeep(&machine);
 }
 
 

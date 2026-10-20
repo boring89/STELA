@@ -6,7 +6,8 @@
 Usage: check_wav.py FILE MIN_SECONDS HZ
 
 Passes if the file holds at least MIN_SECONDS of audio that is not
-silent, and the loud part's zero crossings give about HZ (within 10%).
+silent, and the loud part's zero crossings give about HZ (within 10%;
+HZ 0 skips the frequency check).
 Only the RIFF/WAVE PCM 16-bit format QEMU writes is read.
 """
 import struct
@@ -43,6 +44,9 @@ def main():
           f"{len(loud) / rate:.2f} s loud")
     if not loud or len(loud) < min_seconds * rate * 0.9:
         sys.exit("check_wav: FAIL (silent or too short)")
+    if hz == 0:
+        print("check_wav: OK")
+        return
     part = left[loud[0]:loud[-1] + 1]
     crossings = sum(1 for a, b in zip(part, part[1:]) if (a < 0) != (b < 0))
     measured = crossings / 2 / (len(part) / rate)

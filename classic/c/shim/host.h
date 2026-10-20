@@ -26,6 +26,10 @@ typedef struct
     void *ctx;
     uint32_t disk_blocks;       /* 512-byte blocks; 0 = no disk */
     bool disk_read_only;
+    /* The sound chip's output: unsigned 8-bit mono samples at 'rate' Hz,
+     * a few hundred at a time; NULL = discard. */
+    void (*audio)(void *ctx, const uint8_t *samples, uint32_t count, uint32_t rate);
+    void *audio_ctx;
 } classic_host_ops;
 
 /* Results of classic_start. */
@@ -68,6 +72,10 @@ bool classic_xpram(uint8_t *out);
 /* Milestones: 1 once the Finder runs (low memory CurApName, $910, is
  * "Finder"). */
 uint32_t classic_milestones(void);
+
+/* Makes the running system beep (SysBeep), as an application would; for
+ * tests, on an idle desktop. Returns 0, or -1 if a call is under way. */
+int classic_sysbeep(void);
 
 /* Instructions executed so far. */
 uint32_t classic_instructions(void);

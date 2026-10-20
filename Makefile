@@ -261,10 +261,13 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 # make disk-image with the two files in Data:/Classic/; the shell starts
 # Classic.app; the Mac must reach the Finder (serial "classic: finder"),
 # then the screen is saved and the Mac's desktop pattern and menu bar
-# are checked inside the window.
+# are checked inside the window. A second boot with an HDA card runs
+# Classic.app --test-beep: the Mac's SysBeep must reach the WAV file QEMU
+# records.
 MAC_ROM     ?= $(HOME)/mac/mac_rom_archive_-_as_of_8-19-2011/368CADFE - Mac IIci.ROM
 MAC_DISK    ?= $(HOME)/mac/System7_5_3.img
 CLASSIC_IMAGE = $(IMAGES)/classic-data.img
+CLASSIC_WAV := $(BUILD)/classic.wav
 # The Classic window lands at 70,138 (content, 640x480): the Mac's menu
 # bar (white, 20 rows) on top, the desktop pattern below it.
 CLASSIC_CHECKS := --expect-rect 340,142,200,10,\#ffffff \
@@ -288,6 +291,16 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
 	python3 tools/fb_check.py $(BUILD)/classic.ppm $(CLASSIC_CHECKS)
+	rm -f $(CLASSIC_WAV)
+	python3 tools/qemu_test.py --exit-code 0 --timeout 600 --log $(BUILD)/test-classic-sound.log \
+		--type "STELA shell" "run Classic.app --test-beep\n" --type "Classic exited" "shutdown\n" \
+		--expect "classic: sound on" --expect "classic: beep (sent)" --expect "classic: test done" \
+		--expect "power: turning off" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
+		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0 \
+		-audiodev wav,id=a0,path=$(CLASSIC_WAV) -device intel-hda -device hda-duplex,audiodev=a0
+	python3 tools/check_wav.py $(CLASSIC_WAV) 0.05 0
 
 # Networking (docs/net.md): QEMU user networking (slirp: gateway and host
 # 10.0.2.2, DNS 10.0.2.3, us 10.0.2.15) with each of the three cards; an

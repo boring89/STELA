@@ -20,7 +20,7 @@
 pub const MAGIC: u64 = u64::from_le_bytes(*b"STELABI\0");
 
 /// Layout version; bump on every incompatible change to any structure here.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Capacity of [`BootInfo::regions`]. The loader merges adjacent regions of
 /// the same kind, so firmware memory maps of a few hundred entries fit.
@@ -222,6 +222,11 @@ pub struct BootInfo {
     pub nx_enabled: u32,
     /// The firmware framebuffer.
     pub framebuffer: Framebuffer,
+    /// Physical address of the initial RAM disk (`\STELA\initrd.tar`, a
+    /// ustar archive), page aligned; 0 if there is none.
+    pub initrd_phys: u64,
+    /// Size of the initial RAM disk in bytes; 0 if there is none.
+    pub initrd_size: u64,
     /// The physical memory map, sorted by address; only the first
     /// [`BootInfo::region_count`] entries are valid.
     pub regions: [MemoryRegion; MAX_REGIONS],
@@ -246,6 +251,8 @@ impl BootInfo {
             regions_truncated: 0,
             nx_enabled: 0,
             framebuffer: Framebuffer::NONE,
+            initrd_phys: 0,
+            initrd_size: 0,
             regions: [MemoryRegion::EMPTY; MAX_REGIONS],
         }
     }
@@ -307,8 +314,10 @@ mod tests {
         assert_eq!(offset_of!(BootInfo, region_count), 12);
         assert_eq!(offset_of!(BootInfo, hhdm_base), 16);
         assert_eq!(offset_of!(BootInfo, framebuffer), 96);
-        assert_eq!(offset_of!(BootInfo, regions), 128);
-        assert_eq!(size_of::<BootInfo>(), 128 + 24 * MAX_REGIONS);
+        assert_eq!(offset_of!(BootInfo, initrd_phys), 128);
+        assert_eq!(offset_of!(BootInfo, initrd_size), 136);
+        assert_eq!(offset_of!(BootInfo, regions), 144);
+        assert_eq!(size_of::<BootInfo>(), 144 + 24 * MAX_REGIONS);
         assert_eq!(align_of::<BootInfo>(), 8);
     }
 
@@ -340,6 +349,8 @@ mod tests {
     fn new_block_is_valid() {
         let info = BootInfo::new();
         assert!(info.is_valid());
+        assert_eq!(info.version, 2);
+        assert_eq!((info.initrd_phys, info.initrd_size), (0, 0));
         assert!(info.regions().is_empty());
         assert!(!info.framebuffer.is_present());
     }

@@ -5,6 +5,7 @@
 //!
 //! 1. Read `\STELA\kernel.elf` from the partition the loader was started from.
 //! 2. Copy its `PT_LOAD` segments into one block of fresh pages.
+//!    Read `\STELA\initrd.tar` (if present) into fresh pages as well.
 //! 3. Record the GOP framebuffer and the ACPI RSDP.
 //! 4. Build the kernel's page tables: the higher-half direct map (HHDM),
 //!    the kernel at its link address, and an identity map of physical memory
@@ -38,6 +39,8 @@ use uefi::{CStr16, cstr16, println};
 
 /// Where the kernel lives on the boot partition.
 const KERNEL_PATH: &CStr16 = cstr16!("\\STELA\\kernel.elf");
+/// The initial RAM disk: the first user programs, as a ustar archive.
+const INITRD_PATH: &CStr16 = cstr16!("\\STELA\\initrd.tar");
 
 /// Size of the kernel's initial stack.
 const STACK_SIZE: usize = 64 * 1024;
@@ -118,6 +121,13 @@ fn boot() -> Result<core::convert::Infallible, Fail> {
         kernel.entry
     );
 
+    let (initrd_phys, initrd_size) = load_initrd()?;
+    if initrd_size > 0 {
+        println!("boot: initrd at {initrd_phys:#x} ({initrd_size} bytes)");
+    } else {
+        println!(r"boot: no \STELA\initrd.tar");
+    }
+
     let rsdp = find_rsdp();
     let stack = alloc_pages(STACK_SIZE / 4096);
     let stack_phys = stack.as_ptr() as u64;
@@ -130,6 +140,8 @@ fn boot() -> Result<core::convert::Infallible, Fail> {
     info.stack_size = STACK_SIZE as u64;
     info.rsdp_phys = rsdp;
     info.nx_enabled = u32::from(nx);
+    info.initrd_phys = initrd_phys;
+    info.initrd_size = initrd_size;
 
     // The direct map covers all RAM the firmware reports (usable, in use,
     // ACPI), the framebuffer, and at least 4 GiB. Reserved and MMIO ranges
@@ -246,6 +258,22 @@ fn load_kernel(tables: &mut PageTables, nx: bool) -> Result<LoadedKernel, Fail> 
         phys_base,
         size,
     })
+}
+
+/// Reads the initial RAM disk into fresh pages (type `LOADER_DATA`, so the
+/// kernel sees them as `KernelAndBoot` and never reuses them). Returns
+/// `(0, 0)` when the file does not exist.
+fn load_initrd() -> Result<(u64, u64), Fail> {
+    let fs = uefi::boot::get_image_file_system(uefi::boot::image_handle())?;
+    let Ok(file) = uefi::fs::FileSystem::new(fs).read(INITRD_PATH) else {
+        return Ok((0, 0));
+    };
+    if file.is_empty() {
+        return Ok((0, 0));
+    }
+    let pages = alloc_pages(file.len().div_ceil(4096));
+    write_bytes(pages, 0, &file);
+    Ok((pages.as_ptr() as u64, file.len() as u64))
 }
 
 /// The ACPI RSDP from the configuration table: ACPI 2.0+ preferred, ACPI 1.0

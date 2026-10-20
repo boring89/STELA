@@ -48,6 +48,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("sleep order", sleep_order),
         ("user mode faults", user_mode_faults),
         ("system calls", system_calls),
+        ("elf loading", elf_loading),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -784,4 +785,60 @@ fn system_calls(_: &'static BootInfo) {
             "not available"
         }
     );
+}
+
+/// A minimal ELF executable: one PT_LOAD segment at 0x40_0000 holding
+/// `code` (ELF-64 Object File Format 1.5, "File header", "Program header
+/// table"), with permissions `flags` (PF_X = 1, PF_W = 2, PF_R = 4).
+fn make_elf(code: &[u8], flags: u32) -> Vec<u8> {
+    const HEADERS: usize = 64 + 56;
+    let mut elf = vec![0u8; HEADERS];
+    elf[..8].copy_from_slice(&[0x7F, b'E', b'L', b'F', 2, 1, 1, 0]);
+    elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
+    elf[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+    elf[20..24].copy_from_slice(&1u32.to_le_bytes());
+    elf[24..32].copy_from_slice(&CODE_BASE.to_le_bytes()); // e_entry
+    elf[32..40].copy_from_slice(&64u64.to_le_bytes()); // e_phoff
+    elf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize
+    elf[54..56].copy_from_slice(&56u16.to_le_bytes()); // e_phentsize
+    elf[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+    let ph = &mut elf[64..];
+    ph[..4].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+    ph[4..8].copy_from_slice(&flags.to_le_bytes());
+    ph[8..16].copy_from_slice(&(HEADERS as u64).to_le_bytes()); // p_offset
+    ph[16..24].copy_from_slice(&CODE_BASE.to_le_bytes()); // p_vaddr
+    ph[32..40].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_filesz
+    ph[40..48].copy_from_slice(&(code.len() as u64 + 8192).to_le_bytes()); // p_memsz
+    elf.extend_from_slice(code);
+    elf
+}
+
+fn elf_loading(_: &'static BootInfo) {
+    use kernel::program::{self, LoadError};
+    let image = make_elf(SYSCALL_TEST, 4 | 1);
+    // Warm up, then check that a whole program's memory (segments, 1 MiB
+    // stack, page tables) comes back.
+    let pid = program::spawn("elf", &image).expect("spawn failed");
+    assert_eq!(task::wait_process(pid), Some(42));
+    let (free, _) = pmm::stats();
+    let pid = program::spawn("elf", &image).expect("spawn failed");
+    assert_eq!(task::wait_process(pid), Some(42));
+    assert_eq!(pmm::stats().0, free, "program memory not freed");
+    // Refused: writable and executable, not ELF, missing from the initrd.
+    assert_eq!(
+        program::spawn("wx", &make_elf(SYSCALL_TEST, 7)),
+        Err(LoadError::BadSegment)
+    );
+    assert!(matches!(
+        program::spawn("junk", b"not an elf"),
+        Err(LoadError::BadElf(_))
+    ));
+    assert_eq!(pmm::stats().0, free, "failed loads leaked memory");
+    assert_eq!(
+        program::spawn_from_initrd("no-such-program"),
+        Err(LoadError::NotFound)
+    );
+    // An unknown process id.
+    assert_eq!(task::wait_process(u64::MAX), None);
+    kprintln!("selftest:   initrd {} bytes", frame::mm::initrd().len());
 }

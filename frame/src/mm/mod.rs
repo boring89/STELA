@@ -50,4 +50,47 @@ pub(crate) fn init(info: &'static bootinfo::BootInfo) {
     paging::init(info);
     heap::init();
     mmio::init(info);
+    init_initrd(info);
+}
+
+/// The initial RAM disk, once checked.
+#[cfg(target_os = "none")]
+static INITRD: crate::sync::Once<&'static [u8]> = crate::sync::Once::new();
+
+/// Checks the loader's initrd range and makes it readable as a slice.
+#[cfg(target_os = "none")]
+fn init_initrd(info: &'static bootinfo::BootInfo) {
+    let (phys, size) = (info.initrd_phys, info.initrd_size);
+    if phys == 0 || size == 0 {
+        return;
+    }
+    let Some(end) = phys.checked_add(size) else {
+        crate::kprintln!("initrd: bad range {phys:#x} + {size}; ignored");
+        return;
+    };
+    // It must lie in memory the loader allocated (KernelAndBoot), which the
+    // frame allocator never hands out, and inside the direct map.
+    let inside = info.regions().iter().any(|r| {
+        r.kind() == Some(bootinfo::MemoryKind::KernelAndBoot)
+            && r.phys_start <= phys
+            && end <= r.phys_end()
+    });
+    if !inside || end > info.hhdm_size {
+        crate::kprintln!("initrd: {phys:#x} + {size} is not loader memory; ignored");
+        return;
+    }
+    // SAFETY: the range is KernelAndBoot RAM (checked above): the PMM never
+    // allocates it and nothing writes it after the loader, so a shared
+    // slice for the rest of time is sound. The HHDM maps it.
+    let data = unsafe {
+        core::slice::from_raw_parts((bootinfo::HHDM_BASE + phys) as *const u8, size as usize)
+    };
+    let _ = INITRD.set(data);
+}
+
+/// The initial RAM disk the loader read (`\STELA\initrd.tar`), or an
+/// empty slice when there is none.
+#[cfg(target_os = "none")]
+pub fn initrd() -> &'static [u8] {
+    INITRD.get().copied().unwrap_or(&[])
 }

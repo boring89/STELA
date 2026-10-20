@@ -27,6 +27,7 @@ selftest = []
 
 [dependencies]
 abi = { path = "../abi" }
+elfload = { path = "../elfload" }
 frame = { path = "../frame" }
 
 [lints]

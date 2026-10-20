@@ -7,7 +7,8 @@
 //! code is the one given to the first `ProcessExit` (or the kill, for a
 //! fault), or 0 when the threads simply exited. The status stays in the
 //! process table for [`wait_process`]; the address space is freed with the
-//! last reference to the [`Process`], which only its threads hold.
+//! last reference to the [`Process`], which only its threads hold. A
+//! process dropped without ever running a thread ends with code -1.
 
 use super::ThreadId;
 use alloc::collections::BTreeMap;
@@ -75,6 +76,17 @@ impl Process {
         if self.live.fetch_sub(1, Ordering::AcqRel) == 1 {
             let code = self.exit_code.lock().unwrap_or(0);
             finish(self.id, code);
+        }
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        // A process that never got a thread (its program failed to load)
+        // ends here, so that waiting for it does not hang.
+        let never_ran = matches!(TABLE.lock().get(&self.id), Some(Status::Running { .. }));
+        if never_ran {
+            finish(self.id, -1);
         }
     }
 }

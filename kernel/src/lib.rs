@@ -11,6 +11,9 @@
 
 extern crate alloc;
 
+pub mod initrd;
+#[cfg(target_os = "none")]
+pub mod program;
 #[cfg(target_os = "none")]
 pub mod syscall;
 pub mod task;

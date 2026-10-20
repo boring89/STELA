@@ -169,6 +169,25 @@ macro_rules! debug_println {
     };
 }
 
+/// Prints to the console (the same as [`debug_print!`]).
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => {
+        $crate::_print(format_args!($($arg)*))
+    };
+}
+
+/// Prints to the console, followed by a newline.
+#[macro_export]
+macro_rules! println {
+    () => {
+        $crate::print!("\n")
+    };
+    ($($arg:tt)*) => {
+        $crate::_print(format_args!("{}\n", format_args!($($arg)*)))
+    };
+}
+
 /// What a new thread runs, kept at the start of its [`ThreadStack`].
 #[repr(C)]
 struct Start {

@@ -73,14 +73,16 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     }
 }
 
-/// The first kernel thread: runs `hello` from the initrd and waits for
-/// it, then starts the input router and runs `echo` (a placeholder until
-/// there is a shell, P6).
+/// The first kernel thread: starts the input router, then runs
+/// `Initrd:/init` (which starts the shell) and waits for it.
 #[cfg(not(feature = "selftest"))]
 fn init() {
-    run("hello");
     kernel::input::start();
-    run("echo");
+    loop {
+        run("init");
+        // init never ends on its own; start it again if it was killed.
+        kernel::task::sleep_ms(1000);
+    }
 }
 
 /// Runs program `name` from the `Initrd` volume and waits for it to end.

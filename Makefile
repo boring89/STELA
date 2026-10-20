@@ -9,7 +9,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 
@@ -38,7 +38,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 USER_CRATES := libstela $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd esp esp-test run test test-host test-qemu test-qemu-min test-fb \
-	host-images test-images test-storage ehfs-tools test-ehfs-compat clippy fmt clean
+	host-images test-images test-storage test-shell ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -82,7 +82,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-fb test-storage
+test: test-host test-qemu test-qemu-min test-fb test-storage test-shell
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -115,15 +115,40 @@ test-qemu-min: esp-test test-images $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-min.img
 
-# Boot the normal kernel (which runs hello from the initrd first, then
-# echo), type a line into echo, save the screen once the uptime is printed,
-# and check that the framebuffer console drew text.
+# Boot the normal kernel (init starts the shell), type a command, save the
+# screen once its answer is printed, and check that the framebuffer console
+# drew text.
 test-fb: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --screendump $(BUILD)/screen.ppm \
-		--send-keys "echo: ready" "h i ret" --expect "STELA kernel" \
-		--expect "hello from user mode" --expect "exited with code 0" --expect "echo: ready" \
-		--expect "uptime:" -- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
+		--type "STELA shell" "uptime\n" --expect "STELA kernel" \
+		--expect "STELA shell" --expect "uptime:" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm
+
+# The shell on the normal kernel with the AHCI test disk (a copy of its
+# own): commands typed through QMP, their answers checked on the serial
+# console. Each command is typed when the previous one's line appears.
+test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-shell.img
+	python3 tools/qemu_test.py --timeout 120 \
+		--type "STELA shell" "vols\n" \
+		--type "Initrd" "ls Data:/\n" \
+		--type "item(s)" "mkdir t\n" \
+		--type "> mkdir t" "cd t\n" \
+		--type "> cd t" "pwd\n" \
+		--type "Data:/t" "cat nothing\n" \
+		--type "cat: " "run hello\n" \
+		--type "hello exited with code" "ps\n" \
+		--type "ended)" "mem\n" \
+		--type "memory: " "uptime\n" \
+		--expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
+		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
+		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
+		--expect "hello from user mode" --expect "hello exited with code 0" \
+		--expect "shell" --expect "ended)" --expect "memory: " --expect "uptime: " \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
+		-device ide-hd,drive=sata1,bus=ide.1
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.
 EHFS_TOOLS  := $(BUILD)/host/ehfs

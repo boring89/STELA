@@ -109,12 +109,15 @@ impl TextConsole {
     }
 
     /// Writes one character: `\n` moves to the next line, `\r` to the
-    /// start of the line, `\t` to the next tab stop; anything else is drawn
-    /// (unknown characters as `?`), wrapping at the right edge.
+    /// start of the line, `\t` to the next tab stop, backspace (0x08) one
+    /// column back (without erasing: line editors send `\x08 \x08`);
+    /// anything else is drawn (unknown characters as `?`), wrapping at the
+    /// right edge.
     pub fn write_char(&mut self, canvas: &mut impl Canvas, c: char) {
         match c {
             '\n' => self.newline(canvas),
             '\r' => self.column = 0,
+            '\u{8}' => self.column = self.column.saturating_sub(1),
             '\t' => {
                 let next = (self.column / TAB + 1) * TAB;
                 while self.column < next.min(self.columns) {
@@ -240,6 +243,16 @@ mod tests {
         assert!(!memory.cell_inked(0, 0));
         assert!(memory.cell_inked(0, 1));
         assert!(memory.cell_inked(0, 2));
+    }
+
+    #[test]
+    fn backspace_moves_back() {
+        let mut memory = Memory::new(80, 32);
+        let mut c = console(&mut memory);
+        c.write_str(&mut memory, "ab\u{8}");
+        assert_eq!(c.cursor(), (1, 0));
+        c.write_str(&mut memory, "\u{8}\u{8}\u{8}");
+        assert_eq!(c.cursor(), (0, 0));
     }
 
     #[test]

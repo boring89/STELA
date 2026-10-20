@@ -19,6 +19,8 @@ members = [
     "user/echo",
     "user/fstest",
     "user/proctest",
+    "user/init",
+    "user/shell",
     "tools/ehfs",
 ]
 

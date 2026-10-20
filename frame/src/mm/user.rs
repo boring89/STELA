@@ -16,9 +16,14 @@
 //! ```
 //!
 //! User pages have U/S = 1 at every level (Intel SDM Vol. 3A 4.6 "Access
-//! Rights"); kernel pages have U/S = 0, so ring 3 cannot touch them. Every
-//! frame mapped into an address space is owned by it and returned to the
-//! PMM, with the page tables, when it is dropped.
+//! Rights"); kernel pages have U/S = 0, so ring 3 cannot touch them. A
+//! frame mapped with [`AddressSpace::map`] is owned by the address space
+//! and returned to the PMM, with the page tables, when it is dropped.
+//! Frames of a [`SharedMemory`] mapped with [`AddressSpace::map_shared`]
+//! are only borrowed: their entries carry the software bit [`SHARED`]
+//! (bit 9, ignored by the processor: Vol. 3A Table 4-19), so the teardown
+//! skips them, and the address space keeps a clone of the object until the
+//! mapping is removed.
 //!
 //! The kernel reads and writes user memory through the HHDM after walking
 //! the tables ([`AddressSpace::read`], [`AddressSpace::write`]), never
@@ -30,8 +35,14 @@ use super::paging::{
     self, ADDR_MASK, HUGE, MapError, NO_EXECUTE, PRESENT, USER, WRITABLE, index, table,
 };
 use super::pmm::{self, PhysFrame};
+use super::shared::SharedMemory;
 use crate::sync::SpinLock;
+use alloc::vec::Vec;
 use bootinfo::HHDM_BASE;
+
+/// Software bit of a leaf entry: the frame belongs to a [`SharedMemory`],
+/// not to the address space.
+const SHARED: u64 = 1 << 9;
 
 /// Permissions of a user page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +64,8 @@ pub struct AddressSpace {
     root: u64,
     /// Serialises edits and walks of the user half.
     lock: SpinLock<()>,
+    /// Shared-memory mappings: start address and the object.
+    shared: SpinLock<Vec<(u64, SharedMemory)>>,
 }
 
 impl core::fmt::Debug for AddressSpace {
@@ -82,6 +95,7 @@ impl AddressSpace {
         Ok(AddressSpace {
             root,
             lock: SpinLock::new(()),
+            shared: SpinLock::new(Vec::new()),
         })
     }
 
@@ -90,23 +104,27 @@ impl AddressSpace {
         self.root
     }
 
-    /// Maps the user page at `virt` to `frame`, which the address space
-    /// then owns.
-    pub fn map(&self, virt: u64, frame: PhysFrame, flags: UserFlags) -> Result<(), MapError> {
-        if !virt.is_multiple_of(4096) {
-            return Err(MapError::Unaligned);
-        }
-        if virt >= USER_END {
-            return Err(MapError::OutOfRegion);
-        }
-        let mut leaf = frame.addr() | PRESENT | USER;
+    /// The leaf entry bits for `phys` with `flags`.
+    fn leaf_bits(phys: u64, flags: UserFlags) -> u64 {
+        let mut leaf = phys | PRESENT | USER;
         if flags.writable {
             leaf |= WRITABLE;
         }
         if !flags.executable && paging::nx() {
             leaf |= NO_EXECUTE;
         }
-        let _guard = self.lock.lock();
+        leaf
+    }
+
+    /// Writes the leaf entry `leaf` for the user page `virt`, creating the
+    /// tables on the way. The caller holds `self.lock`.
+    fn set_leaf(&self, virt: u64, leaf: u64) -> Result<(), MapError> {
+        if !virt.is_multiple_of(4096) {
+            return Err(MapError::Unaligned);
+        }
+        if virt >= USER_END {
+            return Err(MapError::OutOfRegion);
+        }
         let mut table_phys = self.root;
         for level in [4, 3, 2] {
             // SAFETY: tables of this address space's user half (slot < 256),
@@ -131,35 +149,105 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Removes the mapping of the user page at `virt` and returns its frame.
-    pub fn unmap(&self, virt: u64) -> Result<PhysFrame, MapError> {
+    /// Clears the leaf entry of the user page `virt` and returns it. Shared
+    /// pages are only cleared with `shared`, own pages only without. The
+    /// caller holds `self.lock`.
+    fn clear_leaf(&self, virt: u64, shared: bool) -> Result<u64, MapError> {
         if !virt.is_multiple_of(4096) {
             return Err(MapError::Unaligned);
         }
         if virt >= USER_END {
             return Err(MapError::OutOfRegion);
         }
-        let _guard = self.lock.lock();
         let mut phys = self.root;
         for level in [4, 3, 2] {
-            // SAFETY: see `map`.
+            // SAFETY: see `set_leaf`.
             let entry = unsafe { table(phys) }[index(virt, level)];
             if entry & PRESENT == 0 {
                 return Err(MapError::NotMapped);
             }
             phys = entry & ADDR_MASK;
         }
-        // SAFETY: see `map`.
+        // SAFETY: see `set_leaf`.
         let entry = &mut unsafe { table(phys) }[index(virt, 1)];
-        if *entry & PRESENT == 0 {
+        if *entry & PRESENT == 0 || (*entry & SHARED != 0) != shared {
             return Err(MapError::NotMapped);
         }
-        let frame = PhysFrame::from_addr(*entry & ADDR_MASK);
+        let old = *entry;
         *entry = 0;
         if self.is_active() {
             paging::invlpg(virt);
         }
-        Ok(frame)
+        Ok(old)
+    }
+
+    /// Maps the user page at `virt` to `frame`, which the address space
+    /// then owns.
+    pub fn map(&self, virt: u64, frame: PhysFrame, flags: UserFlags) -> Result<(), MapError> {
+        let leaf = Self::leaf_bits(frame.addr(), flags);
+        let _guard = self.lock.lock();
+        let result = self.set_leaf(virt, leaf);
+        if result.is_err() {
+            // Not mapped: the frame goes back.
+            pmm::free_frame(frame);
+        }
+        result
+    }
+
+    /// Removes the mapping of the user page at `virt` and returns its frame.
+    /// Pages of shared memory are refused (`NotMapped`); see
+    /// [`AddressSpace::unmap_shared`].
+    pub fn unmap(&self, virt: u64) -> Result<PhysFrame, MapError> {
+        let _guard = self.lock.lock();
+        let old = self.clear_leaf(virt, false)?;
+        Ok(PhysFrame::from_addr(old & ADDR_MASK))
+    }
+
+    /// Maps all of `memory` at `virt..virt + memory.size()`. The address
+    /// space keeps a clone of `memory` until [`AddressSpace::unmap_shared`]
+    /// or its own end. Nothing stays mapped on failure.
+    pub fn map_shared(
+        &self,
+        virt: u64,
+        memory: &SharedMemory,
+        flags: UserFlags,
+    ) -> Result<(), MapError> {
+        let end = virt
+            .checked_add(memory.size())
+            .ok_or(MapError::OutOfRegion)?;
+        if end > USER_END {
+            return Err(MapError::OutOfRegion);
+        }
+        let _guard = self.lock.lock();
+        for i in 0..memory.pages() {
+            let leaf = Self::leaf_bits(memory.frame_addr(i), flags) | SHARED;
+            if let Err(e) = self.set_leaf(virt + i as u64 * 4096, leaf) {
+                for j in 0..i {
+                    let _ = self.clear_leaf(virt + j as u64 * 4096, true);
+                }
+                return Err(e);
+            }
+        }
+        self.shared.lock().push((virt, memory.clone()));
+        Ok(())
+    }
+
+    /// Removes the shared-memory mapping that starts at `virt` and returns
+    /// the object.
+    pub fn unmap_shared(&self, virt: u64) -> Result<SharedMemory, MapError> {
+        let memory = {
+            let mut shared = self.shared.lock();
+            let at = shared
+                .iter()
+                .position(|(start, _)| *start == virt)
+                .ok_or(MapError::NotMapped)?;
+            shared.swap_remove(at).1
+        };
+        let _guard = self.lock.lock();
+        for i in 0..memory.pages() {
+            let _ = self.clear_leaf(virt + i as u64 * 4096, true);
+        }
+        Ok(memory)
     }
 
     /// The leaf entry for the user page containing `virt`, if mapped.
@@ -308,6 +396,10 @@ unsafe fn free_tables(phys: u64, level: u32) {
             continue;
         }
         let next = entry & ADDR_MASK;
+        if level == 1 && entry & SHARED != 0 {
+            // Borrowed from a SharedMemory, which frees it.
+            continue;
+        }
         if level > 1 {
             // SAFETY: a lower table of the same unused hierarchy.
             unsafe { free_tables(next, level - 1) };

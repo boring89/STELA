@@ -12,8 +12,10 @@
 
 use super::ThreadId;
 use crate::object::port::Port;
+use crate::object::regions::Regions;
 use crate::object::{Entry, HandleTable, KernelObject};
 use abi::Rights;
+use abi::layout::{MAP_BASE, MAP_END};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
@@ -41,6 +43,8 @@ pub struct Process {
     main_port: Arc<Port>,
     /// Ports it created: closed when it ends.
     ports: SpinLock<Vec<Weak<Port>>>,
+    /// The `MemoryMap` ranges in its map area.
+    maps: SpinLock<Regions>,
 }
 
 impl Process {
@@ -62,6 +66,11 @@ impl Process {
     /// Its handle table.
     pub fn handles(&self) -> &SpinLock<HandleTable> {
         &self.handles
+    }
+
+    /// The ranges of its map area in use.
+    pub fn maps(&self) -> &SpinLock<Regions> {
+        &self.maps
     }
 
     /// Its main port.
@@ -178,6 +187,7 @@ pub fn create_with(name: &str, bootstrap: Option<Entry>) -> Result<Arc<Process>,
         handles: SpinLock::new(handles),
         main_port,
         ports: SpinLock::new(Vec::new()),
+        maps: SpinLock::new(Regions::new(MAP_BASE, MAP_END)),
     }))
 }
 

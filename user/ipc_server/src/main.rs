@@ -8,19 +8,21 @@
 //! | tag | request | reply |
 //! |---|---|---|
 //! | `PING` | any data | `PONG` with the data reversed |
+//! | `SUM` | size (u64), memory handle in slot 1 | `SUM` with the sum of the bytes (u64); writes `0xA5` to the last byte |
 //! | `QUIT` | — | `BYE`, then the server exits with 0 |
 
 #![no_std]
 #![no_main]
 #![forbid(unsafe_code)]
 
-use libstela::ipc::{FOREVER, handle_close, port_receive, port_send};
+use libstela::ipc::{FOREVER, Mapping, handle_close, port_receive, port_send};
 use libstela::{Handle, Message, bootstrap, debug_println};
 
 libstela::entry!(main);
 
 const PING: u32 = 100;
 const PONG: u32 = 101;
+const SUM: u32 = 102;
 const QUIT: u32 = 103;
 const BYE: u32 = 104;
 
@@ -51,6 +53,10 @@ fn main() -> i64 {
                 }
                 reply(reply_to, &Message::with_data(PONG, &data[..payload.len()]));
             }
+            SUM => {
+                let sum = sum_memory(&msg).unwrap_or(u64::MAX);
+                reply(reply_to, &Message::with_data(SUM, &sum.to_le_bytes()));
+            }
             QUIT => {
                 reply(reply_to, &Message::with_data(BYE, b""));
                 debug_println!("ipc_server: bye");
@@ -62,6 +68,26 @@ fn main() -> i64 {
             }
         }
     }
+}
+
+/// Maps the memory of a `SUM` request, adds up its bytes and marks the
+/// last one.
+fn sum_memory(msg: &Message) -> Option<u64> {
+    let &memory = msg.carried().get(1)?;
+    let size = u64::from_le_bytes(msg.payload().get(..8)?.try_into().ok()?);
+    let mapping = Mapping::new(memory, size, true).ok()?;
+    let mut sum = 0u64;
+    let mut page = [0u8; 4096];
+    let mut at = 0;
+    while at < size {
+        mapping.read(at, &mut page).ok()?;
+        sum += page.iter().map(|&b| u64::from(b)).sum::<u64>();
+        at += 4096;
+    }
+    mapping.write(size - 1, &[0xA5]).ok()?;
+    drop(mapping);
+    let _ = handle_close(memory);
+    Some(sum)
 }
 
 const fn abi_len() -> usize {

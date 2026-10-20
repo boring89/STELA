@@ -11,6 +11,7 @@
 pub mod handle;
 #[cfg(target_os = "none")]
 pub mod port;
+pub mod regions;
 
 #[cfg(target_os = "none")]
 pub use target::*;
@@ -19,12 +20,15 @@ pub use target::*;
 mod target {
     use super::port::Port;
     use alloc::sync::Arc;
+    use frame::mm::shared::SharedMemory;
 
     /// Something a handle can refer to.
     #[derive(Clone)]
     pub enum KernelObject {
         /// A message queue.
         Port(Arc<Port>),
+        /// Shared memory (the frames are reference counted inside).
+        Memory(SharedMemory),
     }
 
     impl KernelObject {
@@ -32,6 +36,15 @@ mod target {
         pub fn as_port(&self) -> Option<&Arc<Port>> {
             match self {
                 KernelObject::Port(port) => Some(port),
+                _ => None,
+            }
+        }
+
+        /// The memory, if this is shared memory.
+        pub fn as_memory(&self) -> Option<&SharedMemory> {
+            match self {
+                KernelObject::Memory(memory) => Some(memory),
+                _ => None,
             }
         }
     }

@@ -23,6 +23,8 @@ pub mod paging;
 #[cfg(target_os = "none")]
 pub mod pmm;
 #[cfg(target_os = "none")]
+pub mod shared;
+#[cfg(target_os = "none")]
 pub mod user;
 
 /// Start of the region where the kernel creates its own mappings (PML4 slot

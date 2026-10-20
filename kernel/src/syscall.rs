@@ -10,12 +10,15 @@ use crate::object::{Entry, KernelObject};
 use crate::task::{self, Process};
 use abi::layout::USER_END;
 use abi::{
-    DEBUG_WRITE_MAX, Error, Handle, MESSAGE_DATA, MESSAGE_HANDLES, MESSAGE_SIZE, Message, Rights,
-    Syscall,
+    DEBUG_WRITE_MAX, Error, Handle, MEMORY_MAX, MESSAGE_DATA, MESSAGE_HANDLES, MESSAGE_SIZE,
+    Message, Rights, Syscall,
 };
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use frame::mm::paging::MapError;
+use frame::mm::shared::SharedMemory;
+use frame::mm::user::UserFlags;
 use frame::syscall::SyscallFrame;
 
 /// Registers [`handle`] with frame. Call once at boot.
@@ -45,9 +48,9 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::PortCreate) => port_create(),
         Some(Syscall::PortSend) => port_send(a0, a1),
         Some(Syscall::PortReceive) => port_receive(a0, a1, a2),
-        Some(Syscall::MemoryCreate | Syscall::MemoryMap | Syscall::MemoryUnmap) => {
-            Err(Error::NotSupported)
-        }
+        Some(Syscall::MemoryCreate) => memory_create(a0),
+        Some(Syscall::MemoryMap) => memory_map(a0, a1),
+        Some(Syscall::MemoryUnmap) => memory_unmap(a0),
         Some(Syscall::InputAttach) => Err(Error::NotSupported),
         None => Err(Error::InvalidSyscall),
     };
@@ -215,5 +218,71 @@ fn port_receive(handle: u64, msg_ptr: u64, timeout: u64) -> Result<u64, Error> {
         .space()
         .write(msg_ptr, &msg.to_bytes())
         .map_err(|_| Error::BadAddress)?;
+    Ok(0)
+}
+
+/// `MemoryCreate(size) -> handle`.
+fn memory_create(size: u64) -> Result<u64, Error> {
+    if size == 0 || !size.is_multiple_of(4096) || size > MEMORY_MAX {
+        return Err(Error::InvalidArgument);
+    }
+    let process = caller()?;
+    let memory = SharedMemory::new((size / 4096) as usize).ok_or(Error::OutOfMemory)?;
+    let entry = Entry {
+        object: KernelObject::Memory(memory),
+        rights: Rights::READ | Rights::WRITE | Rights::MAP | Rights::DUPLICATE | Rights::TRANSFER,
+    };
+    let handle = process.handles().lock().insert(entry)?;
+    Ok(handle.raw())
+}
+
+/// `MemoryMap(memory, flags) -> address`.
+fn memory_map(handle: u64, flags: u64) -> Result<u64, Error> {
+    if flags & !abi::map::ALL != 0 {
+        return Err(Error::InvalidArgument);
+    }
+    let writable = flags & abi::map::WRITE != 0;
+    let process = caller()?;
+    let memory = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(handle))?;
+        let memory = entry.object.as_memory().ok_or(Error::WrongType)?;
+        let mut needed = Rights::MAP | Rights::READ;
+        if writable {
+            needed = needed | Rights::WRITE;
+        }
+        if !entry.rights.contains(needed) {
+            return Err(Error::AccessDenied);
+        }
+        memory.clone()
+    };
+    let addr = process
+        .maps()
+        .lock()
+        .alloc(memory.size())
+        .ok_or(Error::AlreadyMapped)?;
+    let flags = UserFlags {
+        writable,
+        executable: false,
+    };
+    if let Err(e) = process.space().map_shared(addr, &memory, flags) {
+        process.maps().lock().free(addr);
+        return Err(match e {
+            MapError::OutOfMemory => Error::OutOfMemory,
+            _ => Error::AlreadyMapped,
+        });
+    }
+    Ok(addr)
+}
+
+/// `MemoryUnmap(address)`.
+fn memory_unmap(addr: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let memory = process
+        .space()
+        .unmap_shared(addr)
+        .map_err(|_| Error::InvalidArgument)?;
+    process.maps().lock().free(addr);
+    drop(memory);
     Ok(0)
 }

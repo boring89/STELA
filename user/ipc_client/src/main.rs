@@ -10,13 +10,16 @@
 #![no_main]
 #![forbid(unsafe_code)]
 
-use libstela::ipc::{handle_close, handle_duplicate, port_create, port_receive, port_send};
+use libstela::ipc::{
+    Mapping, handle_close, handle_duplicate, memory_create, port_create, port_receive, port_send,
+};
 use libstela::{Error, Handle, Message, Rights, bootstrap, debug_println};
 
 libstela::entry!(main);
 
 const PING: u32 = 100;
 const PONG: u32 = 101;
+const SUM: u32 = 102;
 const QUIT: u32 = 103;
 const BYE: u32 = 104;
 
@@ -100,7 +103,55 @@ fn run() -> Result<(), i64> {
         "timeouts",
     )?;
 
-    // 6. The server quits; then its port is closed.
+    // 6. Shared memory: 3 pages filled here, summed by the server, which
+    // writes the last byte back.
+    const SIZE: u64 = 3 * 4096;
+    let memory = memory_create(SIZE).map_err(|_| 9i64)?;
+    let mapping = Mapping::new(memory, SIZE, true).map_err(|_| 9i64)?;
+    let mut expected = 0u64;
+    let mut page = [0u8; 4096];
+    for p in 0..3u64 {
+        for (i, b) in page.iter_mut().enumerate() {
+            *b = (i as u64 + p) as u8;
+            expected += u64::from(*b);
+        }
+        mapping.write(p * 4096, &page).map_err(|_| 9i64)?;
+    }
+    let shared = handle_duplicate(
+        memory,
+        Rights::READ | Rights::WRITE | Rights::MAP | Rights::TRANSFER,
+    )
+    .map_err(|_| 9i64)?;
+    let mut msg_out = Message::with_data(SUM, &SIZE.to_le_bytes());
+    let send_only = handle_duplicate(reply, Rights::SEND | Rights::TRANSFER).map_err(|_| 9i64)?;
+    msg_out.push_handle(send_only);
+    msg_out.push_handle(shared);
+    port_send(bootstrap::BOOTSTRAP, &msg_out).map_err(|_| 9i64)?;
+    let got = port_receive(reply, &mut msg, SECOND);
+    let sum = msg.payload().get(..8).map(|b| {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(b);
+        u64::from_le_bytes(w)
+    });
+    let mut last = [0u8];
+    mapping.read(SIZE - 1, &mut last).map_err(|_| 9i64)?;
+    check(
+        9,
+        got.is_ok() && msg.tag == SUM && sum == Some(expected) && last[0] == 0xA5,
+        "shared memory",
+    )?;
+    // Bad requests: an unaligned size, a port handle, a second unmap.
+    check(
+        10,
+        memory_create(100) == Err(Error::InvalidArgument)
+            && libstela::ipc::memory_map(reply, false) == Err(Error::WrongType)
+            && libstela::ipc::memory_unmap(0x1234_5000) == Err(Error::InvalidArgument),
+        "memory errors",
+    )?;
+    drop(mapping);
+    let _ = handle_close(memory);
+
+    // 7. The server quits; then its port is closed.
     request(reply, Message::with_data(QUIT, b"")).map_err(|_| 7i64)?;
     let got = port_receive(reply, &mut msg, SECOND);
     check(7, got.is_ok() && msg.tag == BYE, "quit")?;

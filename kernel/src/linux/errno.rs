@@ -74,6 +74,7 @@ pub fn from_error(e: Error) -> i64 {
         Error::ConnectionReset => ECONNRESET,
         Error::NetworkDown => ENETDOWN,
         Error::AddressInUse => EADDRINUSE,
+        Error::Busy => EBUSY,
     }
 }
 

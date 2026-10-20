@@ -291,6 +291,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tone"
+version = "0.1.0"
+dependencies = [
+ "libstela",
+]
+
+[[package]]
 name = "toolbox"
 version = "0.1.0"
 dependencies = [

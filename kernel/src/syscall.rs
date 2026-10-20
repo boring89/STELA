@@ -465,6 +465,7 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::TtyMaster(_) => k::TTY_MASTER,
         KernelObject::Framebuffer(_) => k::FRAMEBUFFER,
         KernelObject::Socket(_) => k::SOCKET,
+        KernelObject::Audio(_) => k::AUDIO,
     })
 }
 
@@ -501,6 +502,8 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::SocketSend => crate::net::socket_send(&p, a0, a1, a2, a3),
         Syscall::SocketRecv => crate::net::socket_recv(&p, args),
         Syscall::NetInfo => crate::net::net_info(&p, a0),
+        Syscall::AudioOpen => crate::audio::audio_open(&p, a0, a1, a2),
+        Syscall::AudioClose => crate::audio::audio_close(&p, a0),
         _ => Err(Error::InvalidSyscall),
     }
 }

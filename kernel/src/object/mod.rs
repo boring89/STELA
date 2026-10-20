@@ -51,6 +51,8 @@ mod target {
         Framebuffer(Arc<frame::console::FramebufferDevice>),
         /// A network socket (`docs/net.md`).
         Socket(Arc<crate::net::Socket>),
+        /// The open sound output (`docs/sound.md`).
+        Audio(Arc<crate::audio::AudioSession>),
     }
 
     impl KernelObject {

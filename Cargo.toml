@@ -31,6 +31,7 @@ members = [
     "user/ifconfig",
     "user/ping",
     "user/fetch",
+    "user/tone",
     "classic",
     "tools/ehfs",
 ]

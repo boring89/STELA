@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
@@ -62,7 +62,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-textmode test-window \
-	disk-image test-disk-image classic test-classic test-net test-net-cards host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -170,7 +170,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-textmode test-disk-image test-net test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
+test: test-host test-qemu test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -310,6 +310,20 @@ test-net-cards:
 			-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio -nic none \
 			-netdev user,id=n0 -device $$card,netdev=n0 || exit 1; \
 	done
+
+# Sound (docs/sound.md): QEMU's Intel HDA with a codec that records to a
+# WAV file; the shell plays `tone` (440 Hz, 1 s), then shuts down so that
+# QEMU closes the file; check_wav.py wants a second of loud 440 Hz audio.
+SOUND_WAV   := $(BUILD)/out.wav
+test-sound: esp $(BUILD)/OVMF_VARS.fd
+	rm -f $(SOUND_WAV)
+	python3 tools/qemu_test.py --exit-code 0 --timeout 90 --log $(BUILD)/test-sound.log \
+		--type "STELA shell" "tone\n" --type "tone exited" "shutdown\n" \
+		--expect "hda: " --expect "STELA shell" --expect "tone: 440 Hz for 1000 ms" \
+		--expect "tone: done" --expect "power: turning off" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-audiodev wav,id=a0,path=$(SOUND_WAV) -device intel-hda -device hda-duplex,audiodev=a0
+	python3 tools/check_wav.py $(SOUND_WAV) 1.0 440
 
 # Boot options (docs/p520.md): the normal kernel with a boot.cfg that
 # asks for text mode and no USB; init starts the shell without the window

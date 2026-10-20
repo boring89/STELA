@@ -174,11 +174,17 @@ pub enum Syscall {
     /// `NetInfo(&mut [u8; 48]) -> 0 or 1`: the network card and address
     /// (`net::NetInfo`); 0 when there is no card.
     NetInfo = 46,
+    /// `AudioOpen(rate, channels, &mut [u64; 2])`: the sound output, for
+    /// one program at a time (`Busy` otherwise); writes the Audio handle
+    /// and the handle of its shared ring (`audio::Ring`, `docs/sound.md`).
+    AudioOpen = 47,
+    /// `AudioClose(audio)`: stops the output and closes the handle.
+    AudioClose = 48,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 46] = [
+    pub const ALL: [Syscall; 48] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -225,6 +231,8 @@ impl Syscall {
         Syscall::SocketSend,
         Syscall::SocketRecv,
         Syscall::NetInfo,
+        Syscall::AudioOpen,
+        Syscall::AudioClose,
     ];
 
     /// The call with number `raw`, if any.
@@ -306,11 +314,13 @@ pub enum Error {
     NetworkDown = 24,
     /// The port is taken.
     AddressInUse = 25,
+    /// The device is in use by another program.
+    Busy = 26,
 }
 
 impl Error {
     /// Every error, in value order.
-    pub const ALL: [Error; 25] = [
+    pub const ALL: [Error; 26] = [
         Error::InvalidSyscall,
         Error::InvalidArgument,
         Error::BadAddress,
@@ -336,6 +346,7 @@ impl Error {
         Error::ConnectionReset,
         Error::NetworkDown,
         Error::AddressInUse,
+        Error::Busy,
     ];
 
     /// The error with status `raw` (`None` for 0 and unknown values).
@@ -379,6 +390,7 @@ impl Error {
             Error::ConnectionReset => "connection reset",
             Error::NetworkDown => "network down",
             Error::AddressInUse => "address in use",
+            Error::Busy => "device busy",
             Error::IoError => "I/O error",
         }
     }
@@ -703,6 +715,8 @@ pub mod object_kind {
     pub const FRAMEBUFFER: u64 = 8;
     /// A network socket (`docs/net.md`).
     pub const SOCKET: u64 = 9;
+    /// The sound output (`docs/sound.md`).
+    pub const AUDIO: u64 = 10;
 }
 
 /// `SystemPower` kinds.
@@ -801,6 +815,47 @@ pub mod net {
             core::str::from_utf8(&self.driver[..end]).unwrap_or("?")
         }
     }
+}
+
+/// Sound (`docs/sound.md`): the shared ring between a program and the
+/// kernel's audio thread.
+///
+/// ```text
+///  offset 0     write position (u32): bytes the program has written, ever
+///  offset 4     read position (u32): bytes the kernel has taken, ever
+///  offset 8     ring size in bytes (u32)          offset 12  rate (u32)
+///  offset 16    channels (u32)                    offset 20  underruns (u32):
+///                                                 times the ring ran dry mid-piece
+///  offset 4096  the samples: 16-bit signed little-endian, interleaved
+/// ```
+///
+/// Positions wrap at 2^32; the bytes in the ring are `write - read`, the
+/// room is `size - (write - read)`; byte `p` lives at `4096 + p % size`.
+pub mod audio {
+    /// The only rate.
+    pub const RATE: u32 = 48_000;
+    /// The only channel count.
+    pub const CHANNELS: u32 = 2;
+    /// Bytes per frame (two 16-bit samples).
+    pub const FRAME_BYTES: u32 = 4;
+    /// Offset of the write position.
+    pub const WRITE_POS: usize = 0;
+    /// Offset of the read position.
+    pub const READ_POS: usize = 4;
+    /// Offset of the ring size.
+    pub const SIZE: usize = 8;
+    /// Offset of the rate.
+    pub const RATE_AT: usize = 12;
+    /// Offset of the channel count.
+    pub const CHANNELS_AT: usize = 16;
+    /// Offset of the underrun counter.
+    pub const UNDERRUNS: usize = 20;
+    /// Offset of the samples.
+    pub const DATA: usize = 4096;
+    /// Bytes of samples.
+    pub const RING_BYTES: u32 = 64 * 1024;
+    /// Size of the shared memory.
+    pub const MEMORY_SIZE: u64 = DATA as u64 + RING_BYTES as u64;
 }
 
 /// `SysInfo` kinds and records.
@@ -1381,7 +1436,7 @@ mod tests {
         assert_eq!(Syscall::FileGetInfo.raw(), 37);
         assert_eq!(Syscall::FileSetInfo.raw(), 38);
         assert_eq!(FINDER_INFO_SIZE, 32);
-        assert_eq!(Syscall::from_raw(47), None);
+        assert_eq!(Syscall::from_raw(49), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 
@@ -1413,7 +1468,7 @@ mod tests {
             assert!(!e.name().is_empty());
         }
         assert_eq!(Error::from_raw(0), None);
-        assert_eq!(Error::from_raw(26), None);
+        assert_eq!(Error::from_raw(27), None);
     }
 
     #[test]
@@ -1556,6 +1611,10 @@ mod tests {
         assert_eq!(Syscall::SocketCreate.raw(), 39);
         assert_eq!(Syscall::NetInfo.raw(), 46);
         assert_eq!(Error::AddressInUse.raw(), 25);
+        assert_eq!(Error::Busy.raw(), 26);
+        assert_eq!(Syscall::AudioOpen.raw(), 47);
+        assert_eq!(Syscall::AudioClose.raw(), 48);
+        assert_eq!(audio::MEMORY_SIZE % 4096, 0);
         let v = net::pack([10, 0, 2, 2], 8080);
         assert_eq!(net::unpack(v), ([10, 0, 2, 2], 8080));
         assert_eq!(v, 0x0A00_0202_1F90);

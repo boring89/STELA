@@ -37,6 +37,7 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     drivers::pci::system::init();
     kernel::block::probe();
     kernel::usb::start();
+    kernel::audio::start();
     // The self test drives the card raw first, then starts the stack.
     #[cfg(not(feature = "selftest"))]
     kernel::net::start();

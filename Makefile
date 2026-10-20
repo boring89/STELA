@@ -25,6 +25,8 @@ QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
 HOST_CRATES := bootinfo elfload frame
+# Crates with a bare-metal binary whose library part has host unit tests.
+HOST_LIB_CRATES := kernel
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := bootinfo frame kernel
 
@@ -63,6 +65,7 @@ test: test-host test-qemu test-qemu-min test-fb
 
 test-host:
 	cargo test $(addprefix -p ,$(HOST_CRATES))
+	cargo test --lib $(addprefix -p ,$(HOST_LIB_CRATES))
 
 # The keyboard self test prints "input: waiting"; the script then types
 # "stela" and Enter through QMP send-key.
@@ -91,6 +94,7 @@ clippy:
 	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
 	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) --features kernel/selftest -- -D warnings
 	cargo clippy --tests $(addprefix -p ,$(HOST_CRATES)) -- -D warnings
+	cargo clippy --lib --tests $(addprefix -p ,$(HOST_LIB_CRATES)) -- -D warnings
 
 fmt:
 	cargo fmt --all

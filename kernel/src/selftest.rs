@@ -19,6 +19,7 @@ use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, MMIO_BASE, heap, mmio, pmm};
 use frame::sync::{IrqGuard, SpinLock, interrupts_enabled};
 use frame::trap::{Report, TrapFrame};
 use frame::{cpu, irq, kprintln, time};
+use kernel::task;
 
 /// A named test; it panics on failure.
 type Test = (&'static str, fn(&'static BootInfo));
@@ -40,6 +41,8 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("timer tick", timer_tick),
         ("clock and sleep", clock_and_sleep),
         ("keyboard", keyboard),
+        ("kernel threads", kernel_threads),
+        ("thread reaping", thread_reaping),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -439,4 +442,83 @@ fn clock_and_sleep(_: &'static BootInfo) {
         kprintln!("tsc: not invariant");
         assert!(elapsed_ns >= 50_000_000);
     }
+}
+
+/// Whose turn it is in the ping-pong test (0 or 1), and the shared count.
+static TURN: AtomicU64 = AtomicU64::new(0);
+static COUNT: AtomicU64 = AtomicU64::new(0);
+static DONE: AtomicU64 = AtomicU64::new(0);
+/// Set when a thread saw the other one's update between two of its own.
+static ALTERNATED: AtomicU64 = AtomicU64::new(0);
+
+const ROUNDS: u64 = 1000;
+
+/// One side of the ping-pong: waits for its turn (yielding), bumps the
+/// count, hands the turn over.
+fn ping_pong(me: u64) {
+    for round in 0..ROUNDS {
+        while TURN.load(Ordering::Acquire) != me {
+            task::yield_now();
+        }
+        // Strict alternation: before my n-th increment, both sides have
+        // done exactly n (if I go first) or n + 1 / n increments.
+        let count = COUNT.load(Ordering::Relaxed);
+        if count == 2 * round + me {
+            ALTERNATED.fetch_add(1, Ordering::Relaxed);
+        }
+        COUNT.store(count + 1, Ordering::Relaxed);
+        TURN.store(1 - me, Ordering::Release);
+    }
+    DONE.fetch_add(1, Ordering::Release);
+}
+
+fn kernel_threads(_: &'static BootInfo) {
+    assert_eq!(task::current_name(), "main");
+    let main = task::current_id();
+    let a = task::spawn("ping", || ping_pong(0)).expect("spawn failed");
+    let b = task::spawn("pong", || ping_pong(1)).expect("spawn failed");
+    assert!(a != main && b != main && a != b);
+    assert_eq!(task::stats().ready, 2);
+    let mut yields = 0u64;
+    while DONE.load(Ordering::Acquire) < 2 {
+        task::yield_now();
+        yields += 1;
+        assert!(yields < 1_000_000, "ping-pong did not finish");
+    }
+    assert_eq!(COUNT.load(Ordering::Relaxed), 2 * ROUNDS);
+    assert_eq!(ALTERNATED.load(Ordering::Relaxed), 2 * ROUNDS);
+    assert_eq!(task::current_id(), main);
+    kprintln!(
+        "selftest:   {} increments alternated, main yielded {yields} times",
+        COUNT.load(Ordering::Relaxed)
+    );
+}
+
+static EXITED: AtomicU64 = AtomicU64::new(0);
+
+fn thread_reaping(_: &'static BootInfo) {
+    let spawn_some = |n: u64| {
+        let start = EXITED.load(Ordering::Acquire);
+        for _ in 0..n {
+            task::spawn("short", || {
+                EXITED.fetch_add(1, Ordering::Release);
+            })
+            .expect("spawn failed");
+        }
+        while EXITED.load(Ordering::Acquire) < start + n {
+            task::yield_now();
+        }
+        // The last one is freed by the switch back to us.
+        task::yield_now();
+    };
+    // Warm up: the first stacks may create page tables, and the queues
+    // grow their capacity; both stay.
+    spawn_some(16);
+    let (free, _) = pmm::stats();
+    let heap = heap::stats().used;
+    spawn_some(16);
+    assert_eq!(task::stats().zombies, 0);
+    assert_eq!(pmm::stats().0, free, "kernel stacks not freed");
+    assert_eq!(heap::stats().used, heap, "thread control blocks not freed");
+    kprintln!("selftest:   16 threads exited and freed, {free} frames free");
 }

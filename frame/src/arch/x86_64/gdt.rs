@@ -98,6 +98,22 @@ const fn tss_descriptor(base: u64, limit: u64) -> (u64, u64) {
     (low, base >> 32)
 }
 
+/// Sets the TSS's RSP0, the stack the processor switches to when an
+/// interrupt or exception arrives in ring 3 (Vol. 3A 6.14.4 "Stack Switching
+/// in IA-32e Mode"). Called on every context switch.
+pub(crate) fn set_kernel_stack(top: u64) {
+    let tss = TSS.get();
+    // SAFETY: the TSS is a static; RSP0 is only read by the processor on a
+    // privilege change, which cannot happen on this processor while it runs
+    // this kernel code. The packed field is written unaligned, without
+    // creating a reference.
+    unsafe {
+        core::ptr::addr_of_mut!((*tss).rsp)
+            .cast::<u64>()
+            .write_unaligned(top)
+    };
+}
+
 /// Loads the GDT and the TSS and reloads every segment register.
 ///
 /// # Safety

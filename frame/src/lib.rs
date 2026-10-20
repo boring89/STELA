@@ -28,13 +28,16 @@ pub mod qemu;
 #[cfg(target_os = "none")]
 pub mod serial;
 pub mod sync;
+#[cfg(target_os = "none")]
+pub mod task;
 pub mod time;
 pub mod trap;
 
 /// Brings up what the kernel relies on: serial console, GDT, TSS and IDT,
 /// the frame allocator, the page tables, the heap, the framebuffer console,
 /// the ACPI MADT, the interrupt controllers (8259s masked, local APIC, I/O
-/// APICs), the per-CPU area, the PS/2 keyboard and the 1000 Hz timer.
+/// APICs), the per-CPU area and the boot thread's context, the PS/2
+/// keyboard and the 1000 Hz timer.
 /// Interrupts are enabled on return. Call
 /// once, first thing in the kernel.
 #[cfg(target_os = "none")]
@@ -45,6 +48,7 @@ pub fn init(info: &'static bootinfo::BootInfo) {
     console::fb::init(info);
     acpi::init(info);
     irq::init(acpi::madt());
+    task::init();
     input::init();
     time::init();
     irq::enable();

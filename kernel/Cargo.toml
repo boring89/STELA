@@ -7,6 +7,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+# The kernel's logic is a library, so that its pure parts (run queues,
+# sleep lists, the initrd reader) have host unit tests; the binary is the
+# entry point and the self tests.
+[lib]
+path = "src/lib.rs"
+bench = false
+doctest = false
+
 [[bin]]
 name = "kernel"
 path = "src/main.rs"

@@ -54,6 +54,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("ipc programs", ipc_programs),
         ("pci", pci),
         ("block devices", block_devices),
+        ("file systems", file_systems),
     ];
     // Let the service threads (console) reach their first wait, so that
     // their start-up allocations do not land in the middle of a test.
@@ -63,6 +64,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         test(info);
         kprintln!("selftest: {name} ok");
     }
+    kernel::vfs::unmount_all();
     kprintln!("selftest: OK");
     frame::qemu::exit(frame::qemu::ExitCode::Success);
 }
@@ -1078,8 +1080,9 @@ fn block_devices(_: &'static BootInfo) {
             disk.read(blocks, &mut first),
             Err(block::BlockError::OutOfRange)
         );
-        // The boot counter in the last block survives a restart.
-        let last = blocks - 1;
+        // The boot counter in block 64 (between the partition table and
+        // the first partition at 1 MiB) survives a restart.
+        let last = 64;
         let mut counter = vec![0u8; BLOCK_SIZE];
         disk.read(last, &mut counter).expect("read last block");
         let boots = if counter.starts_with(b"BOOTS") {
@@ -1093,4 +1096,35 @@ fn block_devices(_: &'static BootInfo) {
         disk.flush().expect("flush");
         kprintln!("storage: {name} boot {boots}");
     }
+}
+
+fn file_systems(_: &'static BootInfo) {
+    let volumes = kernel::vfs::volumes();
+    for v in &volumes {
+        let (total, free) = v.fs.space();
+        kprintln!(
+            "selftest:   volume {} \"{}\": {} KiB, {} KiB free",
+            v.index,
+            v.name,
+            total / 1024,
+            free / 1024
+        );
+    }
+    if let Some(boot) = kernel::vfs::find("boot") {
+        let fs = &boot.fs;
+        let hello = fs.lookup(fs.root(), "hello.txt").expect("Boot:/HELLO.TXT");
+        let mut buf = [0u8; 32];
+        let n = fs.read(hello.id, 0, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"hello from FAT\n");
+        assert_eq!(
+            fs.create(fs.root(), "x", false).err(),
+            Some(abi::Error::ReadOnly)
+        );
+    }
+    if kernel::vfs::find("Data").is_none() {
+        kprintln!("selftest:   no Data volume; fstest not run");
+        return;
+    }
+    let pid = kernel::program::spawn_from_initrd("fstest").expect("cannot start fstest");
+    assert_eq!(task::wait_process(pid), Some(0), "fstest failed");
 }

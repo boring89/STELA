@@ -71,11 +71,40 @@ pub enum Syscall {
     /// `InputAttach(port)`: keyboard events go to `port` (a handle with
     /// `SEND`) as `INPUT_KEY` messages, replacing the previous receiver.
     InputAttach = 15,
+    /// `DirOpen(dir, path_ptr, path_len, flags) -> handle`: opens (or with
+    /// `open::CREATE` makes) the file or folder at the relative path
+    /// (components separated by `/`; no `..`).
+    DirOpen = 16,
+    /// `DirRead(dir, index, &mut DirEntry) -> 1 | 0`: entry `index` of the
+    /// folder (0 past the last).
+    DirRead = 17,
+    /// `DirRemove(dir, name_ptr, name_len)`: removes a file or an empty
+    /// folder.
+    DirRemove = 18,
+    /// `DirRename(dir, old_ptr, old_len, new_dir, new_ptr, new_len)`:
+    /// moves and/or renames (same volume).
+    DirRename = 19,
+    /// `FileRead(file, buf, len, offset) -> bytes`.
+    FileRead = 20,
+    /// `FileWrite(file, buf, len, offset) -> bytes`.
+    FileWrite = 21,
+    /// `FileStat(file_or_dir, &mut Stat)`.
+    FileStat = 22,
+    /// `FileSetSize(file, size)`.
+    FileSetSize = 23,
+    /// `VolumeList(index, &mut VolumeInfo) -> 1 | 0`.
+    VolumeList = 24,
+    /// `VolumeOpen(name_ptr, name_len) -> handle`: the root folder of the
+    /// volume with that name.
+    VolumeOpen = 25,
+    /// `VolumeOpenById(dir, id) -> handle`: the item with persistent id
+    /// `id` on `dir`'s volume.
+    VolumeOpenById = 26,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 15] = [
+    pub const ALL: [Syscall; 26] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -91,6 +120,17 @@ impl Syscall {
         Syscall::MemoryMap,
         Syscall::MemoryUnmap,
         Syscall::InputAttach,
+        Syscall::DirOpen,
+        Syscall::DirRead,
+        Syscall::DirRemove,
+        Syscall::DirRename,
+        Syscall::FileRead,
+        Syscall::FileWrite,
+        Syscall::FileStat,
+        Syscall::FileSetSize,
+        Syscall::VolumeList,
+        Syscall::VolumeOpen,
+        Syscall::VolumeOpenById,
     ];
 
     /// The call with number `raw`, if any.
@@ -148,11 +188,27 @@ pub enum Error {
     OutOfHandles = 12,
     /// Something is already mapped there, or the map area is full.
     AlreadyMapped = 13,
+    /// No such file, folder or volume.
+    NotFound = 14,
+    /// The name is taken.
+    Exists = 15,
+    /// Not a folder.
+    NotDir = 16,
+    /// A folder where a file was expected.
+    IsDir = 17,
+    /// The folder is not empty.
+    NotEmpty = 18,
+    /// The volume is read-only.
+    ReadOnly = 19,
+    /// The volume is full.
+    NoSpace = 20,
+    /// The device failed or the volume is damaged.
+    IoError = 21,
 }
 
 impl Error {
     /// Every error, in value order.
-    pub const ALL: [Error; 13] = [
+    pub const ALL: [Error; 21] = [
         Error::InvalidSyscall,
         Error::InvalidArgument,
         Error::BadAddress,
@@ -166,6 +222,14 @@ impl Error {
         Error::PeerClosed,
         Error::OutOfHandles,
         Error::AlreadyMapped,
+        Error::NotFound,
+        Error::Exists,
+        Error::NotDir,
+        Error::IsDir,
+        Error::NotEmpty,
+        Error::ReadOnly,
+        Error::NoSpace,
+        Error::IoError,
     ];
 
     /// The error with status `raw` (`None` for 0 and unknown values).
@@ -198,6 +262,14 @@ impl Error {
             Error::PeerClosed => "peer closed",
             Error::OutOfHandles => "out of handles",
             Error::AlreadyMapped => "already mapped",
+            Error::NotFound => "not found",
+            Error::Exists => "already exists",
+            Error::NotDir => "not a folder",
+            Error::IsDir => "is a folder",
+            Error::NotEmpty => "folder not empty",
+            Error::ReadOnly => "read-only volume",
+            Error::NoSpace => "no space left",
+            Error::IoError => "I/O error",
         }
     }
 }
@@ -455,8 +527,213 @@ pub mod bootstrap {
     pub const CONSOLE: Handle = Handle::new(1, 1);
     /// `[2]`: a `SEND` handle from whoever started the process.
     pub const BOOTSTRAP: Handle = Handle::new(2, 1);
+    /// `[3]`: the working directory (the root of `Data` when the kernel
+    /// starts a program and there is one).
+    pub const CWD: Handle = Handle::new(3, 1);
     /// Number of bootstrap slots.
-    pub const COUNT: u32 = 3;
+    pub const COUNT: u32 = 4;
+}
+
+/// `DirOpen` flags.
+pub mod open {
+    /// The handle may read (files: `FileRead`; folders: list, open inside).
+    pub const READ: u64 = 1 << 0;
+    /// The handle may write (files: `FileWrite`, `FileSetSize`; folders:
+    /// create, remove, rename inside).
+    pub const WRITE: u64 = 1 << 1;
+    /// Make the item if it does not exist (the folder needs `WRITE`).
+    pub const CREATE: u64 = 1 << 2;
+    /// Files: cut to length 0 (needs `WRITE`).
+    pub const TRUNCATE: u64 = 1 << 3;
+    /// The item is (or is made as) a folder.
+    pub const DIRECTORY: u64 = 1 << 4;
+    /// With `CREATE`: fail with `Exists` if it is there already.
+    pub const EXCLUSIVE: u64 = 1 << 5;
+    /// Every defined flag.
+    pub const ALL: u64 = (1 << 6) - 1;
+}
+
+/// What a `DirEntry` or `Stat` describes.
+pub mod kind {
+    /// A file.
+    pub const FILE: u32 = 1;
+    /// A folder.
+    pub const DIRECTORY: u32 = 2;
+}
+
+/// Longest name in a `DirEntry` (bytes of UTF-8).
+pub const NAME_MAX: usize = 255;
+
+/// One folder entry (`DirRead`), 288 bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct DirEntry {
+    /// Persistent id (eHFS: the CNID).
+    pub id: u64,
+    /// Size in bytes (files).
+    pub size: u64,
+    /// Last change, ns since 1970 (0 if unknown).
+    pub mtime: u64,
+    /// `kind::FILE` or `kind::DIRECTORY`.
+    pub kind: u32,
+    /// Valid bytes of `name`.
+    pub name_len: u32,
+    /// The name (UTF-8).
+    pub name: [u8; NAME_MAX + 1],
+}
+
+impl DirEntry {
+    /// An empty entry.
+    pub const fn new() -> DirEntry {
+        DirEntry {
+            id: 0,
+            size: 0,
+            mtime: 0,
+            kind: 0,
+            name_len: 0,
+            name: [0; NAME_MAX + 1],
+        }
+    }
+
+    /// The name, if it is UTF-8.
+    pub fn name(&self) -> &str {
+        let n = (self.name_len as usize).min(NAME_MAX);
+        core::str::from_utf8(&self.name[..n]).unwrap_or("?")
+    }
+
+    /// The bytes copied to user memory.
+    pub fn to_bytes(&self) -> [u8; DIR_ENTRY_SIZE] {
+        let mut b = [0u8; DIR_ENTRY_SIZE];
+        b[0..8].copy_from_slice(&self.id.to_le_bytes());
+        b[8..16].copy_from_slice(&self.size.to_le_bytes());
+        b[16..24].copy_from_slice(&self.mtime.to_le_bytes());
+        b[24..28].copy_from_slice(&self.kind.to_le_bytes());
+        b[28..32].copy_from_slice(&self.name_len.to_le_bytes());
+        b[32..].copy_from_slice(&self.name);
+        b
+    }
+}
+
+impl Default for DirEntry {
+    fn default() -> DirEntry {
+        DirEntry::new()
+    }
+}
+
+/// Size of a [`DirEntry`].
+pub const DIR_ENTRY_SIZE: usize = core::mem::size_of::<DirEntry>();
+
+/// What `FileStat` returns, 48 bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct Stat {
+    /// Persistent id.
+    pub id: u64,
+    /// Size in bytes.
+    pub size: u64,
+    /// Creation, ns since 1970.
+    pub ctime: u64,
+    /// Last change, ns since 1970.
+    pub mtime: u64,
+    /// `kind::FILE` or `kind::DIRECTORY`.
+    pub kind: u32,
+    /// The volume's index (as `VolumeList` counts).
+    pub volume: u32,
+    /// Bit 0: the item is on a read-only volume.
+    pub flags: u32,
+    /// 0.
+    pub reserved: u32,
+}
+
+impl Stat {
+    /// The bytes copied to user memory.
+    pub fn to_bytes(&self) -> [u8; STAT_SIZE] {
+        let mut b = [0u8; STAT_SIZE];
+        b[0..8].copy_from_slice(&self.id.to_le_bytes());
+        b[8..16].copy_from_slice(&self.size.to_le_bytes());
+        b[16..24].copy_from_slice(&self.ctime.to_le_bytes());
+        b[24..32].copy_from_slice(&self.mtime.to_le_bytes());
+        b[32..36].copy_from_slice(&self.kind.to_le_bytes());
+        b[36..40].copy_from_slice(&self.volume.to_le_bytes());
+        b[40..44].copy_from_slice(&self.flags.to_le_bytes());
+        b
+    }
+}
+
+/// Size of a [`Stat`].
+pub const STAT_SIZE: usize = core::mem::size_of::<Stat>();
+
+/// What `VolumeList` returns, 96 bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct VolumeInfo {
+    /// Index (stable while the system runs).
+    pub index: u32,
+    /// Bit 0: read-only.
+    pub flags: u32,
+    /// `volume_kind::*`.
+    pub kind: u32,
+    /// Valid bytes of `name`.
+    pub name_len: u32,
+    /// Size in bytes.
+    pub total: u64,
+    /// Free bytes.
+    pub free: u64,
+    /// The volume name (UTF-8).
+    pub name: [u8; 64],
+}
+
+impl VolumeInfo {
+    /// An empty record.
+    pub const fn new() -> VolumeInfo {
+        VolumeInfo {
+            index: 0,
+            flags: 0,
+            kind: 0,
+            name_len: 0,
+            total: 0,
+            free: 0,
+            name: [0; 64],
+        }
+    }
+
+    /// The name.
+    pub fn name(&self) -> &str {
+        let n = (self.name_len as usize).min(64);
+        core::str::from_utf8(&self.name[..n]).unwrap_or("?")
+    }
+
+    /// The bytes copied to user memory.
+    pub fn to_bytes(&self) -> [u8; VOLUME_INFO_SIZE] {
+        let mut b = [0u8; VOLUME_INFO_SIZE];
+        b[0..4].copy_from_slice(&self.index.to_le_bytes());
+        b[4..8].copy_from_slice(&self.flags.to_le_bytes());
+        b[8..12].copy_from_slice(&self.kind.to_le_bytes());
+        b[12..16].copy_from_slice(&self.name_len.to_le_bytes());
+        b[16..24].copy_from_slice(&self.total.to_le_bytes());
+        b[24..32].copy_from_slice(&self.free.to_le_bytes());
+        b[32..].copy_from_slice(&self.name);
+        b
+    }
+}
+
+impl Default for VolumeInfo {
+    fn default() -> VolumeInfo {
+        VolumeInfo::new()
+    }
+}
+
+/// Size of a [`VolumeInfo`].
+pub const VOLUME_INFO_SIZE: usize = core::mem::size_of::<VolumeInfo>();
+
+/// `VolumeInfo::kind`.
+pub mod volume_kind {
+    /// eHFS.
+    pub const EHFS: u32 = 1;
+    /// FAT (read only).
+    pub const FAT: u32 = 2;
+    /// The initial RAM disk (read only).
+    pub const INITRD: u32 = 3;
 }
 
 /// `MemoryMap` flags.
@@ -525,6 +802,9 @@ const _: () = {
 
 // The message layout is ABI too.
 const _: () = {
+    assert!(DIR_ENTRY_SIZE == 288);
+    assert!(STAT_SIZE == 48);
+    assert!(VOLUME_INFO_SIZE == 96);
     assert!(MESSAGE_SIZE == 144);
     assert!(core::mem::offset_of!(Message, data) == 16);
     assert!(core::mem::offset_of!(Message, handle_slots) == 128);
@@ -552,11 +832,22 @@ mod tests {
         assert_eq!(Syscall::MemoryMap.raw(), 13);
         assert_eq!(Syscall::MemoryUnmap.raw(), 14);
         assert_eq!(Syscall::InputAttach.raw(), 15);
+        assert_eq!(Syscall::DirOpen.raw(), 16);
+        assert_eq!(Syscall::DirRead.raw(), 17);
+        assert_eq!(Syscall::DirRemove.raw(), 18);
+        assert_eq!(Syscall::DirRename.raw(), 19);
+        assert_eq!(Syscall::FileRead.raw(), 20);
+        assert_eq!(Syscall::FileWrite.raw(), 21);
+        assert_eq!(Syscall::FileStat.raw(), 22);
+        assert_eq!(Syscall::FileSetSize.raw(), 23);
+        assert_eq!(Syscall::VolumeList.raw(), 24);
+        assert_eq!(Syscall::VolumeOpen.raw(), 25);
+        assert_eq!(Syscall::VolumeOpenById.raw(), 26);
         for call in Syscall::ALL {
             assert_eq!(Syscall::from_raw(call.raw()), Some(call));
         }
         assert_eq!(Syscall::from_raw(REMOVED_DEBUG_WRITE), None);
-        assert_eq!(Syscall::from_raw(16), None);
+        assert_eq!(Syscall::from_raw(27), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 
@@ -575,12 +866,20 @@ mod tests {
         assert_eq!(Error::PeerClosed.raw(), 11);
         assert_eq!(Error::OutOfHandles.raw(), 12);
         assert_eq!(Error::AlreadyMapped.raw(), 13);
+        assert_eq!(Error::NotFound.raw(), 14);
+        assert_eq!(Error::Exists.raw(), 15);
+        assert_eq!(Error::NotDir.raw(), 16);
+        assert_eq!(Error::IsDir.raw(), 17);
+        assert_eq!(Error::NotEmpty.raw(), 18);
+        assert_eq!(Error::ReadOnly.raw(), 19);
+        assert_eq!(Error::NoSpace.raw(), 20);
+        assert_eq!(Error::IoError.raw(), 21);
         for e in Error::ALL {
             assert_eq!(Error::from_raw(e.raw()), Some(e));
             assert!(!e.name().is_empty());
         }
         assert_eq!(Error::from_raw(0), None);
-        assert_eq!(Error::from_raw(14), None);
+        assert_eq!(Error::from_raw(22), None);
     }
 
     #[test]
@@ -652,5 +951,24 @@ mod tests {
         assert_eq!(Message::with_data(0, &long).len, 112);
         assert_eq!(tag::CONSOLE_WRITE, 1);
         assert_eq!(tag::INPUT_KEY, 2);
+    }
+
+    #[test]
+    fn file_structures() {
+        let mut e = DirEntry::new();
+        e.id = 17;
+        e.kind = kind::DIRECTORY;
+        e.name[..4].copy_from_slice(b"docs");
+        e.name_len = 4;
+        let b = e.to_bytes();
+        assert_eq!(&b[0..8], &17u64.to_le_bytes());
+        assert_eq!(&b[24..28], &2u32.to_le_bytes());
+        assert_eq!(&b[32..36], b"docs");
+        assert_eq!(e.name(), "docs");
+        assert_eq!(core::mem::offset_of!(DirEntry, name), 32);
+        assert_eq!(core::mem::offset_of!(Stat, kind), 32);
+        assert_eq!(core::mem::offset_of!(VolumeInfo, name), 32);
+        assert_eq!(bootstrap::CWD.0, 0x0100_0003);
+        assert_eq!(open::ALL, 0x3F);
     }
 }

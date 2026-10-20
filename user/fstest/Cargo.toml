@@ -1,0 +1,20 @@
+[package]
+name = "fstest"
+description = "STELA test program: file system calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fstest"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

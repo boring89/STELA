@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Raw system calls (see the `abi` crate for the convention): the number
-//! in RAX, arguments in RDI, RSI, RDX; the status comes back in RAX and
-//! the value in RDX; RCX and R11 are clobbered by the processor.
+//! in RAX, arguments in RDI, RSI, RDX, R10, R8, R9; the status comes back
+//! in RAX and the value in RDX; RCX and R11 are clobbered by the
+//! processor.
 
 use abi::{Error, Syscall};
 use core::arch::asm;
@@ -25,6 +26,17 @@ pub fn syscall2(call: Syscall, a0: u64, a1: u64) -> Result<u64, Error> {
 
 /// A call with three arguments.
 pub fn syscall3(call: Syscall, a0: u64, a1: u64, a2: u64) -> Result<u64, Error> {
+    syscall6(call, [a0, a1, a2, 0, 0, 0])
+}
+
+/// A call with four arguments.
+pub fn syscall4(call: Syscall, a0: u64, a1: u64, a2: u64, a3: u64) -> Result<u64, Error> {
+    syscall6(call, [a0, a1, a2, a3, 0, 0])
+}
+
+/// A call with up to six arguments (RDI, RSI, RDX, R10, R8, R9).
+pub fn syscall6(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
+    let [a0, a1, a2, a3, a4, a5] = args;
     let status: u64;
     let value: u64;
     // SAFETY: `syscall` enters the STELA kernel, which preserves every
@@ -39,6 +51,9 @@ pub fn syscall3(call: Syscall, a0: u64, a1: u64, a2: u64) -> Result<u64, Error> 
             in("rdi") a0,
             in("rsi") a1,
             inlateout("rdx") a2 => value,
+            in("r10") a3,
+            in("r8") a4,
+            in("r9") a5,
             lateout("rcx") _,
             lateout("r11") _,
             options(nostack)

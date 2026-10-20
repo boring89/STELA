@@ -11,7 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3
+        # mtools and gdisk (sgdisk) make the FAT and GPT test images.
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3 mtools gdisk
       - name: Install Rust toolchain
         # Any cargo call makes rustup install the toolchain, targets and
         # components pinned by rust-toolchain.toml (`rustup show` stopped
@@ -25,7 +26,8 @@ jobs:
         # Host unit tests, QEMU self tests (default and minimal CPU without
         # NX; keystrokes injected through QMP send-key; threads, user mode,
         # system calls, the initrd programs, ports and the IPC test
-        # programs), and a framebuffer screendump check after hello has run
+        # programs, PCI, AHCI and NVMe disks, GPT, FAT and eHFS volumes over
+        # two boots), and a framebuffer screendump check after hello has run
         # and a line was typed into the echo program. Builds the user
         # programs and packs the initrd with
         # the runner's GNU tar. No KVM needed.

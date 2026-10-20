@@ -155,3 +155,33 @@ pub fn spin_for(timeout_ns: u64, done: impl Fn() -> bool) -> bool {
     }
     done()
 }
+
+/// A value behind a [`SleepLock`]: [`SleepMutex::with`] may sleep (do
+/// I/O) while it works on the value. The value is moved out of its slot
+/// for the duration, so no `unsafe` is needed.
+pub struct SleepMutex<T> {
+    lock: SleepLock,
+    slot: SpinLock<Option<T>>,
+}
+
+impl<T> SleepMutex<T> {
+    /// A mutex holding `value`.
+    pub const fn new(value: T) -> SleepMutex<T> {
+        SleepMutex {
+            lock: SleepLock::new(),
+            slot: SpinLock::new(Some(value)),
+        }
+    }
+
+    /// Runs `f` on the value, alone.
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let _guard = self.lock.lock();
+        let taken = self.slot.lock().take();
+        let Some(mut value) = taken else {
+            panic!("sync: SleepMutex value missing (a panic inside with?)");
+        };
+        let result = f(&mut value);
+        *self.slot.lock() = Some(value);
+        result
+    }
+}

@@ -29,6 +29,7 @@ selftest = []
 abi = { path = "../abi" }
 block = { path = "../block" }
 drivers = { path = "../drivers" }
+ehfs = { path = "../ehfs" }
 elfload = { path = "../elfload" }
 frame = { path = "../frame" }
 

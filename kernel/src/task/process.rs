@@ -153,7 +153,7 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Creates a process with an empty address space, no threads and the
 /// bootstrap handles: `[0]` its main port, `[1]` the console service (if
-/// it runs), `[2]` nothing.
+/// it runs), `[2]` nothing, `[3]` the root of `Data` (if mounted).
 pub fn create(name: &str) -> Result<Arc<Process>, MapError> {
     create_with(name, None)
 }
@@ -171,7 +171,15 @@ pub fn create_with(name: &str, bootstrap: Option<Entry>) -> Result<Arc<Process>,
         object: KernelObject::Port(port),
         rights: Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
     });
-    let handles = HandleTable::with_initial([Some(main), console, bootstrap]);
+    let cwd = crate::vfs::find("Data").map(|volume| {
+        let rights = crate::fsyscall::root_rights(&volume);
+        let id = volume.fs.root();
+        Entry {
+            object: KernelObject::Directory(crate::vfs::Node { volume, id }),
+            rights,
+        }
+    });
+    let handles = HandleTable::with_initial([Some(main), console, bootstrap, cwd]);
     TABLE.lock().insert(
         id,
         Status::Running {

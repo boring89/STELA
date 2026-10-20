@@ -16,6 +16,8 @@ pub mod block;
 #[cfg(target_os = "none")]
 pub mod console;
 pub mod fs;
+#[cfg(target_os = "none")]
+pub mod fsyscall;
 pub mod initrd;
 #[cfg(target_os = "none")]
 pub mod input;
@@ -25,3 +27,4 @@ pub mod program;
 #[cfg(target_os = "none")]
 pub mod syscall;
 pub mod task;
+pub mod vfs;

@@ -27,7 +27,8 @@ pub fn init() {
 
 /// The handler frame calls for every `syscall`.
 fn handle(frame: &mut SyscallFrame) {
-    let [a0, a1, a2, _a3, _a4, _a5] = frame.args();
+    let args = frame.args();
+    let [a0, a1, a2, ..] = args;
     let result = match Syscall::from_raw(frame.number()) {
         Some(Syscall::ProcessExit) => task::exit_process(a0 as i64),
         Some(Syscall::ThreadExit) => task::exit(),
@@ -50,6 +51,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::MemoryMap) => memory_map(a0, a1),
         Some(Syscall::MemoryUnmap) => memory_unmap(a0),
         Some(Syscall::InputAttach) => input_attach(a0),
+        Some(call) => file_call(call, args),
         None => Err(Error::InvalidSyscall),
     };
     let (status, value) = abi::encode(result);
@@ -268,4 +270,25 @@ fn input_attach(handle: u64) -> Result<u64, Error> {
     let port = port_of(&process, handle, Rights::SEND)?;
     crate::input::attach(port);
     Ok(0)
+}
+
+/// The file system calls (`crate::fsyscall`).
+fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
+    use crate::fsyscall::*;
+    let p = caller()?;
+    let [a0, a1, a2, a3, _, _] = args;
+    match call {
+        Syscall::DirOpen => dir_open(&p, a0, a1, a2, a3),
+        Syscall::DirRead => dir_read(&p, a0, a1, a2),
+        Syscall::DirRemove => dir_remove(&p, a0, a1, a2),
+        Syscall::DirRename => dir_rename(&p, args),
+        Syscall::FileRead => file_read(&p, a0, a1, a2, a3),
+        Syscall::FileWrite => file_write(&p, a0, a1, a2, a3),
+        Syscall::FileStat => file_stat(&p, a0, a1),
+        Syscall::FileSetSize => file_set_size(&p, a0, a1),
+        Syscall::VolumeList => volume_list(&p, a0, a1),
+        Syscall::VolumeOpen => volume_open(&p, a0, a1),
+        Syscall::VolumeOpenById => volume_open_by_id(&p, a0, a1),
+        _ => Err(Error::InvalidSyscall),
+    }
 }

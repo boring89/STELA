@@ -19,6 +19,7 @@ pub use target::*;
 #[cfg(target_os = "none")]
 mod target {
     use super::port::Port;
+    use crate::vfs::Node;
     use alloc::sync::Arc;
     use frame::mm::shared::SharedMemory;
 
@@ -29,6 +30,10 @@ mod target {
         Port(Arc<Port>),
         /// Shared memory (the frames are reference counted inside).
         Memory(SharedMemory),
+        /// A folder on a volume.
+        Directory(Node),
+        /// A file on a volume.
+        File(Node),
     }
 
     impl KernelObject {
@@ -36,6 +41,22 @@ mod target {
         pub fn as_port(&self) -> Option<&Arc<Port>> {
             match self {
                 KernelObject::Port(port) => Some(port),
+                _ => None,
+            }
+        }
+
+        /// The folder, if this is one.
+        pub fn as_directory(&self) -> Option<&Node> {
+            match self {
+                KernelObject::Directory(node) => Some(node),
+                _ => None,
+            }
+        }
+
+        /// The file, if this is one.
+        pub fn as_file(&self) -> Option<&Node> {
+            match self {
+                KernelObject::File(node) => Some(node),
                 _ => None,
             }
         }

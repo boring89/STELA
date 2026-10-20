@@ -20,6 +20,7 @@
 pub use abi;
 pub use abi::{Error, Handle, MESSAGE_DATA, Message, PORT_QUEUE_DEPTH, Rights, bootstrap, tag};
 
+pub mod fs;
 pub mod ipc;
 pub mod sys;
 

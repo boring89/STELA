@@ -9,7 +9,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 
@@ -104,9 +104,16 @@ test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 		--expect "spin: " --expect "ipc_client: OK" --expect "selftest: OK" \
 		-- $(QEMU) $(QEMU_TEST_FLAGS)
 
-test-qemu-min: esp-test $(BUILD)/OVMF_VARS.fd
+# The minimal machine also gets the AHCI test disk (a copy of its own):
+# AHCI, GPT, FAT, eHFS and fstest on a Core 2 without NX in 256 MiB.
+test-qemu-min: esp-test test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-min.img
 	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --expect "NX off" \
-		--expect "input: OK" --expect "selftest: OK" -- $(QEMU) $(QEMU_MIN_FLAGS)
+		--expect "vfs: mounted Boot (FAT, ro" --expect "input: OK" --expect "fstest: OK" \
+		--expect "selftest: OK" -- $(QEMU) $(QEMU_MIN_FLAGS) \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-min.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-min.img
 
 # Boot the normal kernel (which runs hello from the initrd first, then
 # echo), type a line into echo, save the screen once the uptime is printed,
@@ -145,20 +152,25 @@ STORAGE_FLAGS = -drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci.img \
 	-drive if=none,id=nvm1,format=raw,file=$(IMAGES)/nvme.img \
 	-device nvme,serial=stela-nvme,drive=nvm1,logical_block_size=4096,physical_block_size=4096
 
-test-images:
-	mkdir -p $(IMAGES)
-	python3 tools/make_test_disk.py $(IMAGES)/ahci.img 64
-	python3 tools/make_test_disk.py $(IMAGES)/nvme.img 64
+test-images: ehfs-tools
+	python3 tools/make_test_images.py storage $(IMAGES) $(EHFS_TOOLS)
 
 # Boots the self-test kernel twice with the test disks: the second boot
-# must find what the first one wrote.
+# must find what the first one wrote (raw blocks and eHFS files); then the
+# host's fsck.ehfs checks both eHFS volumes.
+STORAGE_EXPECT := --expect "vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Archive (eHFS, rw, 62 MiB)"
 test-storage: esp-test test-images $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) \
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) $(STORAGE_EXPECT) \
 		--expect "storage: ahci0p1 boot 1" --expect "storage: nvme0n1 boot 1" \
+		--expect "fstest: boot 1" --expect "fstest: OK" \
 		--expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS) $(STORAGE_FLAGS)
-	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) \
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) $(STORAGE_EXPECT) \
 		--expect "storage: ahci0p1 boot 2" --expect "storage: nvme0n1 boot 2" \
+		--expect "fstest: boot 2" --expect "fstest: OK" \
 		--expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS) $(STORAGE_FLAGS)
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci.img
+	$(EHFS_TOOLS)/fsck.ehfs --offset 2048 $(IMAGES)/nvme.img
+	$(EHFS_TOOLS)/ehfs-ls --offset 83968 $(IMAGES)/ahci.img /
 
 clippy:
 	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings

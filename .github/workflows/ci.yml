@@ -12,8 +12,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install packages
         # mtools and gdisk (sgdisk) make the FAT and GPT test images.
-        # gcc builds musl and the Linux test programs.
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3 mtools gdisk gcc
+        # gcc builds musl, the Linux test programs and the Classic
+        # environment's C code; the m68k binutils assemble its 68k tests.
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3 mtools gdisk gcc binutils-m68k-linux-gnu
       - name: musl tarball
         # The Linux test programs are built with musl (MIT). Locally the
         # tarball is copied from where it already is; here it is fetched

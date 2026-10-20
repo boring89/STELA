@@ -1,0 +1,6 @@
+source: https://github.com/kstenerud/Musashi
+commit: 313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd (2026-03-08)
+version string: Musashi 4.10 (m68kmake reports v4.60)
+files copied unmodified: m68k.h m68k_in.c m68kconf.h m68kcpu.[ch] m68kdasm.c m68kfpu.c m68kmake.c m68kmmu.h softfloat/ readme.txt history.txt
+not copied: example/ test/ Makefile
+note: LICENSE is the MIT text taken from readme.txt

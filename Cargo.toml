@@ -27,6 +27,7 @@ members = [
     "user/echo_win",
     "user/mouseion",
     "user/viewer",
+    "classic",
     "tools/ehfs",
 ]
 

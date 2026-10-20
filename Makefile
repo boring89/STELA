@@ -55,11 +55,11 @@ QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 # Crates that run on the host and have unit tests.
 HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela toolbox
 # Crates with a bare-metal binary whose library part has host unit tests.
-HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer
+HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 # User-space crates (same target).
-USER_CRATES := libstela toolbox $(USER_PROGRAMS)
+USER_CRATES := libstela toolbox $(USER_PROGRAMS) classic
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-textmode test-window \
 	disk-image test-disk-image host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
@@ -451,6 +451,7 @@ clippy:
 	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) --features kernel/selftest -- -D warnings
 	cargo clippy --release $(addprefix -p ,$(USER_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
 	cargo clippy --tests $(addprefix -p ,$(HOST_CRATES)) -- -D warnings
+	cargo clippy --tests --lib -p classic -- -D warnings
 	cargo clippy --bins -p ehfs-tools -- -D warnings
 	cargo clippy --lib --tests $(addprefix -p ,$(HOST_LIB_CRATES)) -- -D warnings
 

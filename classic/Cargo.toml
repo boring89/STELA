@@ -1,0 +1,28 @@
+[package]
+name = "classic"
+description = "The Classic environment: a Macintosh IIci (Musashi + 68k_HAL's machine model) in a window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[lib]
+path = "src/lib.rs"
+bench = false
+doctest = false
+
+[[bin]]
+name = "classic"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../abi" }
+libstela = { path = "../user/libstela" }
+toolbox = { path = "../user/toolbox" }
+
+[lints]
+workspace = true

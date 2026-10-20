@@ -77,11 +77,13 @@ test-qemu-min: esp-test $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --expect "NX off" \
 		--expect "input: OK" --expect "selftest: OK" -- $(QEMU) $(QEMU_MIN_FLAGS)
 
-# Boot the normal kernel, save the screen once it is idle, and check that the
-# framebuffer console drew text.
+# Boot the normal kernel, type a line into its echo loop, save the screen
+# once the uptime is printed, and check that the framebuffer console drew
+# text.
 test-fb: esp $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --screendump $(BUILD)/screen.ppm --expect "STELA kernel" \
-		--expect "nothing more to do" -- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
+	python3 tools/qemu_test.py --screendump $(BUILD)/screen.ppm \
+		--send-keys "kernel: ready" "h i ret" --expect "STELA kernel" --expect "kernel: ready" \
+		--expect "uptime:" -- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm
 
 clippy:

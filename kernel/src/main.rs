@@ -58,10 +58,46 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     selftest::run(info);
 
     #[cfg(not(feature = "selftest"))]
-    {
-        kprintln!("kernel: nothing more to do; halting");
-        frame::halt();
+    main_loop();
+}
+
+/// Echoes what is typed and prints the uptime on Enter, sleeping between
+/// events. A placeholder until there are processes (P3) and a shell (P6).
+#[cfg(not(feature = "selftest"))]
+fn main_loop() -> ! {
+    use frame::input::{self, InputEvent};
+    kprintln!("kernel: ready; type to echo, Enter prints the uptime");
+    loop {
+        let Some(InputEvent::Key(event)) = input::pop() else {
+            // An event that arrives between pop() and the halt only waits
+            // for the next timer tick (1 ms).
+            frame::halt_until_interrupt();
+            continue;
+        };
+        match input::key_to_char(&event) {
+            Some('\n') => {
+                kprintln!();
+                print_uptime();
+            }
+            // Control characters in caret notation (Backspace = ^H).
+            Some(c) if c.is_ascii_control() && c != '\t' => {
+                frame::kprint!("^{}", char::from(c as u8 ^ 0x40));
+            }
+            Some(c) => frame::kprint!("{c}"),
+            None => {}
+        }
     }
+}
+
+#[cfg(not(feature = "selftest"))]
+fn print_uptime() {
+    let ns = frame::time::now_ns();
+    kprintln!(
+        "uptime: {}.{:03} s, {} ticks",
+        ns / 1_000_000_000,
+        ns / 1_000_000 % 1_000,
+        frame::time::ticks()
+    );
 }
 
 #[panic_handler]

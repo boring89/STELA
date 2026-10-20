@@ -20,25 +20,47 @@ use crate::sync::SpinLock;
 use bootinfo::{BootInfo, HHDM_BASE};
 use core::arch::asm;
 use core::ops::Range;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-const PRESENT: u64 = 1 << 0;
-const WRITABLE: u64 = 1 << 1;
+pub(crate) const PRESENT: u64 = 1 << 0;
+pub(crate) const WRITABLE: u64 = 1 << 1;
+/// U/S: user-mode accesses allowed (needed at every level).
+pub(crate) const USER: u64 = 1 << 2;
 /// PWT: page-level write-through.
 const WRITE_THROUGH: u64 = 1 << 3;
 /// PCD: page-level cache disable.
 const CACHE_DISABLE: u64 = 1 << 4;
 /// PS: in a PDPTE or PDE, the entry maps a 1 GiB or 2 MiB page.
-const HUGE: u64 = 1 << 7;
-const NO_EXECUTE: u64 = 1 << 63;
-const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
+pub(crate) const HUGE: u64 = 1 << 7;
+pub(crate) const NO_EXECUTE: u64 = 1 << 63;
+pub(crate) const ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
 /// Whether the loader enabled `IA32_EFER.NXE`; without it bit 63 is
 /// reserved and must stay 0.
 static NX: AtomicBool = AtomicBool::new(false);
 
-/// Serialises page-table edits.
+/// Physical address of the kernel's PML4 (the loader's). Every address
+/// space shares its upper half (slots 256-511), so kernel mappings are
+/// edited through it whatever CR3 holds; the lower half of it is empty.
+static KERNEL_ROOT: AtomicU64 = AtomicU64::new(0);
+
+/// Serialises page-table edits of the kernel half.
 static LOCK: SpinLock<()> = SpinLock::new(());
+
+/// Whether the NX bit may be used.
+pub(crate) fn nx() -> bool {
+    NX.load(Ordering::Relaxed)
+}
+
+/// The kernel's PML4.
+pub(crate) fn kernel_root() -> u64 {
+    KERNEL_ROOT.load(Ordering::Relaxed)
+}
+
+/// Holds the kernel-half lock (to read the kernel PML4 consistently).
+pub(crate) fn kernel_lock() -> crate::sync::SpinLockGuard<'static, ()> {
+    LOCK.lock()
+}
 
 /// Permissions of a mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,32 +98,46 @@ pub enum MapError {
 ///
 /// # Safety
 ///
-/// `phys` must be a page table of the active hierarchy, the caller must
-/// hold [`LOCK`] (or run before anyone else can), and must not let two of
-/// these references to the same table be alive at once.
-unsafe fn table(phys: u64) -> &'static mut [u64; 512] {
+/// `phys` must be a page table (of the active hierarchy, or of a user
+/// address space), the caller must hold the lock that serialises its edits
+/// ([`LOCK`] for the kernel half, the address space's own lock for a user
+/// half) or run before anyone else can, and must not let two of these
+/// references to the same table be alive at once.
+pub(crate) unsafe fn table(phys: u64) -> &'static mut [u64; 512] {
     // SAFETY: page tables are RAM, which the HHDM maps writable; exclusivity
     // is the caller's obligation.
     unsafe { &mut *((HHDM_BASE + phys) as *mut [u64; 512]) }
 }
 
-/// Physical address of the PML4 (CR3 bits 12..51, Vol. 3A 4.5.2).
-fn root() -> u64 {
+/// Physical address of the active PML4 (CR3 bits 12..51, Vol. 3A 4.5.2).
+pub(crate) fn root() -> u64 {
     let cr3: u64;
     // SAFETY: reading CR3 has no side effects.
     unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)) };
     cr3 & ADDR_MASK
 }
 
+/// Loads CR3 with the PML4 at `phys` (flushing non-global TLB entries).
+///
+/// # Safety
+///
+/// `phys` must be a PML4 whose upper half is the kernel's, which stays
+/// alive while it is loaded.
+pub(crate) unsafe fn load_root(phys: u64) {
+    // SAFETY: the caller guarantees the new hierarchy maps the kernel the
+    // same way, so the running code, stack and data stay where they are.
+    unsafe { asm!("mov cr3, {}", in(reg) phys, options(nostack, preserves_flags)) };
+}
+
 /// Flushes the TLB entry for `virt`.
-fn invlpg(virt: u64) {
+pub(crate) fn invlpg(virt: u64) {
     // SAFETY: invalidating a TLB entry only makes the processor re-read the
     // page tables.
     unsafe { asm!("invlpg [{}]", in(reg) virt, options(nostack, preserves_flags)) };
 }
 
 /// Index into the table at `level` (4 = PML4 ... 1 = PT) for `virt`.
-const fn index(virt: u64, level: u32) -> usize {
+pub(crate) const fn index(virt: u64, level: u32) -> usize {
     ((virt >> (12 + 9 * (level - 1))) & 0x1FF) as usize
 }
 
@@ -110,6 +146,7 @@ const fn index(virt: u64, level: u32) -> usize {
 /// once the kernel runs.
 pub(crate) fn init(info: &'static BootInfo) {
     NX.store(info.nx_enabled != 0, Ordering::Relaxed);
+    KERNEL_ROOT.store(root(), Ordering::Relaxed);
     let _guard = LOCK.lock();
     // SAFETY: the PML4 is the active root; LOCK is held.
     let pml4 = unsafe { table(root()) };
@@ -173,7 +210,7 @@ pub(crate) fn map_device(virt: u64, phys: u64) -> Result<(), MapError> {
 /// intermediate tables.
 fn map_page(virt: u64, phys: u64, bits: u64) -> Result<(), MapError> {
     let _guard = LOCK.lock();
-    let mut table_phys = root();
+    let mut table_phys = kernel_root();
     for level in [4, 3, 2] {
         // SAFETY: `table_phys` is a table of the active hierarchy (the root,
         // or taken from a present non-huge entry); LOCK is held; the
@@ -206,7 +243,7 @@ pub fn unmap(virt: u64) -> Result<PhysFrame, MapError> {
     // Not the MMIO window: its pages are device memory, not frames.
     check(virt, DYNAMIC_BASE..MMIO_BASE)?;
     let _guard = LOCK.lock();
-    let mut phys = root();
+    let mut phys = kernel_root();
     for level in [4, 3, 2] {
         // SAFETY: see `map`.
         let entry = unsafe { table(phys) }[index(virt, level)];

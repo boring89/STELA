@@ -23,6 +23,7 @@
 //! switch itself happens after the lock is released, still with
 //! interrupts off.
 
+use super::process::Process;
 use super::queue::{RunQueue, SleepList};
 use super::{TIME_SLICE, ThreadId};
 use alloc::boxed::Box;
@@ -60,8 +61,12 @@ pub struct Thread {
     /// A wake-up that arrived before the thread blocked.
     wake_pending: bool,
     context: Arc<TaskContext>,
-    /// What the thread runs, taken on its first start.
+    /// What a kernel thread runs, taken on its first start.
     start: Option<Box<dyn FnOnce() + Send>>,
+    /// Where a user thread starts: (entry, stack pointer, argument).
+    user_start: Option<(u64, u64, u64)>,
+    /// The process of a user thread; `None` for kernel threads.
+    process: Option<Arc<Process>>,
 }
 
 /// The per-processor scheduler state. Threads are boxed everywhere so that
@@ -122,6 +127,8 @@ pub fn init() {
         wake_pending: false,
         context: frame::task::current(),
         start: None,
+        user_start: None,
+        process: None,
     });
     let idle_id = new_id();
     let idle = match TaskContext::new(idle_entry, 0, false) {
@@ -134,6 +141,8 @@ pub fn init() {
             wake_pending: false,
             context,
             start: None,
+            user_start: None,
+            process: None,
         }),
         Err(OutOfMemory) => panic!("task: no memory for the idle thread"),
     };
@@ -151,6 +160,7 @@ pub fn init() {
     drop(cpu);
     frame::time::set_tick_hook(tick);
     frame::task::set_scheduler(preempt);
+    frame::task::set_user_fault_handler(user_fault);
 }
 
 /// Runs on every timer tick (1 ms), inside the interrupt: wakes the
@@ -223,11 +233,18 @@ fn idle_entry(_: usize) -> ! {
     }
 }
 
-/// Where every kernel thread starts: frees what the previous thread left
-/// behind, runs the thread's function, and exits.
+/// Where every thread starts: frees what the previous thread left behind,
+/// then runs the kernel thread's function (and exits), or enters user mode.
 fn thread_entry(_: usize) -> ! {
     reap();
-    let start = with(|s| current_mut(s).start.take());
+    let (start, user) = with(|s| {
+        let t = current_mut(s);
+        (t.start.take(), t.user_start.take())
+    });
+    if let Some((entry, rsp, arg)) = user {
+        // The scheduler activated the process's address space.
+        frame::task::enter_user(entry, rsp, arg);
+    }
     if let Some(start) = start {
         start();
     }
@@ -250,9 +267,125 @@ pub fn spawn(
         wake_pending: false,
         context,
         start: Some(Box::new(f)),
+        user_start: None,
+        process: None,
     });
     with(|s| s.ready.push(thread));
     Ok(id)
+}
+
+/// Why a user thread could not be created.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnError {
+    /// No memory for the kernel stack.
+    OutOfMemory,
+    /// The process is exiting.
+    Exiting,
+}
+
+/// Creates a thread of `process` that starts in user mode at `entry`, with
+/// stack pointer `rsp` and `arg` in rdi, and queues it.
+pub fn spawn_user(
+    process: &Arc<Process>,
+    entry: u64,
+    rsp: u64,
+    arg: u64,
+) -> Result<ThreadId, SpawnError> {
+    let context =
+        TaskContext::new(thread_entry, 0, true).map_err(|OutOfMemory| SpawnError::OutOfMemory)?;
+    let id = new_id();
+    let thread = Box::new(Thread {
+        id,
+        name: "user",
+        state: State::Ready,
+        priority: 0,
+        slice: TIME_SLICE,
+        wake_pending: false,
+        context,
+        start: None,
+        user_start: Some((entry, rsp, arg)),
+        process: Some(Arc::clone(process)),
+    });
+    let _irq = IrqGuard::new();
+    if process.exiting() {
+        return Err(SpawnError::Exiting);
+    }
+    process.thread_added();
+    with(|s| s.ready.push(thread));
+    Ok(id)
+}
+
+/// The process of the running thread (`None` for a kernel thread).
+pub fn current_process() -> Option<Arc<Process>> {
+    with(|s| current_mut(s).process.clone())
+}
+
+/// Ends every thread of the running thread's process with exit code
+/// `code` (unless one was already decided) and switches away. The process
+/// ends when the last of them has been freed.
+pub fn exit_process(code: i64) -> ! {
+    {
+        let _irq = IrqGuard::new();
+        let Some(process) = current_process() else {
+            panic!("task: exit_process from a kernel thread");
+        };
+        kill(&process, code);
+        // schedule() never returns here: nothing on this stack is dropped
+        // after it, so the reference must go first.
+        drop(process);
+        schedule();
+    }
+    unreachable!("task: a zombie was scheduled");
+}
+
+/// Ends every thread of `process` with exit code `code` (unless one was
+/// already decided). Threads that are not running become zombies at once;
+/// if the running thread belongs to it, it becomes a zombie too and the
+/// caller must call [`schedule`] (it does not return to user mode).
+pub fn kill(process: &Arc<Process>, code: i64) {
+    process.set_exit_code(code);
+    let pid = process.id();
+    // The containers hold boxes, so the predicate takes `&Box<Thread>`.
+    #[allow(clippy::borrowed_box)]
+    let ours = |t: &Box<Thread>| belongs_to(t, pid);
+    with(|s| {
+        let mut doomed = s.ready.take_where(ours);
+        doomed.append(&mut s.sleeping.take_where(ours));
+        let (mut blocked, others): (Vec<_>, Vec<_>) =
+            core::mem::take(&mut s.blocked).into_iter().partition(ours);
+        s.blocked = others;
+        doomed.append(&mut blocked);
+        for mut t in doomed {
+            t.state = State::Zombie;
+            s.zombies.push(t);
+        }
+        if let Some(t) = s.current.as_mut().filter(|t| ours(t)) {
+            t.state = State::Zombie;
+        }
+    });
+}
+
+/// Whether `thread` is one of process `pid`'s.
+fn belongs_to(thread: &Thread, pid: super::ProcessId) -> bool {
+    thread.process.as_ref().is_some_and(|p| p.id() == pid)
+}
+
+/// The handler for exceptions in ring 3: reports them and ends the
+/// process with exit code 128 + vector.
+fn user_fault(frame: &frame::trap::TrapFrame, cr2: u64) -> ! {
+    let process = current_process();
+    let (pid, name) = process.as_ref().map_or((0, "?"), |p| (p.id(), p.name()));
+    frame::kprintln!(
+        "process {pid} ({name}): exception {} ({}), error code {:#x} at RIP={:#x} RSP={:#x} CR2={:#x}; killed",
+        frame.vector,
+        frame::trap::exception_name(frame.vector),
+        frame.error_code,
+        frame.rip,
+        frame.rsp,
+        cr2
+    );
+    drop(process);
+    exit_process(128 + frame.vector as i64)
 }
 
 /// The running thread's id.
@@ -356,6 +489,11 @@ pub fn schedule() {
         };
         next.state = State::Running;
         next.slice = TIME_SLICE;
+        // A user thread needs its process's address space; kernel threads
+        // run in whichever is active (the kernel half is the same).
+        if let Some(process) = &next.process {
+            process.space().activate();
+        }
         let context = Arc::clone(&next.context);
         s.current = Some(next);
         context
@@ -368,7 +506,15 @@ pub fn schedule() {
 /// the switch away from each of them is complete.
 fn reap() {
     let zombies = with(|s| core::mem::take(&mut s.zombies));
-    drop(zombies);
+    for mut zombie in zombies {
+        let process = zombie.process.take();
+        drop(zombie);
+        if let Some(process) = process {
+            // May end the process; its address space goes with the last
+            // reference, which may be this one.
+            process.thread_reaped();
+        }
+    }
 }
 
 /// Scheduler counts, for tests and diagnostics.

@@ -5,6 +5,7 @@
 //!
 //! ```text
 //!  virtual address                      what
+//!  0x0000_0000_0000_0000 ... 128 TiB    user half: per address space (user.rs)
 //!  0xFFFF_8000_0000_0000 ...            HHDM: physical 0.. mapped 1:1 (2 MiB pages)
 //!  0xFFFF_FF00_0000_0000 ... +256 GiB   dynamic region: heap, then other mappings
 //!  0xFFFF_FF40_0000_0000 ... +256 GiB   dynamic region, MMIO window (uncached)
@@ -21,6 +22,8 @@ pub mod mmio;
 pub mod paging;
 #[cfg(target_os = "none")]
 pub mod pmm;
+#[cfg(target_os = "none")]
+pub mod user;
 
 /// Start of the region where the kernel creates its own mappings (PML4 slot
 /// 510).
@@ -35,6 +38,9 @@ pub const MMIO_SIZE: u64 = DYNAMIC_SIZE / 2;
 pub const HEAP_BASE: u64 = DYNAMIC_BASE;
 /// Initial (and for now fixed) heap size.
 pub const HEAP_SIZE: u64 = 4 << 20;
+/// End of the user half of every address space (PML4 slots 0-255): the
+/// lowest non-canonical address.
+pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
 /// Sets up the frame allocator, takes over the page tables and creates the
 /// heap.

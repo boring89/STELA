@@ -7,10 +7,14 @@
 //! slices, sleeping and blocking. The mechanism (saving one context and
 //! continuing another, kernel stacks) is `frame::task`.
 
+#[cfg(target_os = "none")]
+pub mod process;
 pub mod queue;
 #[cfg(target_os = "none")]
 mod sched;
 
+#[cfg(target_os = "none")]
+pub use process::{Process, ProcessId, wait_process};
 #[cfg(target_os = "none")]
 pub use sched::*;
 

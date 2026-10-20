@@ -148,3 +148,56 @@ pub(crate) fn enable_sse() {
         )
     };
 }
+
+/// RFLAGS for user mode: IF (bit 9) and the always-one bit 1.
+const USER_RFLAGS: u64 = 0x202;
+
+/// Enters ring 3 at `entry` with stack pointer `rsp` and `rdi` = `arg`,
+/// through `iretq` (Vol. 3A 6.14.3 "IRET in IA-32e Mode"). Every other
+/// general-purpose register is cleared, so no kernel value leaks. GS is
+/// swapped first: the user runs with the (zero) user GS base and the
+/// per-CPU base waits in IA32_KERNEL_GS_BASE for the next kernel entry.
+///
+/// # Safety
+///
+/// The processor's TSS RSP0 and per-CPU `kernel_rsp` must be the top of
+/// the running thread's own kernel stack, whose contents below are no
+/// longer needed (the next ring-3 interrupt starts there).
+pub(crate) unsafe fn enter_user(entry: u64, rsp: u64, arg: u64) -> ! {
+    // SAFETY: the caller's guarantee for the stacks; the selectors are the
+    // GDT's user segments; interrupts are off from `cli` until `iretq`
+    // loads RFLAGS, so nothing runs between `swapgs` and ring 3.
+    unsafe {
+        asm!(
+            "cli",
+            "swapgs",
+            "push {ss}",
+            "push {rsp}",
+            "push {rflags}",
+            "push {cs}",
+            "push {rip}",
+            "xor eax, eax",
+            "xor ebx, ebx",
+            "xor ecx, ecx",
+            "xor edx, edx",
+            "xor esi, esi",
+            "xor ebp, ebp",
+            "xor r8d, r8d",
+            "xor r9d, r9d",
+            "xor r10d, r10d",
+            "xor r11d, r11d",
+            "xor r12d, r12d",
+            "xor r13d, r13d",
+            "xor r14d, r14d",
+            "xor r15d, r15d",
+            "iretq",
+            ss = const super::gdt::USER_DATA as u64,
+            cs = const super::gdt::USER_CODE as u64,
+            rflags = const USER_RFLAGS,
+            rsp = in(reg) rsp,
+            rip = in(reg) entry,
+            in("rdi") arg,
+            options(noreturn)
+        )
+    }
+}

@@ -118,6 +118,60 @@ pub(crate) fn preempt() {
     }
 }
 
+/// What the kernel does with an exception in ring 3, see
+/// [`set_user_fault_handler`].
+pub type UserFaultHandler = fn(&crate::trap::TrapFrame, u64) -> !;
+
+static USER_FAULT: Once<UserFaultHandler> = Once::new();
+
+/// Registers the function called for an exception raised in ring 3, with
+/// the saved registers and CR2. It runs with interrupts disabled on the
+/// thread's kernel stack, and must not return (it ends the process and
+/// switches away). Only the first registration counts.
+pub fn set_user_fault_handler(handler: UserFaultHandler) {
+    let _ = USER_FAULT.set(handler);
+}
+
+/// Called by the exception dispatcher for a ring-3 exception.
+pub(crate) fn user_fault(frame: &crate::trap::TrapFrame, cr2: u64) -> ! {
+    match USER_FAULT.get() {
+        Some(handler) => handler(frame, cr2),
+        None => panic!("{}", crate::trap::Report { frame, cr2 }),
+    }
+}
+
+/// Lowest address the user stack pointer and entry point may have
+/// (inclusive) and the end of the user half (exclusive).
+const USER_RANGE: core::ops::Range<u64> = 0..crate::mm::USER_END;
+
+/// Leaves the kernel for ring 3: `entry` runs with `rsp` as stack pointer
+/// and `arg` in rdi, interrupts enabled, in the active address space. The
+/// running thread must have its own kernel stack and an FPU area (made
+/// with `TaskContext::new(.., fpu: true)`); everything on that stack is
+/// abandoned, the next interrupt from ring 3 starts at its top.
+pub fn enter_user(entry: u64, rsp: u64, arg: u64) -> ! {
+    assert!(
+        USER_RANGE.contains(&entry) && USER_RANGE.contains(&rsp),
+        "task: enter_user outside the user half ({entry:#x}, {rsp:#x})"
+    );
+    let current = current();
+    let Some(top) = current.stack_top() else {
+        panic!("task: enter_user on a thread without its own kernel stack");
+    };
+    assert!(
+        current.has_fpu(),
+        "task: enter_user on a thread without FPU state"
+    );
+    drop(current);
+    let _irq = crate::sync::IrqGuard::new();
+    gdt::set_kernel_stack(top);
+    cpu::current().set_kernel_rsp(top);
+    // SAFETY: RSP0 and kernel_rsp are this thread's own stack top (set just
+    // above, interrupts off); nothing below it is needed since this never
+    // returns. The current context stays alive in the per-CPU area.
+    unsafe { context::enter_user(entry, rsp, arg) }
+}
+
 /// Makes the code running now (the boot thread on the loader's stack) the
 /// processor's current context. Called by `frame::init`.
 pub(crate) fn init() {

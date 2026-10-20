@@ -93,7 +93,14 @@ stela_irq_stubs:
     .p2align 4
 stela_irq_stubs_end:
 
+// Coming from ring 3 (the saved CS has RPL 3), GS holds the user's base:
+// swap in the per-CPU one (IA32_KERNEL_GS_BASE) before any kernel code
+// runs, and swap back before returning (Vol. 2B "SWAPGS").
 stela_exception_common:
+    test qword ptr [rsp + 24], 3
+    jz 1f
+    swapgs
+1:
     push rax
     push rbx
     push rcx
@@ -128,6 +135,10 @@ stela_exception_common:
     pop rbx
     pop rax
     add rsp, 16
+    test qword ptr [rsp + 8], 3
+    jz 2f
+    swapgs
+2:
     iretq
 
 .section .rodata.stela_exceptions, "a"
@@ -194,18 +205,23 @@ fn read_cr2() -> u64 {
 
 /// Called by the common stub with the saved registers.
 ///
-/// Interrupts (vector 32 and up) go to `crate::irq`. A breakpoint is counted
-/// and execution resumes after the `int3`. Every other exception is fatal:
-/// it panics with a register dump.
+/// Interrupts (vector 32 and up) go to `crate::irq`. An exception in ring 3
+/// goes to the kernel's user-fault handler (`crate::task`), which ends the
+/// process. In ring 0 a breakpoint is counted and execution resumes after
+/// the `int3`; every other exception is fatal: it panics with a register
+/// dump.
 extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
     if frame.vector >= 32 {
         crate::irq::dispatch(frame);
         return;
     }
+    let cr2 = read_cr2();
+    if frame.cs & 3 == 3 {
+        crate::task::user_fault(frame, cr2);
+    }
     if frame.vector == 3 {
         BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    let cr2 = read_cr2();
     panic!("{}", Report { frame, cr2 });
 }

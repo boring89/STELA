@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use frame::bootinfo::BootInfo;
 use frame::input::{self, InputEvent};
 use frame::mm::paging::{self, Flags};
+use frame::mm::user::UserFlags;
 use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, MMIO_BASE, heap, mmio, pmm};
 use frame::sync::{IrqGuard, SpinLock, interrupts_enabled};
 use frame::trap::{Report, TrapFrame};
@@ -45,6 +46,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("thread reaping", thread_reaping),
         ("preemption", preemption),
         ("sleep order", sleep_order),
+        ("user mode faults", user_mode_faults),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -595,4 +597,84 @@ fn sleep_order(_: &'static BootInfo) {
     // Let the last one finish exiting.
     task::sleep_ms(1);
     assert_eq!(task::stats().sleeping, 0);
+}
+
+/// Where the built-in test programs are placed.
+const CODE_BASE: u64 = 0x40_0000;
+const STACK_TOP: u64 = 0x7FFF_FFF0_0000;
+
+/// Runs `code` as a one-page user program in a new process and returns its
+/// exit code.
+fn run_user_code(name: &str, code: &[u8]) -> i64 {
+    let process = task::process::create(name).expect("no address space");
+    let space = process.space();
+    let page = pmm::alloc_zeroed_frame().expect("no frame");
+    let code_flags = UserFlags {
+        writable: false,
+        executable: true,
+    };
+    space.map(CODE_BASE, page, code_flags).expect("map code");
+    space.load(CODE_BASE, code).expect("load code");
+    let stack = pmm::alloc_zeroed_frame().expect("no frame");
+    let stack_flags = UserFlags {
+        writable: true,
+        executable: false,
+    };
+    space
+        .map(STACK_TOP - 4096, stack, stack_flags)
+        .expect("map stack");
+    // The kernel cannot write the code page as a user (it is read-only),
+    // and addresses outside the user half are refused.
+    assert!(space.write(CODE_BASE, &[0]).is_err());
+    assert!(space.check(STACK_TOP - 16, 16, true));
+    assert!(!space.check(STACK_TOP, 1, false));
+    assert!(!space.check(u64::MAX - 4, 8, false));
+    task::spawn_user(&process, CODE_BASE, STACK_TOP - 8, 0).expect("spawn_user failed");
+    let pid = process.id();
+    drop(process);
+    task::wait_process(pid).expect("unknown process")
+}
+
+fn user_mode_faults(_: &'static BootInfo) {
+    // Warm up the paths that allocate once (process table, page tables of
+    // the kernel stack slots).
+    assert_eq!(run_user_code("ud2", &[0x0F, 0x0B]), 128 + 6);
+    let (free, _) = pmm::stats();
+    // ud2: #UD in ring 3 -> the process is killed with 128 + 6.
+    assert_eq!(run_user_code("ud2", &[0x0F, 0x0B]), 128 + 6);
+    // mov al, [0]: #PF -> 128 + 14.
+    assert_eq!(
+        run_user_code("null", &[0x8A, 0x04, 0x25, 0, 0, 0, 0]),
+        128 + 14
+    );
+    // A kernel address: #PF (the page is supervisor-only) -> 128 + 14.
+    let mut code = vec![0x48, 0xA1]; // mov rax, [moffs64]
+    code.extend_from_slice(&frame::bootinfo::KERNEL_BASE.to_le_bytes());
+    assert_eq!(run_user_code("kernel", &code), 128 + 14);
+    // hlt is privileged: #GP -> 128 + 13.
+    assert_eq!(run_user_code("hlt", &[0xF4]), 128 + 13);
+    // A loop that never ends is preempted; main keeps running.
+    let process = task::process::create("loop").expect("no address space");
+    let page = pmm::alloc_zeroed_frame().expect("no frame");
+    let flags = UserFlags {
+        writable: false,
+        executable: true,
+    };
+    process.space().map(CODE_BASE, page, flags).expect("map");
+    process
+        .space()
+        .load(CODE_BASE, &[0xEB, 0xFE])
+        .expect("load"); // jmp $
+    task::spawn_user(&process, CODE_BASE, STACK_TOP - 8, 0).expect("spawn");
+    let start = time::ticks();
+    task::sleep_ms(30);
+    assert!(time::ticks() - start < 100, "main starved by a user loop");
+    assert_eq!(task::process::exit_status(process.id()), None);
+    task::kill(&process, 99);
+    let pid = process.id();
+    drop(process);
+    assert_eq!(task::wait_process(pid), Some(99));
+    // Everything (address spaces, page tables, kernel stacks) went back.
+    assert_eq!(pmm::stats().0, free, "process memory not freed");
+    assert!(interrupts_enabled());
 }

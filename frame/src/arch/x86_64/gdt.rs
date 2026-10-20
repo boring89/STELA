@@ -16,8 +16,16 @@
 //!  0      0x00      null
 //!  1      0x08      kernel code  (64-bit, DPL 0)
 //!  2      0x10      kernel data  (DPL 0)
-//!  3-4    0x18      TSS          (16-byte system descriptor)
+//!  3      0x18      user data    (DPL 3; selector with RPL 3: 0x1B)
+//!  4      0x20      user code    (64-bit, DPL 3; with RPL 3: 0x23)
+//!  5-6    0x28      TSS          (16-byte system descriptor)
 //! ```
+//!
+//! The order is the one `syscall`/`sysret` require (Vol. 2B "SYSCALL",
+//! "SYSRET"; Vol. 3A 5.8.8 "Fast System Calls in 64-Bit Mode"): with
+//! IA32_STAR[47:32] = 0x08, `syscall` loads CS = 0x08 and SS = 0x10; with
+//! IA32_STAR[63:48] = 0x10, `sysretq` loads SS = 0x10 + 8 = 0x18 and CS =
+//! 0x10 + 16 = 0x20, both with RPL 3.
 
 use crate::sync::RacyCell;
 use core::arch::asm;
@@ -27,8 +35,12 @@ use core::mem::size_of;
 pub(crate) const KERNEL_CODE: u16 = 0x08;
 /// Selector of the kernel data segment.
 pub(crate) const KERNEL_DATA: u16 = 0x10;
+/// Selector of the user data segment, with RPL 3.
+pub(crate) const USER_DATA: u16 = 0x18 | 3;
+/// Selector of the user code segment, with RPL 3.
+pub(crate) const USER_CODE: u16 = 0x20 | 3;
 /// Selector of the TSS.
-const TSS_SELECTOR: u16 = 0x18;
+const TSS_SELECTOR: u16 = 0x28;
 
 /// IST slot (1-based, as stored in an IDT gate) used for double faults.
 pub(crate) const DOUBLE_FAULT_IST: u8 = 1;
@@ -39,9 +51,13 @@ const CODE_DESCRIPTOR: u64 = 0x00AF_9A00_0000_FFFF;
 /// Kernel data: base 0, limit 0xFFFFF, G=1, D/B=1, P=1, DPL=0, S=1,
 /// type 0x2 (read/write).
 const DATA_DESCRIPTOR: u64 = 0x00CF_9200_0000_FFFF;
+/// User data: as kernel data with DPL=3 (bits 45-46).
+const USER_DATA_DESCRIPTOR: u64 = 0x00CF_F200_0000_FFFF;
+/// User code: as kernel code with DPL=3.
+const USER_CODE_DESCRIPTOR: u64 = 0x00AF_FA00_0000_FFFF;
 
-/// The 64-bit TSS (Figure 7-11). Only the IST is used for now; RSP0 will
-/// matter once there is user mode.
+/// The 64-bit TSS (Figure 7-11): RSP0 (the stack for interrupts that
+/// arrive in ring 3, set on every context switch) and the IST.
 #[repr(C, packed(4))]
 struct Tss {
     reserved0: u32,
@@ -59,14 +75,22 @@ struct Tss {
 const _: () = assert!(size_of::<Tss>() == 104);
 
 #[repr(C, align(16))]
-struct Gdt([u64; 5]);
+struct Gdt([u64; 7]);
 
 #[repr(C, align(16))]
 struct Stack([u8; DOUBLE_FAULT_STACK_SIZE]);
 
 const DOUBLE_FAULT_STACK_SIZE: usize = 16 * 1024;
 
-static GDT: RacyCell<Gdt> = RacyCell::new(Gdt([0, CODE_DESCRIPTOR, DATA_DESCRIPTOR, 0, 0]));
+static GDT: RacyCell<Gdt> = RacyCell::new(Gdt([
+    0,
+    CODE_DESCRIPTOR,
+    DATA_DESCRIPTOR,
+    USER_DATA_DESCRIPTOR,
+    USER_CODE_DESCRIPTOR,
+    0,
+    0,
+]));
 static TSS: RacyCell<Tss> = RacyCell::new(Tss {
     reserved0: 0,
     rsp: [0; 3],
@@ -132,8 +156,8 @@ pub(crate) unsafe fn init() {
         ist[usize::from(DOUBLE_FAULT_IST) - 1] = stack_top;
         (*tss).ist = ist;
         let (low, high) = tss_descriptor(tss as u64, size_of::<Tss>() as u64 - 1);
-        (*gdt).0[3] = low;
-        (*gdt).0[4] = high;
+        (*gdt).0[5] = low;
+        (*gdt).0[6] = high;
     }
     let pointer = DescriptorTablePointer {
         limit: (size_of::<Gdt>() - 1) as u16,

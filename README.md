@@ -11,7 +11,7 @@ whose experience it reuses and whose code it does not.
 
 ## Status
 
-Early (phase P6 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+Early (phase P6.5 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -31,13 +31,16 @@ with volumes as separate roots (`Data:/docs/a.txt`) reached through folder handl
 `mkfs.ehfs`, `fsck.ehfs`, `ehfs-cp` and `ehfs-ls` work on image files. Programs are started
 from files through process handles (spawn, wait, kill, arguments) and have a heap. `make run`
 boots into `init`, which starts the shell: `help` lists its commands (`ls`, `cat`, `cp`, `mv`,
-`mkdir`, `rm`, `cd`, `pwd`, `run`, `ps`, `mem`, `uptime`, `vols`); a faulting program is killed
-and the system goes on. Only the boot processor runs. See
+`mkdir`, `rm`, `cd`, `pwd`, `run`, `ps`, `mem`, `uptime`, `vols`, `shutdown`, `reboot`); a
+faulting program is killed and the system goes on. The date comes from the CMOS real-time
+clock; `shutdown` unmounts the volumes and turns the machine off through ACPI (FADT and the
+DSDT's `\_S5`). Only the boot processor runs. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
 [docs/ipc.md](docs/ipc.md), [docs/pci.md](docs/pci.md), [docs/storage.md](docs/storage.md),
-[docs/ehfs.md](docs/ehfs.md), [docs/vfs.md](docs/vfs.md) and [docs/userland.md](docs/userland.md).
+[docs/ehfs.md](docs/ehfs.md), [docs/vfs.md](docs/vfs.md), [docs/userland.md](docs/userland.md) and
+[docs/acpi.md](docs/acpi.md).
 
 ## Building
 

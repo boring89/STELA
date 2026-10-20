@@ -118,11 +118,16 @@ pub enum Syscall {
     /// `SysInfo(kind, buf, len) -> count`: system information
     /// (`sysinfo::*`).
     SysInfo = 31,
+    /// `SystemPower(kind)`: flushes and unmounts the volumes, then turns
+    /// the machine off (`power::SHUTDOWN`) or restarts it
+    /// (`power::REBOOT`). Returns only on failure (`NotSupported`: no
+    /// ACPI soft off on this machine).
+    SystemPower = 32,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 31] = [
+    pub const ALL: [Syscall; 32] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -154,6 +159,7 @@ impl Syscall {
         Syscall::ProcessKill,
         Syscall::ProcessSelf,
         Syscall::SysInfo,
+        Syscall::SystemPower,
     ];
 
     /// The call with number `raw`, if any.
@@ -550,6 +556,14 @@ pub mod tag {
 
 /// The exit code of a process ended by `ProcessKill`.
 pub const EXIT_KILLED: i64 = 137;
+
+/// `SystemPower` kinds.
+pub mod power {
+    /// Turn the machine off.
+    pub const SHUTDOWN: u64 = 0;
+    /// Restart the machine.
+    pub const REBOOT: u64 = 1;
+}
 
 /// `SysInfo` kinds and records.
 pub mod sysinfo {
@@ -990,7 +1004,9 @@ mod tests {
         assert_eq!(Syscall::ProcessKill.raw(), 29);
         assert_eq!(Syscall::ProcessSelf.raw(), 30);
         assert_eq!(Syscall::SysInfo.raw(), 31);
-        assert_eq!(Syscall::from_raw(32), None);
+        assert_eq!(Syscall::SystemPower.raw(), 32);
+        assert_eq!((power::SHUTDOWN, power::REBOOT), (0, 1));
+        assert_eq!(Syscall::from_raw(33), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 

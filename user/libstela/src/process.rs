@@ -127,6 +127,24 @@ pub fn memory() -> Result<MemInfo, Error> {
     MemInfo::from_bytes(&b).ok_or(Error::InvalidArgument)
 }
 
+/// Flushes the volumes and turns the machine off (`SystemPower`). Returns
+/// only on failure (`NotSupported` when the machine has no ACPI soft off).
+pub fn shutdown() -> Error {
+    match syscall1(Syscall::SystemPower, abi::power::SHUTDOWN) {
+        Ok(_) => Error::NotSupported,
+        Err(e) => e,
+    }
+}
+
+/// Flushes the volumes and restarts the machine (`SystemPower`). Returns
+/// only on failure.
+pub fn reboot() -> Error {
+    match syscall1(Syscall::SystemPower, abi::power::REBOOT) {
+        Ok(_) => Error::NotSupported,
+        Err(e) => e,
+    }
+}
+
 /// (uptime ns, timer ticks).
 pub fn uptime() -> Result<(u64, u64), Error> {
     let mut b = [0u8; 16];

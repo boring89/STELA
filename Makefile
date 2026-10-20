@@ -38,7 +38,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 USER_CRATES := libstela $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd esp esp-test run test test-host test-qemu test-qemu-min test-fb \
-	host-images test-images test-storage test-shell ehfs-tools test-ehfs-compat clippy fmt clean
+	host-images test-images test-storage test-shell test-shutdown ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -82,7 +82,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-fb test-storage test-shell
+test: test-host test-qemu test-qemu-min test-fb test-storage test-shell test-shutdown
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -150,6 +150,28 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
 		-device ide-hd,drive=sata1,bus=ide.1
+
+# Power: `shutdown` in the shell flushes the volumes and turns the machine
+# off through ACPI, so QEMU exits by itself with status 0 and the host's
+# fsck sees a cleanly unmounted Data volume; `reboot` resets the machine,
+# which -no-reboot turns into an exit with status 0 too.
+test-shutdown: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-power.img
+	python3 tools/qemu_test.py --exit-code 0 --type "STELA shell" "mkdir before-shutdown\n" \
+		--type "> mkdir before-shutdown" "shutdown\n" \
+		--expect "STELA shell" --expect "kernel: volumes unmounted" --expect "power: turning off" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-power.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-power.img | tee $(BUILD)/fsck-power.txt
+	grep -q "unmounted cleanly" $(BUILD)/fsck-power.txt
+	$(EHFS_TOOLS)/ehfs-ls --offset 83968 $(IMAGES)/ahci-power.img / | grep -q before-shutdown
+	python3 tools/qemu_test.py --exit-code 0 --type "STELA shell" "reboot\n" \
+		--expect "STELA shell" --expect "kernel: volumes unmounted" --expect "power: restarting" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-power.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-power.img | grep -q "unmounted cleanly"
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.
 EHFS_TOOLS  := $(BUILD)/host/ehfs

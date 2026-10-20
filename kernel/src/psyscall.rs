@@ -210,3 +210,17 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
         .map_err(|_| Error::BadAddress)?;
     Ok(count)
 }
+
+/// `SystemPower(kind)`: flushes and unmounts the volumes, then turns the
+/// machine off or restarts it. Any program may call it for now (no
+/// right guards it yet; `docs/acpi.md`).
+pub fn system_power(kind: u64) -> Result<u64, Error> {
+    match kind {
+        abi::power::SHUTDOWN => match crate::power::shutdown() {
+            frame::power::PowerError::NotSupported => Err(Error::NotSupported),
+            frame::power::PowerError::Failed => Err(Error::IoError),
+        },
+        abi::power::REBOOT => crate::power::reboot(),
+        _ => Err(Error::InvalidArgument),
+    }
+}

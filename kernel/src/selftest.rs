@@ -37,6 +37,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("locks and interrupts", locks),
         ("mmio mapping", mmio_mapping),
         ("acpi madt", acpi_madt),
+        ("acpi fadt", acpi_fadt),
         ("interrupt controllers", interrupt_controllers),
         ("interrupt dispatch", interrupt_dispatch),
         ("timer tick", timer_tick),
@@ -326,6 +327,24 @@ fn acpi_madt(_: &'static BootInfo) {
     // QEMU wires the PIT (IRQ 0) to I/O APIC input 2.
     let (gsi, _, _) = madt.isa_irq(0);
     kprintln!("selftest:   ISA IRQ 0 arrives at GSI {gsi}");
+}
+
+fn acpi_fadt(_: &'static BootInfo) {
+    // QEMU q35 has a FADT with a PM1a control block and a plain \_S5.
+    let Some(fadt) = frame::acpi::fadt() else {
+        panic!("no FADT");
+    };
+    assert_ne!(fadt.pm1a_control, 0, "no PM1a control block");
+    let Some((a, b)) = frame::acpi::s5() else {
+        panic!("no \\_S5 in the DSDT");
+    };
+    assert!(frame::power::can_shutdown());
+    kprintln!(
+        "selftest:   PM1a {:#x}, SLP_TYP {a}/{b}, DSDT {} bytes, reset register {:?}",
+        fadt.pm1a_control,
+        frame::acpi::dsdt().map_or(0, <[u8]>::len),
+        fadt.reset
+    );
 }
 
 fn interrupt_controllers(_: &'static BootInfo) {

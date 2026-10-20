@@ -294,6 +294,7 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::ProcessKill => crate::psyscall::process_kill(&p, a0),
         Syscall::ProcessSelf => crate::psyscall::process_self(&p),
         Syscall::SysInfo => crate::psyscall::sys_info(&p, a0, a1, a2),
+        Syscall::SystemPower => crate::psyscall::system_power(a0),
         _ => Err(Error::InvalidSyscall),
     }
 }

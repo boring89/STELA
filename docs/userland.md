@@ -129,6 +129,7 @@ kernel 的 `init` 執行緒只做兩件事：啟動 input-router、跑 `Initrd:/
 | `cd [path]`、`pwd` | 沒有 path 回到卷宗的根；確認是資料夾才換 |
 | `run prog [args]` | 先找目前資料夾（或給的路徑），再找 `Initrd:/`；handles = console、無、目前資料夾；前景等待，每 20 ms 看一次鍵盤：Ctrl-C → `ProcessKill`；結束後 `InputAttach` 拿回鍵盤、印 `prog exited with code N` |
 | `ps`、`mem`、`uptime`、`vols` | `SysInfo` 與 `VolumeList` |
+| `shutdown`、`reboot` | `SystemPower`（P6.5，`docs/acpi.md`）：卸載卷宗後關機／重新開機 |
 | `help`、`exit` | `exit` 後 init 會再啟動一個 |
 
 程式若自己 `InputAttach`（例如 `run echo`），它結束前 shell 收不到鍵盤（Ctrl-C 也無效）；echo 以 Escape 結束。
@@ -196,4 +197,4 @@ fn main() -> i64 {
 - shell 一行 200 字元、沒有歷史與游標移動；`cp` 整個檔案讀進記憶體。
 - 行程表的已結束紀錄永遠不清（`ps` 只顯示數量）。
 - heap 不把記憶體還給 kernel；沒有 `realloc` 的就地成長（GlobalAlloc 的預設：配新的再複製）。
-- 沒有關機指令（一般 kernel 不卸載卷宗；有日誌所以不會壞）。
+- P6.5 加了 `shutdown`／`reboot`（`docs/acpi.md`）；關機前不通知其他程式。

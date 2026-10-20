@@ -79,7 +79,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
  VolumeInfo（96 bytes）：index、flags（bit 0 唯讀）、kind（1 eHFS、2 FAT、3 initrd）、name_len（u32）、total、free（u64）、name [u8; 64]
 ```
 
-時間是 1970 起的奈秒（UTC）；目前沒有 RTC，是「2026-01-01 + 開機以來」。
+時間是 1970 起的奈秒（UTC）；P6.5 起來自 CMOS RTC（`frame::time::wall_clock_ns`，`docs/time.md` §5.5），讀不到 RTC 時是「2026-01-01 + 開機以來」。
 
 ## 5. 初始 handle `[3]`
 
@@ -104,7 +104,7 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Archive (eHFS, rw,
 
 - 每個卷宗的裝置是 `CachedDevice<Partition<Disk>>`（eHFS 256 塊、FAT 64 塊的快取，`docs/storage.md` §8）。
 - QEMU 的 `fat:rw:` ESP 沒有 GPT（vvfat 是 MBR）→ 不掛載；`make run` 與一般的 `make test-qemu` 沒有卷宗（`vfs: no volumes`），程式照常從 initrd 啟動。
-- 關機：selftest 結束前 `vfs::unmount_all()`（eHFS 標成 clean 並 flush）。一般 kernel 還沒有關機流程——不卸載也不會壞（有日誌），只是 fsck 會說「沒有正常卸載」。
+- 關機：selftest 結束前 `vfs::unmount_all()`（eHFS 標成 clean 並 flush）。P6.5 起一般 kernel 的 `SystemPower`（shell 的 `shutdown`／`reboot`）也先 `unmount_all()`（`docs/acpi.md`）；直接關掉 QEMU 不會壞（有日誌），只是 fsck 會說「沒有正常卸載」。
 
 ### 6.1 `Initrd`（P6）
 

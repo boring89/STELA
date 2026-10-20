@@ -116,6 +116,38 @@ QEMU 的 TCG（純軟體模擬）**不支援** invariant TSC（`-cpu max`、`+in
 | `time::tsc_hz()`、`tsc_invariant()` | TSC 頻率（校準或 CPUID）、是否 invariant |
 | `time::TICK_HZ` | 1000 |
 
+## 5.5 牆上時鐘：CMOS RTC（P6.5）
+
+> P6.5 由自動排程一次做完，**使用者尚未審核**。
+
+單調時鐘只知道「開機多久」；檔案的時間戳需要「現在幾點」。PC 上一直有一顆電池供電的時鐘：**CMOS RTC**（Motorola MC146818 的後代；OSDev Wiki "CMOS"、"RTC"）。它像牆上的掛鐘：關機時也在走，但精度只有秒，讀起來也慢，所以開機時看一次，之後用碼錶（`now_ns`）往上加。
+
+```
+ port 0x70 ← 暫存器編號      port 0x71 → 值
+ 0x00 秒  0x02 分  0x04 時  0x07 日  0x08 月  0x09 年（兩位數）
+ 0x0A 狀態 A：bit 7 = 正在更新（數字可能寫一半）
+ 0x0B 狀態 B：bit 2 = 二進位（否則 BCD：0x59 = 59）、bit 1 = 24 小時制（否則 bit 7 of 時 = PM）
+ 世紀：ACPI FADT 的 CENTURY 欄位（offset 108）給暫存器編號；QEMU 是 0x32；沒有就當 20xx
+```
+
+讀法（`frame/src/arch/x86_64/cmos.rs`）：等狀態 A 的 bit 7 清掉 → 讀全部 → 再等、再讀，直到連續兩次相同（最多 10 次）。解碼（`frame/src/time/rtc.rs`，host 測試）：BCD／二進位、12／24 小時制（12 AM = 0 點、12 PM = 12 點）、範圍檢查（含閏年的 2 月 29 日）；任何值不合理就當讀不到。
+
+```
+ wall_clock_ns() = WALL_BASE + now_ns()
+ WALL_BASE       = RTC 的 unix 秒 × 10⁹ − 讀 RTC 那一刻的 now_ns()
+```
+
+- RTC 當成 **UTC**（不做時區）。QEMU 用 `-rtc base=utc`（Makefile 的 `QEMU_BASE`），跟著 host 的時間。
+- 讀不到（電池沒電、值不合理）→ 退回 2026-01-01 00:00 UTC + 開機以來（P5 的做法）。
+- `kernel::fs::now()`（檔案時間戳）= `wall_clock_ns()`。
+- 開機訊息：`time: RTC 2026-10-20 09:39:29 UTC`。
+- 只在開機讀一次；不寫回 RTC、沒有 NTP、不能調時間。NMI-disable 位元（port 0x70 的 bit 7）保持 0。
+
+| 函式 | 說明 |
+|---|---|
+| `time::wall_clock_ns()` | 1970 起的奈秒（UTC），不倒退 |
+| `time::boot_time()` | 開機時 RTC 的 `DateTime`（讀不到是 `None`） |
+
 ## 6. 測試
 
 | 測試 | 內容 |
@@ -124,6 +156,8 @@ QEMU 的 TCG（純軟體模擬）**不支援** invariant TSC（`-cpu max`、`+in
 | selftest "timer tick" | 最多 1000 次 `hlt` 內 tick 增加 ≥ 10；per-CPU tick 與向量 48 的計數也增加 |
 | selftest "clock and sleep" | `now_ns` 不倒退；`sleep_ms(50)` 至少 50 tick；invariant TSC 時 TSC 量出 40–60 ms 並印 `tsc: <MHz> MHz`，否則印 `tsc: not invariant` |
 | selftest "keyboard" | 等按鍵最多 5 秒（`ticks()`） |
+| host `time::rtc` | BCD 與二進位、世紀暫存器（合法、0、亂碼）、12 小時制、不合理的值、unix 秒 |
+| selftest "real-time clock" | RTC 讀得到、年份在 2024–2100、`wall_clock_ns` 2 ms 後至少多 2 ms、`fs::now` ≥ 開機時間 |
 
 PIT 與 APIC timer 在 QEMU 都跟著虛擬時鐘走，所以即使主機很忙也一致；12 個 QEMU 同時跑的壓力測試都通過。
 
@@ -133,4 +167,5 @@ PIT 與 APIC timer 在 QEMU 都跟著虛擬時鐘走，所以即使主機很忙�
 - 沒有 invariant TSC 時 `now_ns()` 只有 1 ms 解析度，而且**少算的 tick 補不回來**：中斷關著的時間超過 1 ms（例如持主控台的鎖捲動整個 framebuffer），中間的 tick 會合併成一個，uptime 會變慢。
 - 只校準一次；TSC 頻率在沒有 invariant TSC 的機器上可能隨變頻偏掉（但那時 `now_ns` 不用它）。
 - 依賴 8254 PIT；沒有 PIT 的平台會 panic（之後可用 CPUID 15H 的晶振頻率或 HPET 校準）。
+- RTC 只在開機讀一次、當成 UTC；沒有時區、沒有 NTP、不寫回；長時間執行會隨 `now_ns` 的誤差漂移（沒有 invariant TSC 時少算的 tick 也會讓牆上時鐘變慢）。
 - AP 啟動後每顆 CPU 要各自設定自己的 APIC timer（每顆 CPU 的 local APIC 是獨立的）；校準結果可共用。

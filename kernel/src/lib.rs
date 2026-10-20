@@ -23,6 +23,8 @@ pub mod initrd;
 pub mod input;
 pub mod object;
 #[cfg(target_os = "none")]
+pub mod power;
+#[cfg(target_os = "none")]
 pub mod program;
 #[cfg(target_os = "none")]
 pub mod psyscall;

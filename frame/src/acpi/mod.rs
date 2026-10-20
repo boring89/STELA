@@ -18,11 +18,12 @@
 //! are parsed; the logic is in [`tables`] and [`fadt`] and tested on the
 //! host.
 
+pub mod aml;
 pub mod fadt;
 pub mod tables;
 
 #[cfg(target_os = "none")]
-pub use target::{dsdt, fadt, init, madt, mcfg};
+pub use target::{dsdt, fadt, init, madt, mcfg, s5};
 
 #[cfg(target_os = "none")]
 mod target {
@@ -41,6 +42,7 @@ mod target {
     static MCFG: SpinLock<Option<&'static [McfgEntry]>> = SpinLock::new(None);
     static FADT: SpinLock<Option<&'static Fadt>> = SpinLock::new(None);
     static DSDT: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
+    static S5: SpinLock<Option<(u8, u8)>> = SpinLock::new(None);
 
     /// `len` bytes of physical memory at `phys`, read through the HHDM.
     /// Refuses ranges outside the HHDM and memory that Rust code may own
@@ -124,13 +126,20 @@ mod target {
         };
         if parsed.dsdt != 0 {
             match table(info, parsed.dsdt, b"DSDT") {
-                Ok(dsdt) => *DSDT.lock() = Some(dsdt),
+                Ok(dsdt) => {
+                    *DSDT.lock() = Some(dsdt);
+                    *S5.lock() = super::aml::find_s5(dsdt);
+                }
                 Err(e) => crate::kprintln!("acpi: ignoring a bad DSDT ({e:?})"),
             }
         }
         crate::kprintln!(
-            "acpi: FADT PM1a {:#x}, century {:#x}, reset {}, 8042 {}",
+            "acpi: FADT PM1a {:#x}, S5 {}, century {:#x}, reset {}, 8042 {}",
             parsed.pm1a_control,
+            match *S5.lock() {
+                Some(_) => "yes",
+                None => "no",
+            },
             parsed.century,
             if parsed.reset.is_some() { "yes" } else { "no" },
             if parsed.has_8042 { "yes" } else { "no" }
@@ -148,6 +157,12 @@ mod target {
     /// one.
     pub fn dsdt() -> Option<&'static [u8]> {
         *DSDT.lock()
+    }
+
+    /// SLP_TYPa and SLP_TYPb of the S5 (soft off) state, from the DSDT's
+    /// `\_S5` object, if it was found.
+    pub fn s5() -> Option<(u8, u8)> {
+        *S5.lock()
     }
 
     /// Finds the MADT. STELA needs the APIC, so a missing or broken MADT is

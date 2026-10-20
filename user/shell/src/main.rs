@@ -7,7 +7,7 @@
 //! ```text
 //! ls [path]   cat file   cp from to   mkdir path   rm path   mv from to
 //! cd [path]   pwd        run program [args...]     ps   mem   uptime
-//! vols        help       exit
+//! vols        help       exit      shutdown  reboot
 //! ```
 //!
 //! Paths: `Volume:/a/b`, `/a/b` (this volume), or relative, with `..`.
@@ -102,6 +102,8 @@ impl Shell {
             ("mem", []) => mem(),
             ("uptime", []) => uptime(),
             ("vols", []) => vols(),
+            ("shutdown", []) => Err(String::from(describe(process::shutdown()))),
+            ("reboot", []) => Err(String::from(describe(process::reboot()))),
             _ => Err(String::from("unknown command or wrong arguments; try help")),
         };
         if let Err(why) = result {
@@ -291,6 +293,7 @@ fn help() {
     println!("  run prog [args]  run a program (current folder, then Initrd:/); Ctrl-C stops it");
     println!("  ps, mem, uptime  processes, memory, time since boot");
     println!("  vols             volumes");
+    println!("  shutdown, reboot turn the computer off, restart it");
     println!("  exit             leave the shell (init starts a new one)");
     println!("paths: Volume:/a/b, /a/b (this volume) or a/b, with . and ..");
 }

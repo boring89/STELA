@@ -139,4 +139,18 @@ impl MmioRegion {
         // SAFETY: as in `read_u32`; the mapping is writable.
         unsafe { register.write_volatile(value) }
     }
+
+    /// Writes the 8-bit register at `offset` (panics if out of range).
+    pub fn write_u8(&self, offset: usize, value: u8) {
+        assert!(
+            offset < self.len,
+            "mmio: offset {offset:#x} outside the {:#x}-byte range at {:#x}",
+            self.len,
+            self.phys
+        );
+        let register = (self.virt + offset as u64) as *mut u8;
+        // SAFETY: inside the range `map` mapped (checked above), which is
+        // device memory, never removed, and writable.
+        unsafe { register.write_volatile(value) }
+    }
 }

@@ -54,6 +54,12 @@ impl SyscallFrame {
         self.rdx = value;
     }
 
+    /// Sets only RAX (Linux programs get their result there and expect
+    /// every other register back unchanged).
+    pub fn set_rax(&mut self, value: u64) {
+        self.rax = value;
+    }
+
     /// Where the program continues.
     pub fn rip(&self) -> u64 {
         self.rip

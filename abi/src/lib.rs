@@ -123,11 +123,27 @@ pub enum Syscall {
     /// (`power::REBOOT`). Returns only on failure (`NotSupported`: no
     /// ACPI soft off on this machine).
     SystemPower = 32,
+    /// `TtyCreate(flags) -> handles`: a new terminal (`docs/linux.md` §5).
+    /// The low 32 bits of the value are the program-side handle (`SEND |
+    /// DUPLICATE | TRANSFER`: `PortSend` of `CONSOLE_WRITE` prints,
+    /// `INPUT_KEY` types); with `tty::MASTER` the high 32 bits are the
+    /// master handle (`READ | WRITE | DUPLICATE | TRANSFER`) and the
+    /// output waits for `TtyRead` instead of going to the kernel console.
+    TtyCreate = 33,
+    /// `TtyRead(master, buf, len, timeout_ns) -> bytes`: the terminal's
+    /// output (waits like `PortReceive`; `TimedOut`).
+    TtyRead = 34,
+    /// `TtyWrite(master, buf, len) -> bytes`: typed input (UTF-8 text,
+    /// through the line discipline).
+    TtyWrite = 35,
+    /// `HandleKind(handle) -> kind`: what the handle refers to
+    /// (`object_kind::*`).
+    HandleKind = 36,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 32] = [
+    pub const ALL: [Syscall; 36] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -160,6 +176,10 @@ impl Syscall {
         Syscall::ProcessSelf,
         Syscall::SysInfo,
         Syscall::SystemPower,
+        Syscall::TtyCreate,
+        Syscall::TtyRead,
+        Syscall::TtyWrite,
+        Syscall::HandleKind,
     ];
 
     /// The call with number `raw`, if any.
@@ -556,6 +576,58 @@ pub mod tag {
 
 /// The exit code of a process ended by `ProcessKill`.
 pub const EXIT_KILLED: i64 = 137;
+
+/// The ELF note that marks a STELA program (in a `PT_NOTE` segment; libstela
+/// puts it in every program). Programs without it run with the Linux
+/// personality (`docs/linux.md`).
+pub mod note {
+    /// The note's owner name (without the NUL).
+    pub const NAME: &[u8] = b"STELA";
+    /// Note type: the STELA ABI; the descriptor is the version (u32 LE).
+    pub const ABI: u32 = 1;
+    /// The ABI version in the descriptor.
+    pub const VERSION: u32 = 1;
+    /// The whole note: namesz 6, descsz 4, type 1, "STELA\0" padded to 8,
+    /// version 1.
+    pub const BYTES: [u8; 24] = [
+        6, 0, 0, 0, 4, 0, 0, 0, 1, 0, 0, 0, b'S', b'T', b'E', b'L', b'A', 0, 0, 0, 1, 0, 0, 0,
+    ];
+}
+
+/// `ProcessSpawn` flags, in the high 32 bits of its handle count argument.
+pub mod spawn {
+    /// Run the program with the Linux personality even if it has the STELA
+    /// note.
+    pub const FORCE_LINUX: u64 = 1 << 32;
+    /// Run the program as a STELA program even without the note.
+    pub const FORCE_STELA: u64 = 1 << 33;
+    /// Every defined flag.
+    pub const ALL: u64 = FORCE_LINUX | FORCE_STELA;
+}
+
+/// `TtyCreate` flags.
+pub mod tty {
+    /// Make a master end too (the terminal application's side).
+    pub const MASTER: u64 = 1;
+}
+
+/// What a handle refers to (`HandleKind`).
+pub mod object_kind {
+    /// A port.
+    pub const PORT: u64 = 1;
+    /// Shared memory.
+    pub const MEMORY: u64 = 2;
+    /// A folder.
+    pub const DIRECTORY: u64 = 3;
+    /// A file.
+    pub const FILE: u64 = 4;
+    /// A process.
+    pub const PROCESS: u64 = 5;
+    /// A terminal's program side.
+    pub const TTY: u64 = 6;
+    /// A terminal's master side.
+    pub const TTY_MASTER: u64 = 7;
+}
 
 /// `SystemPower` kinds.
 pub mod power {
@@ -1006,7 +1078,23 @@ mod tests {
         assert_eq!(Syscall::SysInfo.raw(), 31);
         assert_eq!(Syscall::SystemPower.raw(), 32);
         assert_eq!((power::SHUTDOWN, power::REBOOT), (0, 1));
-        assert_eq!(Syscall::from_raw(33), None);
+        assert_eq!((spawn::FORCE_LINUX, spawn::FORCE_STELA), (1 << 32, 1 << 33));
+        assert_eq!(&note::BYTES[12..17], note::NAME);
+        assert_eq!(
+            u32::from_le_bytes(note::BYTES[8..12].try_into().unwrap()),
+            note::ABI
+        );
+        assert_eq!(
+            u32::from_le_bytes(note::BYTES[20..24].try_into().unwrap()),
+            note::VERSION
+        );
+        assert_eq!(Syscall::TtyCreate.raw(), 33);
+        assert_eq!(Syscall::TtyRead.raw(), 34);
+        assert_eq!(Syscall::TtyWrite.raw(), 35);
+        assert_eq!(Syscall::HandleKind.raw(), 36);
+        assert_eq!(tty::MASTER, 1);
+        assert_eq!((object_kind::PORT, object_kind::TTY_MASTER), (1, 7));
+        assert_eq!(Syscall::from_raw(37), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 

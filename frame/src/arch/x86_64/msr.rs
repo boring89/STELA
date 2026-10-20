@@ -9,6 +9,9 @@ use core::arch::asm;
 
 /// IA32_APIC_BASE: local APIC base address and enable bits.
 pub(crate) const IA32_APIC_BASE: u32 = 0x1B;
+/// IA32_FS_BASE: the base address of the FS segment (a Linux program's
+/// thread pointer).
+pub(crate) const IA32_FS_BASE: u32 = 0xC000_0100;
 /// IA32_GS_BASE: the base address of the GS segment.
 pub(crate) const IA32_GS_BASE: u32 = 0xC000_0101;
 

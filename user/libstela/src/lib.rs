@@ -34,11 +34,23 @@ pub mod path;
 pub mod process;
 pub mod sync;
 pub mod sys;
+pub mod tty;
 
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 use sys::{syscall0, syscall1, syscall3};
+
+/// The bytes of the STELA note, 4-byte aligned as notes must be.
+#[repr(C, align(4))]
+struct NoteBytes([u8; 24]);
+
+/// The ELF note that tells the kernel this is a STELA program, not a Linux
+/// one (`abi::note`); `user/user.ld` keeps it in a `PT_NOTE` segment.
+#[used]
+// SAFETY: the section holds only this note; nothing else is placed there.
+#[unsafe(link_section = ".note.stela")]
+static STELA_NOTE: NoteBytes = NoteBytes(abi::note::BYTES);
 
 /// Defines the program entry point `_start`, which runs `$main` (a
 /// `fn() -> i64`) and exits the process with its result.

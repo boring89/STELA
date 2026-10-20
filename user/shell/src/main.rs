@@ -26,12 +26,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use libstela::abi::key::{KeyEvent, key_to_char};
 use libstela::abi::kind;
+use libstela::abi::object_kind;
 use libstela::fs::{self, open};
-use libstela::ipc::{handle_close, handle_duplicate, input_attach, port_receive, port_send};
+use libstela::ipc::{
+    handle_close, handle_duplicate, handle_kind, input_attach, port_receive, port_send,
+};
 use libstela::line::{Edit, LineEditor};
 use libstela::path::{self, Location};
 use libstela::process::{self, pass};
-use libstela::{Error, Handle, Message, Rights, bootstrap, print, println, tag};
+use libstela::{Error, Handle, Message, Rights, bootstrap, print, println, tag, tty};
 
 libstela::entry!(main);
 
@@ -247,15 +250,30 @@ impl Shell {
         let base = program.rsplit(['/', ':']).next().unwrap_or(program);
         let mut args = vec![base];
         args.extend_from_slice(rest);
+        // The program's terminal: ours if we run in one (the terminal
+        // application's), else a new one that prints on the console. Keys
+        // typed while it runs are passed on to it (Linux programs read
+        // them there).
+        let tty = if handle_kind(bootstrap::CONSOLE) == Ok(object_kind::TTY) {
+            Owned(
+                handle_duplicate(
+                    bootstrap::CONSOLE,
+                    Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+                )
+                .map_err(|e| String::from(describe(e)))?,
+            )
+        } else {
+            Owned(tty::create().map_err(|e| String::from(describe(e)))?)
+        };
         let handles = [
-            pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
+            pass(tty.0, Rights::SEND | Rights::DUPLICATE),
             Handle::NONE,
             pass(cwd.0, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
         ];
         let child =
             Owned(process::spawn(file.0, &args, handles).map_err(|e| String::from(describe(e)))?);
         // Wait, watching the keyboard for Ctrl-C (unless the program took
-        // the keyboard for itself).
+        // the keyboard for itself); other keys go to the program's tty.
         let code = loop {
             match process::wait(child.0, 20_000_000) {
                 Ok(code) => break code,
@@ -264,12 +282,14 @@ impl Shell {
             }
             let mut msg = Message::new();
             while port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_ok() {
-                if msg.tag == tag::INPUT_KEY
-                    && KeyEvent::decode(msg.payload()).and_then(|e| key_to_char(&e))
-                        == Some('\u{3}')
-                {
+                if msg.tag != tag::INPUT_KEY {
+                    continue;
+                }
+                if KeyEvent::decode(msg.payload()).and_then(|e| key_to_char(&e)) == Some('\u{3}') {
                     println!("^C");
                     let _ = process::kill(child.0);
+                } else {
+                    let _ = port_send(tty.0, &msg);
                 }
             }
         };

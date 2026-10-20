@@ -1,11 +1,13 @@
 // Copyright (C) 2026 YuanChi Hsieh
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! A minimal ELF64 reader: just enough to load the STELA kernel.
+//! A minimal ELF64 reader: just enough to load the STELA kernel and
+//! statically linked programs.
 //!
-//! Only the file header and the program headers of type `PT_LOAD` are read;
-//! sections, symbols and relocations are ignored (the kernel is a statically
-//! linked `ET_EXEC` at a fixed address). Field offsets follow the "ELF-64
+//! Only the file header, the program headers of type `PT_LOAD` and the
+//! notes of `PT_NOTE` segments are read; sections, symbols and relocations
+//! are ignored (everything is a statically linked `ET_EXEC` at a fixed
+//! address). Field offsets follow the "ELF-64
 //! Object File Format" version 1.5 and the System V ABI AMD64 Architecture
 //! Processor Supplement (`EM_X86_64` = 62).
 //!
@@ -36,6 +38,8 @@ const PHDR_SIZE: usize = 56;
 
 /// `p_type`: loadable segment.
 const PT_LOAD: u32 = 1;
+/// `p_type`: notes (System V ABI, "Note Section").
+const PT_NOTE: u32 = 4;
 
 /// Why a file was rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +115,51 @@ pub struct Elf<'a> {
     phentsize: usize,
 }
 
+/// How strictly [`Elf::parse_with`] checks the `PT_LOAD` segments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// Every segment starts on a page and no two share a page (the kernel
+    /// and STELA programs, linked so that each page has one permission).
+    PageAligned,
+    /// Segments may start anywhere and share a page with the previous one
+    /// (what GNU ld makes for ordinary Linux executables); they must still
+    /// be in ascending order without overlapping bytes. The loader gives
+    /// a shared page the union of the permissions.
+    Packed,
+}
+
+/// One note of a `PT_NOTE` segment (System V ABI "Note Section"): a
+/// 12-byte header (namesz, descsz, type), the name, the descriptor, each
+/// padded to 4 bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Note<'a> {
+    /// The owner's name without the terminating NUL (`b"GNU"`, `b"STELA"`).
+    pub name: &'a [u8],
+    /// The note type.
+    pub kind: u32,
+    /// The descriptor bytes.
+    pub desc: &'a [u8],
+}
+
+/// The notes in `data` (the bytes of a `PT_NOTE` segment); stops at the
+/// first malformed one.
+pub fn notes(data: &[u8]) -> impl Iterator<Item = Note<'_>> {
+    let mut at = 0usize;
+    core::iter::from_fn(move || {
+        let namesz = read_u32(data, at).ok()? as usize;
+        let descsz = read_u32(data, at + 4).ok()? as usize;
+        let kind = read_u32(data, at + 8).ok()?;
+        let name_at = at + 12;
+        let desc_at = name_at.checked_add(namesz.next_multiple_of(4))?;
+        let end = desc_at.checked_add(descsz.next_multiple_of(4))?;
+        let name = data.get(name_at..name_at + namesz)?;
+        let desc = data.get(desc_at..desc_at + descsz)?;
+        at = end;
+        let name = name.strip_suffix(&[0]).unwrap_or(name);
+        Some(Note { name, kind, desc })
+    })
+}
+
 fn read_u16(data: &[u8], at: usize) -> Result<u16, Error> {
     let bytes = data.get(at..at + 2).ok_or(Error::Truncated)?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
@@ -137,6 +186,11 @@ impl<'a> Elf<'a> {
     /// boundary, appear in ascending address order and do not share a page,
     /// and the entry point lies in an executable segment.
     pub fn parse(data: &'a [u8]) -> Result<Elf<'a>, Error> {
+        Elf::parse_with(data, Layout::PageAligned)
+    }
+
+    /// Like [`Elf::parse`], with the segment rules of `layout`.
+    pub fn parse_with(data: &'a [u8], layout: Layout) -> Result<Elf<'a>, Error> {
         let ident = data.get(..16).ok_or(Error::Truncated)?;
         if ident[..4] != ELFMAG {
             return Err(Error::BadMagic);
@@ -174,11 +228,11 @@ impl<'a> Elf<'a> {
             phnum,
             phentsize,
         };
-        elf.validate_segments()?;
+        elf.validate_segments(layout)?;
         Ok(elf)
     }
 
-    fn validate_segments(&self) -> Result<(), Error> {
+    fn validate_segments(&self, layout: Layout) -> Result<(), Error> {
         let mut previous_end: Option<u64> = None;
         let mut entry_ok = false;
         for index in 0..self.phnum {
@@ -192,15 +246,22 @@ impl<'a> Elf<'a> {
             if file_end > self.data.len() as u64
                 || segment.file_size > segment.mem_size
                 || segment.mem_size == 0
-                || segment.vaddr % PAGE_SIZE != 0
-                || segment.vaddr.checked_add(segment.mem_size).is_none()
+                || (layout == Layout::PageAligned && segment.vaddr % PAGE_SIZE != 0)
+                || segment
+                    .vaddr
+                    .checked_add(segment.mem_size)
+                    .is_none_or(|end| end.checked_next_multiple_of(PAGE_SIZE).is_none())
             {
                 return Err(Error::BadSegment);
             }
-            if let Some(end) = previous_end
-                && segment.vaddr < end.next_multiple_of(PAGE_SIZE)
-            {
-                return Err(Error::BadSegment);
+            if let Some(end) = previous_end {
+                let limit = match layout {
+                    Layout::PageAligned => end.next_multiple_of(PAGE_SIZE),
+                    Layout::Packed => end,
+                };
+                if segment.vaddr < limit {
+                    return Err(Error::BadSegment);
+                }
             }
             previous_end = Some(segment.vaddr_end());
             if segment.flags.executable()
@@ -238,6 +299,39 @@ impl<'a> Elf<'a> {
     /// The entry point's virtual address.
     pub const fn entry(&self) -> u64 {
         self.entry
+    }
+
+    /// Number of program headers and the size of each (for the auxiliary
+    /// vector of a Linux program: AT_PHNUM, AT_PHENT).
+    pub const fn program_headers(&self) -> (usize, usize) {
+        (self.phnum, self.phentsize)
+    }
+
+    /// The virtual address of the program header table, when a `PT_LOAD`
+    /// segment's file bytes contain it (AT_PHDR).
+    pub fn program_headers_address(&self) -> Option<u64> {
+        let start = self.phoff as u64;
+        let end = start + (self.phnum * self.phentsize) as u64;
+        self.segments().find_map(|s| {
+            (s.file_offset <= start && end <= s.file_offset + s.file_size)
+                .then(|| s.vaddr + (start - s.file_offset))
+        })
+    }
+
+    /// The notes of every `PT_NOTE` segment.
+    pub fn notes(&self) -> impl Iterator<Item = Note<'a>> + '_ {
+        (0..self.phnum).flat_map(move |index| {
+            let at = self.phoff + index * self.phentsize;
+            let bytes = (read_u32(self.data, at) == Ok(PT_NOTE))
+                .then(|| {
+                    let offset = read_u64(self.data, at + 8).ok()? as usize;
+                    let size = read_u64(self.data, at + 32).ok()? as usize;
+                    self.data.get(offset..offset.checked_add(size)?)
+                })
+                .flatten()
+                .unwrap_or(&[]);
+            notes(bytes)
+        })
     }
 
     /// The `PT_LOAD` segments in file order (which [`Elf::parse`] checked to
@@ -418,6 +512,73 @@ mod tests {
         assert_eq!(Elf::parse(&filesz_too_big).unwrap_err(), Error::BadSegment);
         let wraps = build(BASE, &[load(5, 0x100, BASE, 0x10, u64::MAX)], 0x400);
         assert_eq!(Elf::parse(&wraps).unwrap_err(), Error::BadSegment);
+    }
+
+    #[test]
+    fn packed_layout_allows_shared_pages() {
+        // Text at 0x401000, data starting in the middle of the next page
+        // and sharing it with rodata: what GNU ld makes for Linux.
+        let phdrs = [
+            load(5, 0x1000, 0x40_1000, 0x800, 0x800),
+            load(4, 0x2000, 0x40_2000, 0x100, 0x100),
+            load(6, 0x2e10, 0x40_2e10, 0x100, 0x400),
+        ];
+        let file = build(0x40_1000, &phdrs, 0x3000);
+        assert_eq!(Elf::parse(&file).err(), Some(Error::BadSegment));
+        let elf = Elf::parse_with(&file, Layout::Packed).unwrap();
+        assert_eq!(elf.segments().count(), 3);
+        // Overlapping bytes are still refused.
+        let phdrs = [
+            load(5, 0x1000, 0x40_1000, 0x800, 0x800),
+            load(6, 0x1000, 0x40_17ff, 0x10, 0x10),
+        ];
+        let file = build(0x40_1000, &phdrs, 0x3000);
+        assert_eq!(
+            Elf::parse_with(&file, Layout::Packed).err(),
+            Some(Error::BadSegment)
+        );
+    }
+
+    #[test]
+    fn notes_and_program_header_address() {
+        let note_at = 0x200usize;
+        let mut note = Vec::new();
+        for (name, kind, desc) in [
+            (&b"GNU\0"[..], 3u32, &[1u8, 2, 3][..]),
+            (b"STELA\0", 1, &[1, 0, 0, 0]),
+        ] {
+            note.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            note.extend_from_slice(&(desc.len() as u32).to_le_bytes());
+            note.extend_from_slice(&kind.to_le_bytes());
+            note.extend_from_slice(name);
+            note.resize(note.len().next_multiple_of(4), 0);
+            note.extend_from_slice(desc);
+            note.resize(note.len().next_multiple_of(4), 0);
+        }
+        let phdrs = [
+            load(5, 0, 0x40_0000, 0x1000, 0x1000),
+            Phdr {
+                p_type: PT_NOTE,
+                flags: 4,
+                offset: note_at as u64,
+                vaddr: 0x40_0200,
+                filesz: note.len() as u64,
+                memsz: note.len() as u64,
+            },
+        ];
+        let mut file = build(0x40_0100, &phdrs, 0x1000);
+        file[note_at..note_at + note.len()].copy_from_slice(&note);
+        let elf = Elf::parse(&file).unwrap();
+        let found: Vec<_> = elf.notes().collect();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, b"GNU");
+        assert_eq!((found[0].kind, found[0].desc), (3, &[1u8, 2, 3][..]));
+        assert_eq!(found[1].name, b"STELA");
+        assert_eq!(elf.program_headers(), (2, PHDR_SIZE));
+        assert_eq!(elf.program_headers_address(), Some(0x40_0040));
+        // Truncated notes stop the iteration.
+        assert_eq!(notes(&note[..10]).count(), 0);
+        assert_eq!(notes(&note[..note.len() - 4]).count(), 1);
     }
 
     #[test]

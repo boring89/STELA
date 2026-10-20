@@ -1,0 +1,112 @@
+// Copyright (C) 2026 YuanChi Hsieh
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! What a Linux process has beyond a STELA one: its descriptor table, its
+//! working directory (a Linux path) and its memory (the `brk` area).
+
+use super::fd::FdTable;
+use crate::object::tty::Tty;
+use crate::vfs::Node;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::AtomicU64;
+use frame::sync::SpinLock;
+
+/// An open file: what a descriptor names. Descriptors made by `dup` share
+/// one (so they share the offset, as in Linux).
+pub enum OpenFile {
+    /// A terminal.
+    Tty(Arc<Tty>),
+    /// `/dev/null`.
+    Null,
+    /// `/dev/zero`.
+    Zero,
+    /// A file on a volume.
+    File {
+        /// The file.
+        node: Node,
+        /// Offset and flags.
+        state: SpinLock<FileState>,
+    },
+    /// A folder (for `getdents64`): a volume's folder, the synthetic root
+    /// or `/dev`.
+    Dir {
+        /// The folder; `None` for the synthetic root and `/dev`.
+        node: Option<Node>,
+        /// Its Linux path (for `/` and `/dev` listings).
+        path: String,
+        /// How many entries `getdents64` has returned.
+        cursor: SpinLock<u64>,
+    },
+}
+
+/// The changing part of an open file.
+pub struct FileState {
+    /// Where the next read or write happens.
+    pub offset: u64,
+    /// `O_APPEND`: writes go to the end.
+    pub append: bool,
+    /// Opened for reading.
+    pub readable: bool,
+    /// Opened for writing.
+    pub writable: bool,
+    /// The `open` flags as given (for `F_GETFL`).
+    pub flags: u64,
+}
+
+/// The `brk` area: from the end of the program up.
+pub struct Memory {
+    /// The page-aligned end of the program image, where the area starts.
+    pub start: u64,
+    /// The current break (what `brk` returns).
+    pub current: u64,
+    /// The end of the mapped pages (page aligned, ≥ `current`).
+    pub mapped: u64,
+}
+
+/// A Linux process's state.
+pub struct State {
+    /// Descriptors.
+    pub fds: SpinLock<FdTable<Arc<OpenFile>>>,
+    /// The working directory, absolute and normalised (`/Data/docs`).
+    pub cwd: SpinLock<String>,
+    /// The `brk` area.
+    pub memory: SpinLock<Memory>,
+    /// The controlling terminal (`/dev/tty`).
+    pub tty: Arc<Tty>,
+    /// `set_tid_address` (kept, never used: no threads).
+    pub tid_address: AtomicU64,
+}
+
+impl State {
+    /// A new state: descriptors 0, 1 and 2 on `tty`, working directory
+    /// `cwd`, the break at `image_end` (rounded up to a page).
+    pub fn new(tty: Arc<Tty>, cwd: String, image_end: u64) -> State {
+        let mut fds = FdTable::new();
+        let file = Arc::new(OpenFile::Tty(Arc::clone(&tty)));
+        for _ in 0..3 {
+            // An empty table has room for three.
+            let _ = fds.insert(Arc::clone(&file));
+        }
+        let start = image_end.next_multiple_of(4096);
+        State {
+            fds: SpinLock::new(fds),
+            cwd: SpinLock::new(cwd),
+            memory: SpinLock::new(Memory {
+                start,
+                current: start,
+                mapped: start,
+            }),
+            tty,
+            tid_address: AtomicU64::new(0),
+        }
+    }
+
+    /// Closes every descriptor (the process ended). The files are dropped
+    /// after the lock is released.
+    pub fn release(&self) {
+        let files: Vec<Arc<OpenFile>> = self.fds.lock().drain();
+        drop(files);
+    }
+}

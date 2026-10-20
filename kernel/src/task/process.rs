@@ -28,6 +28,15 @@ use frame::sync::SpinLock;
 /// A process's id: global, increasing, never reused.
 pub type ProcessId = u64;
 
+/// Which system-call interface a process uses (`docs/linux.md` §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Personality {
+    /// STELA's own ABI (programs with the STELA ELF note).
+    Stela,
+    /// Linux x86-64 system calls (static musl programs).
+    Linux,
+}
+
 /// A process: what its threads share.
 pub struct Process {
     id: ProcessId,
@@ -45,6 +54,9 @@ pub struct Process {
     ports: SpinLock<Vec<Weak<Port>>>,
     /// The `MemoryMap` ranges in its map area.
     maps: SpinLock<Regions>,
+    /// The Linux personality's state (descriptors, working directory,
+    /// memory); `None` for STELA programs.
+    linux: Option<crate::linux::State>,
 }
 
 impl Process {
@@ -73,6 +85,20 @@ impl Process {
         &self.maps
     }
 
+    /// Its system-call interface.
+    pub fn personality(&self) -> Personality {
+        if self.linux.is_some() {
+            Personality::Linux
+        } else {
+            Personality::Stela
+        }
+    }
+
+    /// The Linux state, for a Linux process.
+    pub fn linux(&self) -> Option<&crate::linux::State> {
+        self.linux.as_ref()
+    }
+
     /// Its main port.
     pub fn main_port(&self) -> &Arc<Port> {
         &self.main_port
@@ -92,6 +118,9 @@ impl Process {
     fn release(&self) {
         let entries = self.handles.lock().drain();
         drop(entries);
+        if let Some(linux) = &self.linux {
+            linux.release();
+        }
         self.main_port.close();
         let ports = core::mem::take(&mut *self.ports.lock());
         for port in ports.iter().filter_map(Weak::upgrade) {
@@ -187,11 +216,16 @@ pub fn standard_initial(bootstrap: Option<Entry>) -> Initial {
 /// bootstrap handles: `[0]` its main port, `[1]` the console service (if
 /// it runs), `[2]` nothing, `[3]` the root of `Data` (if mounted).
 pub fn create(name: &str) -> Result<Arc<Process>, MapError> {
-    create_with(name, standard_initial(None))
+    create_with(name, standard_initial(None), None)
 }
 
-/// Like [`create`], with `initial` as handles `[1]`..`[3]`.
-pub fn create_with(name: &str, initial: Initial) -> Result<Arc<Process>, MapError> {
+/// Like [`create`], with `initial` as handles `[1]`..`[3]`, and the Linux
+/// personality when `linux` is given.
+pub fn create_with(
+    name: &str,
+    initial: Initial,
+    linux: Option<crate::linux::State>,
+) -> Result<Arc<Process>, MapError> {
     let space = AddressSpace::new()?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let main_port = Port::new(id);
@@ -211,6 +245,7 @@ pub fn create_with(name: &str, initial: Initial) -> Result<Arc<Process>, MapErro
         main_port,
         ports: SpinLock::new(Vec::new()),
         maps: SpinLock::new(Regions::new(MAP_BASE, MAP_END)),
+        linux,
     });
     TABLE.lock().insert(
         id,

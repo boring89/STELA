@@ -58,6 +58,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("block devices", block_devices),
         ("file systems", file_systems),
         ("processes", processes),
+        ("linux personality", linux_personality),
     ];
     // Let the service threads (console) reach their first wait, so that
     // their start-up allocations do not land in the middle of a test.
@@ -1198,4 +1199,68 @@ fn processes(_: &'static BootInfo) {
     task::sleep_ms(1);
     assert_eq!(task::stats().zombies, 0);
     assert_eq!(pmm::stats().0, free, "process memory not freed");
+}
+
+/// A Linux program in raw machine code (no STELA note, so the kernel runs
+/// it with the Linux personality):
+///
+/// ```text
+///     lea  rsi, [rip + msg]
+///     mov  edi, 1                 ; write(1, msg, len)
+///     mov  edx, len
+///     mov  eax, 1
+///     syscall
+///     cmp  rax, len               ; all written
+///     jne  fail
+///     cmp  rdx, len               ; Linux leaves RDX alone
+///     jne  fail
+///     mov  eax, 57                ; fork() -> -ENOSYS
+///     syscall
+///     neg  rax
+///     mov  rdi, rax               ; exit_group(38)
+///     mov  eax, 231
+///     syscall
+/// fail:
+///     mov  edi, 1                 ; exit_group(1)
+///     mov  eax, 231
+///     syscall
+/// msg: "linux: hello from raw system calls\n"
+/// ```
+const LINUX_TEST: &[u8] = &[
+    0x48, 0x8D, 0x35, 0x3D, 0x00, 0x00, 0x00, 0xBF, 0x01, 0x00, 0x00, 0x00, 0xBA, 0x23, 0x00, 0x00,
+    0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x83, 0xF8, 0x23, 0x75, 0x1A, 0x48, 0x83,
+    0xFA, 0x23, 0x75, 0x14, 0xB8, 0x39, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xF7, 0xD8, 0x48, 0x89,
+    0xC7, 0xB8, 0xE7, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xBF, 0x01, 0x00, 0x00, 0x00, 0xB8, 0xE7, 0x00,
+    0x00, 0x00, 0x0F, 0x05, 0x6C, 0x69, 0x6E, 0x75, 0x78, 0x3A, 0x20, 0x68, 0x65, 0x6C, 0x6C, 0x6F,
+    0x20, 0x66, 0x72, 0x6F, 0x6D, 0x20, 0x72, 0x61, 0x77, 0x20, 0x73, 0x79, 0x73, 0x74, 0x65, 0x6D,
+    0x20, 0x63, 0x61, 0x6C, 0x6C, 0x73, 0x0A,
+];
+
+fn linux_personality(_: &'static BootInfo) {
+    use kernel::program;
+    use kernel::task::Personality;
+    // Detection: programs built with libstela carry the STELA note.
+    let initrd = kernel::vfs::find("Initrd").expect("no Initrd volume");
+    let hello = initrd
+        .fs
+        .lookup(initrd.fs.root(), "hello")
+        .expect("no hello in the initrd");
+    let (_, image) = program::read_program(&initrd, hello.id).expect("cannot read hello");
+    let elf = elfload::Elf::parse_with(&image, elfload::Layout::Packed).expect("bad hello");
+    assert_eq!(program::personality_of(&elf), Personality::Stela);
+    let raw = make_elf(LINUX_TEST, 4 | 1);
+    let elf = elfload::Elf::parse_with(&raw, elfload::Layout::Packed).expect("bad raw ELF");
+    assert_eq!(program::personality_of(&elf), Personality::Linux);
+    // write to the tty, RDX preserved, ENOSYS, exit_group; twice, and the
+    // second run gives back every frame (descriptors, tty, memory).
+    let pid = program::spawn_with("linux-raw", &raw, None).expect("spawn failed");
+    assert_eq!(task::wait_process(pid), Some(38));
+    let (free, _) = pmm::stats();
+    let pid = program::spawn_with("linux-raw", &raw, None).expect("spawn failed");
+    assert_eq!(task::wait_process(pid), Some(38));
+    assert_eq!(pmm::stats().0, free, "a Linux process leaked memory");
+    // Forced personality: the same code as a STELA program makes STELA
+    // calls (1 = ThreadExit), so it ends with code 0 without printing.
+    let pid = program::spawn_with("forced", &raw, Some(Personality::Stela)).expect("spawn failed");
+    assert_eq!(task::wait_process(pid), Some(0));
 }

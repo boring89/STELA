@@ -9,9 +9,12 @@
 //! kernel structure refers to it.
 
 pub mod handle;
+pub mod ldisc;
 #[cfg(target_os = "none")]
 pub mod port;
 pub mod regions;
+#[cfg(target_os = "none")]
+pub mod tty;
 
 #[cfg(target_os = "none")]
 pub use target::*;
@@ -19,6 +22,7 @@ pub use target::*;
 #[cfg(target_os = "none")]
 mod target {
     use super::port::Port;
+    use super::tty::Tty;
     use crate::vfs::Node;
     use alloc::sync::Arc;
     use frame::mm::shared::SharedMemory;
@@ -37,6 +41,11 @@ mod target {
         /// A process, by id (the handle does not keep its memory alive;
         /// its exit status stays in the process table).
         Process(crate::task::ProcessId),
+        /// The program side of a terminal: `PortSend` of `CONSOLE_WRITE`
+        /// prints, of `INPUT_KEY` types (`docs/linux.md` §5).
+        Tty(Arc<Tty>),
+        /// The master side of a terminal (`TtyRead`, `TtyWrite`).
+        TtyMaster(Arc<Tty>),
     }
 
     impl KernelObject {
@@ -60,6 +69,14 @@ mod target {
         pub fn as_file(&self) -> Option<&Node> {
             match self {
                 KernelObject::File(node) => Some(node),
+                _ => None,
+            }
+        }
+
+        /// The terminal, if this is its program side.
+        pub fn as_tty(&self) -> Option<&Arc<Tty>> {
+            match self {
+                KernelObject::Tty(tty) => Some(tty),
                 _ => None,
             }
         }

@@ -203,6 +203,15 @@ impl AddressSpace {
         Ok(PhysFrame::from_addr(old & ADDR_MASK))
     }
 
+    /// Changes the permissions of the user page at `virt` (one the address
+    /// space owns; shared pages are refused with `NotMapped`).
+    pub fn protect(&self, virt: u64, flags: UserFlags) -> Result<(), MapError> {
+        let _guard = self.lock.lock();
+        let old = self.clear_leaf(virt, false)?;
+        // The tables exist (the page was mapped), so this cannot fail.
+        self.set_leaf(virt, Self::leaf_bits(old & ADDR_MASK, flags))
+    }
+
     /// Maps all of `memory` at `virt..virt + memory.size()`. The address
     /// space keeps a clone of `memory` until [`AddressSpace::unmap_shared`]
     /// or its own end. Nothing stays mapped on failure.

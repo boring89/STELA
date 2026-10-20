@@ -32,9 +32,18 @@ pub fn process_spawn(
     handles_ptr: u64,
     count: u64,
 ) -> Result<u64, Error> {
-    if count > INITIAL {
+    let flags = count & !0xFFFF_FFFF;
+    let count = count & 0xFFFF_FFFF;
+    if count > INITIAL || flags & !abi::spawn::ALL != 0 || flags == abi::spawn::ALL {
         return Err(Error::InvalidArgument);
     }
+    let force = if flags & abi::spawn::FORCE_LINUX != 0 {
+        Some(task::Personality::Linux)
+    } else if flags & abi::spawn::FORCE_STELA != 0 {
+        Some(task::Personality::Stela)
+    } else {
+        None
+    };
     let node = {
         let handles = process.handles().lock();
         let entry = handles.get_with(Handle::from_raw(file), Rights::READ)?;
@@ -45,7 +54,7 @@ pub fn process_spawn(
         }
     };
     let (name, image) = program::read_program(&node.volume, node.id).map_err(load_error)?;
-    elfload::Elf::parse(&image).map_err(|_| Error::InvalidArgument)?;
+    program::check_image(&image).map_err(|_| Error::InvalidArgument)?;
     // The initial handles and the message's handles: checked, then moved.
     let mut raw = [0u8; 12];
     process
@@ -101,9 +110,14 @@ pub fn process_spawn(
     };
     msg.handle_slots = [Handle::NONE; MESSAGE_HANDLES];
     msg.reserved = 0;
-    let child =
-        program::spawn_process(&name, &image, initial, Some(QueuedMessage { msg, objects }))
-            .map_err(load_error)?;
+    let child = program::spawn_process(
+        &name,
+        &image,
+        initial,
+        Some(QueuedMessage { msg, objects }),
+        force,
+    )
+    .map_err(load_error)?;
     let entry = Entry {
         object: KernelObject::Process(child.id()),
         rights: Rights::WAIT | Rights::KILL | Rights::DUPLICATE | Rights::TRANSFER,

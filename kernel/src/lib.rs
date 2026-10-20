@@ -21,6 +21,7 @@ pub mod fsyscall;
 pub mod initrd;
 #[cfg(target_os = "none")]
 pub mod input;
+pub mod linux;
 pub mod object;
 #[cfg(target_os = "none")]
 pub mod power;

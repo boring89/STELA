@@ -102,7 +102,8 @@ test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 		--expect "STELA kernel" --expect "input: OK" \
 		--expect "user: hello from built-in user code" --expect "hello from user mode" \
 		--expect "hello from a second thread" --expect "fault: reading address 0" \
-		--expect "spin: " --expect "ipc_client: OK" --expect "proctest: OK" --expect "selftest: OK" \
+		--expect "spin: " --expect "ipc_client: OK" --expect "proctest: OK" \
+		--expect "linux: hello from raw system calls" --expect "selftest: OK" \
 		-- $(QEMU) $(QEMU_TEST_FLAGS)
 
 # The minimal machine also gets the AHCI test disk (a copy of its own):

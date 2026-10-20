@@ -4,8 +4,10 @@
 //! Starting user programs: an ELF executable (read from a file through the
 //! VFS; the initrd is the `Initrd` volume) is copied into a new process's
 //! address space, a stack is mapped below `STACK_TOP`, its arguments are
-//! queued on its main port, and the first thread starts at the entry
-//! point.
+//! queued on its main port (STELA programs) or written on its stack (Linux
+//! programs, `docs/linux.md`), and the first thread starts at the entry
+//! point. A program with the STELA ELF note (`abi::note`) gets the STELA
+//! personality, any other the Linux one.
 //!
 //! ```text
 //!  0x0000_0000_0040_0000   the program's PT_LOAD segments (W^X)
@@ -15,17 +17,19 @@
 //!  0x0000_7FFF_FFF0_0000   STACK_TOP (initial RSP = STACK_TOP - 8)
 //! ```
 
-use crate::object::Entry;
 use crate::object::port::QueuedMessage;
-use crate::task::{self, Process, ProcessId, SpawnError};
+use crate::object::tty::Tty;
+use crate::object::{Entry, KernelObject};
+use crate::task::{self, Personality, Process, ProcessId, SpawnError};
 use crate::vfs;
 use abi::layout::{STACK_GUARD, STACK_SIZE, STACK_TOP};
 use abi::{Message, tag};
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use elfload::Elf;
+use elfload::{Elf, Layout};
 use frame::mm::paging::MapError;
 use frame::mm::pmm;
 use frame::mm::user::{AddressSpace, UserFlags};
@@ -69,22 +73,34 @@ fn map_zeroed(
     Ok(())
 }
 
-/// Copies the segments of `elf` into `space` and maps the stack.
+/// Copies the segments of `elf` into `space` and maps the stack. A page
+/// that two segments share (Linux programs) gets both permissions; a page
+/// that would be writable and executable is refused (W^X).
 fn load(space: &AddressSpace, elf: &Elf) -> Result<(), LoadError> {
+    let mut pages: BTreeMap<u64, UserFlags> = BTreeMap::new();
     for segment in elf.segments() {
-        let flags = UserFlags {
-            writable: segment.flags.writable(),
-            executable: segment.flags.executable(),
-        };
-        if flags.writable && flags.executable {
-            return Err(LoadError::BadSegment);
-        }
+        let start = segment.vaddr & !0xFFF;
         let end = segment.vaddr_end().next_multiple_of(4096);
-        if segment.vaddr == 0 || end > STACK_GUARD {
+        if start == 0 || end > STACK_GUARD {
             return Err(LoadError::BadSegment);
         }
-        // Zeroed frames: .bss (mem_size beyond file_size) needs nothing more.
-        map_zeroed(space, segment.vaddr, end, flags)?;
+        for page in (start..end).step_by(4096) {
+            let flags = pages.entry(page).or_insert(UserFlags {
+                writable: false,
+                executable: false,
+            });
+            flags.writable |= segment.flags.writable();
+            flags.executable |= segment.flags.executable();
+            if flags.writable && flags.executable {
+                return Err(LoadError::BadSegment);
+            }
+        }
+    }
+    // Zeroed frames: .bss (mem_size beyond file_size) needs nothing more.
+    for (&page, &flags) in &pages {
+        map_zeroed(space, page, page + 4096, flags)?;
+    }
+    for segment in elf.segments() {
         space
             .load(segment.vaddr, elf.segment_data(&segment))
             .map_err(|_| LoadError::BadSegment)?;
@@ -96,10 +112,70 @@ fn load(space: &AddressSpace, elf: &Elf) -> Result<(), LoadError> {
     map_zeroed(space, STACK_TOP - STACK_SIZE, STACK_TOP, stack)
 }
 
-/// Starts the ELF executable `image` as a new process named `name`, with
-/// the standard bootstrap handles.
+/// Starts the ELF executable `image` as a new STELA process named `name`
+/// (with or without the note: the kernel's own test programs have none),
+/// with the standard bootstrap handles.
 pub fn spawn(name: &str, image: &[u8]) -> Result<ProcessId, LoadError> {
-    spawn_process(name, image, task::process::standard_initial(None), None).map(|p| p.id())
+    spawn_with(name, image, Some(Personality::Stela))
+}
+
+/// Like [`spawn`], with the given personality (`None`: from the note).
+pub fn spawn_with(
+    name: &str,
+    image: &[u8],
+    personality: Option<Personality>,
+) -> Result<ProcessId, LoadError> {
+    spawn_process(
+        name,
+        image,
+        task::process::standard_initial(None),
+        None,
+        personality,
+    )
+    .map(|p| p.id())
+}
+
+/// The personality a program gets: STELA if it carries the STELA note.
+pub fn personality_of(elf: &Elf) -> Personality {
+    if elf
+        .notes()
+        .any(|n| n.name == abi::note::NAME && n.kind == abi::note::ABI)
+    {
+        Personality::Stela
+    } else {
+        Personality::Linux
+    }
+}
+
+/// Checks that `image` is an executable STELA can load (either layout).
+pub fn check_image(image: &[u8]) -> Result<(), LoadError> {
+    Elf::parse_with(image, Layout::Packed)
+        .map(|_| ())
+        .map_err(LoadError::BadElf)
+}
+
+/// The arguments in a `BOOTSTRAP_ARGS` message: NUL-separated in its data,
+/// or in the `Memory` object it carries (the data is then the length).
+pub fn message_args(args: &QueuedMessage) -> Vec<Vec<u8>> {
+    let bytes = match args.objects.first().and_then(|e| e.object.as_memory()) {
+        Some(memory) => {
+            let mut len = [0u8; 8];
+            let n = args.msg.payload().len().min(8);
+            len[..n].copy_from_slice(&args.msg.payload()[..n]);
+            let len = u64::from_le_bytes(len).min(memory.size()) as usize;
+            let mut data = vec![0u8; len];
+            if memory.read(0, &mut data).is_err() {
+                data.clear();
+            }
+            data
+        }
+        None => args.msg.payload().to_vec(),
+    };
+    bytes
+        .split(|&b| b == 0)
+        .filter(|a| !a.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect()
 }
 
 /// The arguments message of a program started with just its name.
@@ -109,26 +185,75 @@ pub fn name_args(name: &str) -> QueuedMessage {
 
 /// Starts the ELF executable `image` as a new process named `name`, with
 /// `initial` as its handles `[1]`..`[3]` and `args` (default: just the
-/// name) queued on its main port as its `BOOTSTRAP_ARGS` message.
+/// name) as its arguments: queued on its main port as its
+/// `BOOTSTRAP_ARGS` message (STELA), or on its stack (Linux). The
+/// personality is `force`, or what [`personality_of`] says.
 pub fn spawn_process(
     name: &str,
     image: &[u8],
     initial: task::process::Initial,
     args: Option<QueuedMessage>,
+    force: Option<Personality>,
 ) -> Result<Arc<Process>, LoadError> {
-    let elf = Elf::parse(image).map_err(LoadError::BadElf)?;
-    let process = task::process::create_with(name, initial)?;
+    let elf = Elf::parse_with(image, Layout::Packed).map_err(LoadError::BadElf)?;
+    let personality = force.unwrap_or_else(|| personality_of(&elf));
+    let args = args.unwrap_or_else(|| name_args(name));
+    if personality == Personality::Linux {
+        return spawn_linux(name, &elf, initial, &args);
+    }
+    let process = task::process::create_with(name, initial, None)?;
     // On failure the process has no thread; dropping it frees what was
     // mapped and ends it with code -1.
     load(process.space(), &elf)?;
-    let args = args.unwrap_or_else(|| name_args(name));
     if process.main_port().send(args).is_err() {
         return Err(LoadError::OutOfMemory);
     }
-    match task::spawn_user(&process, elf.entry(), STACK_TOP - 8, 0) {
-        Ok(_) => Ok(process),
+    start(&process, elf.entry(), STACK_TOP - 8)
+}
+
+fn start(process: &Arc<Process>, entry: u64, rsp: u64) -> Result<Arc<Process>, LoadError> {
+    match task::spawn_user(process, entry, rsp, 0) {
+        Ok(_) => Ok(Arc::clone(process)),
         Err(SpawnError::OutOfMemory | SpawnError::Exiting) => Err(LoadError::OutOfMemory),
     }
+}
+
+/// Starts a Linux program: its terminal is the tty given as `[1]`, or a
+/// new one that prints on the kernel console; its working directory is
+/// the volume of `[3]`; the arguments go on its stack.
+fn spawn_linux(
+    name: &str,
+    elf: &Elf,
+    initial: task::process::Initial,
+    args: &QueuedMessage,
+) -> Result<Arc<Process>, LoadError> {
+    let tty = match &initial[0] {
+        Some(Entry {
+            object: KernelObject::Tty(tty),
+            ..
+        }) => Arc::clone(tty),
+        _ => Tty::new(false),
+    };
+    let cwd = match &initial[2] {
+        Some(Entry {
+            object: KernelObject::Directory(node),
+            ..
+        }) => alloc::format!("/{}", node.volume.name),
+        _ if vfs::find("Data").is_some() => String::from("/Data"),
+        _ => String::from("/Initrd"),
+    };
+    let (_, image_end) = elf.image_span();
+    let state = crate::linux::State::new(Arc::clone(&tty), cwd, image_end);
+    let process = task::process::create_with(name, initial, Some(state))?;
+    load(process.space(), elf)?;
+    let argv = message_args(args);
+    let stack = crate::linux::initial_stack(elf, &argv, process.linux());
+    process
+        .space()
+        .write(stack.rsp, &stack.bytes)
+        .map_err(|_| LoadError::OutOfMemory)?;
+    tty.add_user(process.id());
+    start(&process, elf.entry(), stack.rsp)
 }
 
 /// Largest program file `read_program` takes.
@@ -172,6 +297,7 @@ pub fn spawn_path(
         &name,
         &image,
         task::process::standard_initial(bootstrap),
+        None,
         None,
     )
 }

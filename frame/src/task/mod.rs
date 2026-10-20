@@ -22,12 +22,13 @@
 
 pub mod stack;
 
-use crate::arch::x86_64::{context, gdt};
+use crate::arch::x86_64::{context, gdt, msr};
 use crate::cpu;
 use crate::sync::Once;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU64, Ordering};
 pub use stack::{KERNEL_STACK_SIZE, KernelStack};
 
 /// What a thread starts with: an entry function and its argument. The
@@ -44,6 +45,11 @@ pub struct TaskContext {
     /// FXSAVE area, switched eagerly; `None` for kernel-only threads (the
     /// kernel is compiled without SSE, so it never touches this state).
     fpu: Option<Box<UnsafeCell<context::FxArea>>>,
+    /// IA32_FS_BASE for user threads (Linux programs keep their thread
+    /// pointer there, `arch_prctl(ARCH_SET_FS)`); loaded when the thread
+    /// is switched to. User code cannot change it itself (CR4.FSGSBASE is
+    /// clear, so `wrfsbase` faults).
+    fs_base: AtomicU64,
 }
 
 // SAFETY: `rsp` and `fpu` are only accessed by `switch_to`, on the
@@ -85,6 +91,7 @@ impl TaskContext {
             rsp: UnsafeCell::new(rsp),
             stack: Some(stack),
             fpu: fpu.then(|| Box::new(UnsafeCell::new(context::FxArea::initial()))),
+            fs_base: AtomicU64::new(0),
         }))
     }
 
@@ -97,6 +104,36 @@ impl TaskContext {
     pub fn has_fpu(&self) -> bool {
         self.fpu.is_some()
     }
+
+    /// The FS base the thread runs user code with.
+    pub fn fs_base(&self) -> u64 {
+        self.fs_base.load(Ordering::Relaxed)
+    }
+}
+
+/// Why [`set_fs_base`] refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BadFsBase;
+
+/// Sets the running user thread's FS base (`arch_prctl(ARCH_SET_FS)`):
+/// stored in its context and loaded into IA32_FS_BASE now. The address
+/// must be in the user half (a non-canonical value would make `wrmsr`
+/// fault); the running thread must be a user thread.
+pub fn set_fs_base(base: u64) -> Result<(), BadFsBase> {
+    if base >= crate::mm::USER_END {
+        return Err(BadFsBase);
+    }
+    let current = current();
+    if !current.has_fpu() {
+        return Err(BadFsBase);
+    }
+    let _irq = crate::sync::IrqGuard::new();
+    current.fs_base.store(base, Ordering::Relaxed);
+    // SAFETY: IA32_FS_BASE exists on every x86-64 processor (Vol. 4 Table
+    // 2-2); the kernel never uses FS, so moving it only affects this
+    // thread's user code. The value is canonical (checked above).
+    unsafe { msr::write(msr::IA32_FS_BASE, base) };
+    Ok(())
 }
 
 /// The kernel's scheduler entry for preemption, see [`set_scheduler`].
@@ -200,6 +237,7 @@ pub(crate) fn init() {
         rsp: UnsafeCell::new(0),
         stack: None,
         fpu: None,
+        fs_base: AtomicU64::new(0),
     });
     let _irq = crate::sync::IrqGuard::new();
     // SAFETY: interrupts are disabled and this processor is the only user
@@ -231,6 +269,8 @@ pub fn switch_to(next: Arc<TaskContext>) {
     let cpu = cpu::current();
     // SAFETY: interrupts are disabled and only this processor uses its
     // task cells; the references end before the stacks are switched.
+    // IA32_FS_BASE exists on every x86-64 processor and the kernel does not
+    // use FS; the stored value was checked to be canonical.
     let (save_rsp, load_rsp) = unsafe {
         let current = &mut *cpu.current_task.get();
         let Some(prev) = current.take() else {
@@ -245,6 +285,9 @@ pub fn switch_to(next: Arc<TaskContext>) {
         }
         if let Some(fpu) = &next.fpu {
             context::fxrstor(fpu.get());
+            // User threads get their own FS base (0 unless they set one),
+            // so no program sees another one's.
+            msr::write(msr::IA32_FS_BASE, next.fs_base.load(Ordering::Relaxed));
         }
         if let Some(top) = next.stack_top() {
             gdt::set_kernel_stack(top);

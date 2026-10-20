@@ -20,6 +20,11 @@ pub fn handle_duplicate(handle: Handle, rights: Rights) -> Result<Handle, Error>
     syscall2(Syscall::HandleDuplicate, handle.raw(), rights.raw()).map(Handle::from_raw)
 }
 
+/// What `handle` refers to (`abi::object_kind`).
+pub fn handle_kind(handle: Handle) -> Result<u64, Error> {
+    syscall1(Syscall::HandleKind, handle.raw())
+}
+
 /// A new port; the handle has `SEND | RECEIVE | DUPLICATE | TRANSFER`.
 pub fn port_create() -> Result<Handle, Error> {
     syscall0(Syscall::PortCreate).map(Handle::from_raw)

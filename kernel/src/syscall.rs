@@ -6,12 +6,13 @@
 //! RAX and the value in RDX.
 
 use crate::object::port::{Port, QueuedMessage};
+use crate::object::tty::Tty;
 use crate::object::{Entry, KernelObject};
 use crate::task::{self, Process};
 use abi::layout::USER_END;
 use abi::{
     Error, Handle, MEMORY_MAX, MESSAGE_DATA, MESSAGE_HANDLES, MESSAGE_SIZE, Message, Rights,
-    Syscall,
+    Syscall, tag,
 };
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -25,8 +26,15 @@ pub fn init() {
     frame::syscall::set_handler(handle);
 }
 
-/// The handler frame calls for every `syscall`.
+/// The handler frame calls for every `syscall`. Linux processes' calls go
+/// to `crate::linux`.
 fn handle(frame: &mut SyscallFrame) {
+    if let Some(process) = task::current_process()
+        && process.personality() == task::Personality::Linux
+    {
+        crate::linux::dispatch(frame, process);
+        return;
+    }
     let args = frame.args();
     let [a0, a1, a2, ..] = args;
     let result = match Syscall::from_raw(frame.number()) {
@@ -51,6 +59,10 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::MemoryMap) => memory_map(a0, a1),
         Some(Syscall::MemoryUnmap) => memory_unmap(a0),
         Some(Syscall::InputAttach) => input_attach(a0),
+        Some(Syscall::TtyCreate) => tty_create(a0),
+        Some(Syscall::TtyRead) => tty_read(a0, a1, a2, args[3]),
+        Some(Syscall::TtyWrite) => tty_write(a0, a1, a2),
+        Some(Syscall::HandleKind) => handle_kind(a0),
         Some(call) => file_call(call, args),
         None => Err(Error::InvalidSyscall),
     };
@@ -129,7 +141,19 @@ fn port_create() -> Result<u64, Error> {
 /// handles out of the caller's table and queues it.
 fn port_send(handle: u64, msg_ptr: u64) -> Result<u64, Error> {
     let process = caller()?;
-    let port = port_of(&process, handle, Rights::SEND)?;
+    let target = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(handle))?;
+        let target = match &entry.object {
+            KernelObject::Port(port) => SendTarget::Port(Arc::clone(port)),
+            KernelObject::Tty(tty) => SendTarget::Tty(Arc::clone(tty)),
+            _ => return Err(Error::WrongType),
+        };
+        if !entry.rights.contains(Rights::SEND) {
+            return Err(Error::AccessDenied);
+        }
+        target
+    };
     let mut bytes = [0u8; MESSAGE_SIZE];
     process
         .space()
@@ -139,6 +163,10 @@ fn port_send(handle: u64, msg_ptr: u64) -> Result<u64, Error> {
     if msg.len as usize > MESSAGE_DATA || msg.handles as usize > MESSAGE_HANDLES {
         return Err(Error::InvalidArgument);
     }
+    let port = match target {
+        SendTarget::Port(port) => port,
+        SendTarget::Tty(tty) => return tty_send(&tty, &msg),
+    };
     // Refuse early when the message could not be queued, so that the
     // handles stay where they are. (A send racing with this one may still
     // fill the queue; the handles are then released with the message.)
@@ -161,6 +189,33 @@ fn port_send(handle: u64, msg_ptr: u64) -> Result<u64, Error> {
     msg.handle_slots = [Handle::NONE; MESSAGE_HANDLES];
     msg.reserved = 0;
     port.send(QueuedMessage { msg, objects })?;
+    Ok(0)
+}
+
+/// Where a `PortSend` goes.
+enum SendTarget {
+    Port(Arc<Port>),
+    Tty(Arc<Tty>),
+}
+
+/// `PortSend` to a tty: `CONSOLE_WRITE` is output, `INPUT_KEY` is typed
+/// (as the character it makes); other messages are ignored. Handles are
+/// not taken (a tty has nowhere to keep them).
+fn tty_send(tty: &Tty, msg: &Message) -> Result<u64, Error> {
+    if msg.handles != 0 {
+        return Err(Error::InvalidArgument);
+    }
+    match msg.tag {
+        tag::CONSOLE_WRITE => tty.write(msg.payload()),
+        tag::INPUT_KEY => {
+            if let Some(c) =
+                abi::key::KeyEvent::decode(msg.payload()).and_then(|e| abi::key::key_to_char(&e))
+            {
+                tty.feed(c);
+            }
+        }
+        _ => {}
+    }
     Ok(0)
 }
 
@@ -267,9 +322,117 @@ fn memory_unmap(addr: u64) -> Result<u64, Error> {
 /// `InputAttach(port)`.
 fn input_attach(handle: u64) -> Result<u64, Error> {
     let process = caller()?;
-    let port = port_of(&process, handle, Rights::SEND)?;
-    crate::input::attach(port);
+    let target = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(handle))?;
+        if !entry.rights.contains(Rights::SEND) {
+            return Err(Error::AccessDenied);
+        }
+        match &entry.object {
+            KernelObject::Port(port) => crate::input::Target::Port(Arc::clone(port)),
+            KernelObject::Tty(tty) => crate::input::Target::Tty(Arc::clone(tty)),
+            _ => return Err(Error::WrongType),
+        }
+    };
+    crate::input::attach(target);
     Ok(0)
+}
+
+/// `TtyCreate(flags) -> slave | master << 32`.
+fn tty_create(flags: u64) -> Result<u64, Error> {
+    if flags & !abi::tty::MASTER != 0 {
+        return Err(Error::InvalidArgument);
+    }
+    let process = caller()?;
+    let master = flags & abi::tty::MASTER != 0;
+    let tty = Tty::new(master);
+    let mut handles = process.handles().lock();
+    if handles.room() < 2 {
+        return Err(Error::OutOfHandles);
+    }
+    let slave = handles.insert(Entry {
+        object: KernelObject::Tty(Arc::clone(&tty)),
+        rights: Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+    })?;
+    let master = if master {
+        handles
+            .insert(Entry {
+                object: KernelObject::TtyMaster(tty),
+                rights: Rights::READ | Rights::WRITE | Rights::DUPLICATE | Rights::TRANSFER,
+            })?
+            .raw()
+    } else {
+        0
+    };
+    Ok(slave.raw() | (master << 32))
+}
+
+/// The terminal behind a master handle with `rights`.
+fn master_of(process: &Process, handle: u64, rights: Rights) -> Result<Arc<Tty>, Error> {
+    let handles = process.handles().lock();
+    let entry = handles.get(Handle::from_raw(handle))?;
+    let KernelObject::TtyMaster(tty) = &entry.object else {
+        return Err(Error::WrongType);
+    };
+    if !entry.rights.contains(rights) {
+        return Err(Error::AccessDenied);
+    }
+    Ok(Arc::clone(tty))
+}
+
+/// Most bytes one `TtyRead` or `TtyWrite` moves.
+const TTY_CHUNK: u64 = 4096;
+
+/// `TtyRead(master, buf, len, timeout_ns) -> bytes`.
+fn tty_read(handle: u64, buf: u64, len: u64, timeout: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let tty = master_of(&process, handle, Rights::READ)?;
+    let len = len.min(TTY_CHUNK) as usize;
+    if !process.space().check(buf, len, true) {
+        return Err(Error::BadAddress);
+    }
+    let deadline = match timeout {
+        u64::MAX => None,
+        t => Some(frame::time::now_ns().saturating_add(t)),
+    };
+    let data = tty.master_read(len, deadline)?;
+    process
+        .space()
+        .write(buf, &data)
+        .map_err(|_| Error::BadAddress)?;
+    Ok(data.len() as u64)
+}
+
+/// `TtyWrite(master, buf, len) -> bytes`: typed input.
+fn tty_write(handle: u64, buf: u64, len: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let tty = master_of(&process, handle, Rights::WRITE)?;
+    let len = len.min(TTY_CHUNK) as usize;
+    let mut data = alloc::vec![0u8; len];
+    process
+        .space()
+        .read(buf, &mut data)
+        .map_err(|_| Error::BadAddress)?;
+    for chunk in data.utf8_chunks() {
+        tty.feed_str(chunk.valid());
+    }
+    Ok(len as u64)
+}
+
+/// `HandleKind(handle) -> kind`.
+fn handle_kind(handle: u64) -> Result<u64, Error> {
+    use abi::object_kind as k;
+    let process = caller()?;
+    let handles = process.handles().lock();
+    Ok(match handles.get(Handle::from_raw(handle))?.object {
+        KernelObject::Port(_) => k::PORT,
+        KernelObject::Memory(_) => k::MEMORY,
+        KernelObject::Directory(_) => k::DIRECTORY,
+        KernelObject::File(_) => k::FILE,
+        KernelObject::Process(_) => k::PROCESS,
+        KernelObject::Tty(_) => k::TTY,
+        KernelObject::TtyMaster(_) => k::TTY_MASTER,
+    })
 }
 
 /// The file system calls (`crate::fsyscall`).

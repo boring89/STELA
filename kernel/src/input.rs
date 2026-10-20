@@ -16,6 +16,7 @@
 //! dropped while nobody is attached or when the port is full.
 
 use crate::object::port::{Port, QueuedMessage};
+use crate::object::tty::Tty;
 use crate::task;
 use abi::{Error, Message, tag};
 use alloc::sync::Arc;
@@ -23,7 +24,16 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use frame::input::{self, InputEvent};
 use frame::sync::SpinLock;
 
-static TARGET: SpinLock<Option<Arc<Port>>> = SpinLock::new(None);
+/// Where key events go.
+#[derive(Clone)]
+pub enum Target {
+    /// `INPUT_KEY` messages to a port.
+    Port(Arc<Port>),
+    /// Typed into a terminal (the character each key makes).
+    Tty(Arc<Tty>),
+}
+
+static TARGET: SpinLock<Option<Target>> = SpinLock::new(None);
 /// The router's thread id (0 before `start`).
 static ROUTER: AtomicU64 = AtomicU64::new(0);
 
@@ -44,15 +54,24 @@ fn notify() {
     }
 }
 
-/// `InputAttach`: events go to `port` from now on.
-pub fn attach(port: Arc<Port>) {
-    *TARGET.lock() = Some(port);
+/// `InputAttach`: events go to `target` from now on.
+pub fn attach(target: Target) {
+    *TARGET.lock() = Some(target);
 }
 
 fn route() {
     loop {
         while let Some(InputEvent::Key(event)) = input::pop() {
-            deliver(Message::with_data(tag::INPUT_KEY, &event.encode()));
+            let target = TARGET.lock().clone();
+            match target {
+                Some(Target::Port(port)) => deliver(port, &event.encode()),
+                Some(Target::Tty(tty)) => {
+                    if let Some(c) = abi::key::key_to_char(&event) {
+                        tty.feed(c);
+                    }
+                }
+                None => {}
+            }
         }
         // An event pushed after the last pop leaves a pending wake-up, so
         // this returns at once.
@@ -60,13 +79,11 @@ fn route() {
     }
 }
 
-fn deliver(msg: Message) {
-    let Some(port) = TARGET.lock().clone() else {
-        return;
-    };
+fn deliver(port: Arc<Port>, key: &[u8]) {
+    let msg = Message::with_data(tag::INPUT_KEY, key);
     if port.send(QueuedMessage::plain(msg)) == Err(Error::PeerClosed) {
         let mut target = TARGET.lock();
-        if target.as_ref().is_some_and(|t| Arc::ptr_eq(t, &port)) {
+        if matches!(&*target, Some(Target::Port(t)) if Arc::ptr_eq(t, &port)) {
             *target = None;
         }
     }

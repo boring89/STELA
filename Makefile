@@ -53,11 +53,11 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela toolbox
+HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic
 # Crates built for the bare-metal kernel target.
-KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
+KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 

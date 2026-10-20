@@ -30,6 +30,24 @@ pub fn bitmap_placement(regions: &[MemoryRegion], bytes: u64) -> Option<u64> {
     (start + bytes <= largest.phys_end()).then_some(start)
 }
 
+/// Whether any byte of `start..end` is RAM according to the memory map
+/// (usable, kernel/boot, ACPI tables or ACPI NVS). Device mappings must not
+/// alias RAM: writes through them would bypass Rust's ownership of it.
+pub fn overlaps_ram(regions: &[MemoryRegion], start: u64, end: u64) -> bool {
+    regions.iter().any(|r| {
+        matches!(
+            r.kind(),
+            Some(
+                MemoryKind::Usable
+                    | MemoryKind::KernelAndBoot
+                    | MemoryKind::AcpiReclaimable
+                    | MemoryKind::AcpiNvs
+            )
+        ) && r.phys_start < end
+            && start < r.phys_end()
+    })
+}
+
 /// Hands out 4 KiB physical frames.
 pub struct FrameAllocator<'a> {
     map: Bitmap<'a>,
@@ -123,6 +141,20 @@ impl<'a> FrameAllocator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ram_overlap() {
+        let regions = [
+            MemoryRegion::new(MemoryKind::Usable, 0x1000, 4),
+            MemoryRegion::new(MemoryKind::Reserved, 0x5000, 1),
+            MemoryRegion::new(MemoryKind::AcpiNvs, 0x8000, 1),
+        ];
+        assert!(overlaps_ram(&regions, 0x4000, 0x5000));
+        assert!(!overlaps_ram(&regions, 0x5000, 0x6000));
+        assert!(!overlaps_ram(&regions, 0x6000, 0x8000));
+        assert!(overlaps_ram(&regions, 0x7FFF, 0x8001));
+        assert!(!overlaps_ram(&regions, 0xFEE0_0000, 0xFEE0_1000));
+    }
 
     fn regions() -> [MemoryRegion; 4] {
         [

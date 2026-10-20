@@ -6,6 +6,7 @@
 pub(crate) mod exceptions;
 pub(crate) mod gdt;
 pub(crate) mod idt;
+pub(crate) mod interrupts;
 pub(crate) mod io;
 
 use core::arch::asm;

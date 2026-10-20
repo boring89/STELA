@@ -14,7 +14,8 @@ use core::hint::black_box;
 use frame::bootinfo::BootInfo;
 use frame::kprintln;
 use frame::mm::paging::{self, Flags};
-use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, heap, pmm};
+use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, MMIO_BASE, heap, mmio, pmm};
+use frame::sync::{IrqGuard, SpinLock, interrupts_enabled};
 use frame::trap::{Report, TrapFrame};
 
 /// A named test; it panics on failure.
@@ -29,6 +30,8 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("frame allocator", frame_allocator),
         ("page mapping", page_mapping),
         ("heap", heap),
+        ("locks and interrupts", locks),
+        ("mmio mapping", mmio_mapping),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -188,4 +191,66 @@ fn heap(_: &'static BootInfo) {
         );
     }
     assert_eq!(heap::stats().used, before.used);
+}
+
+fn locks(_: &'static BootInfo) {
+    // Interrupts are still off here (the loader ran `cli`); guards must keep
+    // them off and must not turn them on when dropped.
+    let before = interrupts_enabled();
+    {
+        let _outer = IrqGuard::new();
+        assert!(!interrupts_enabled());
+        {
+            let _inner = IrqGuard::new();
+            assert!(!interrupts_enabled());
+        }
+        assert!(!interrupts_enabled());
+    }
+    assert_eq!(interrupts_enabled(), before);
+    let lock = SpinLock::new(1);
+    {
+        let guard = lock.lock();
+        assert!(!interrupts_enabled());
+        assert_eq!(*guard, 1);
+        assert!(lock.try_lock().is_none());
+    }
+    assert_eq!(interrupts_enabled(), before);
+    assert!(lock.try_lock().is_some());
+}
+
+fn mmio_mapping(info: &'static BootInfo) {
+    // RAM is refused.
+    assert!(matches!(
+        mmio::map(info.kernel_phys_base, 4096),
+        Err(mmio::MmioError::Ram)
+    ));
+    assert!(matches!(
+        mmio::map(0xFEE0_0000, 0),
+        Err(mmio::MmioError::BadRange)
+    ));
+    let fb = &info.framebuffer;
+    if !fb.is_present() {
+        kprintln!("selftest:   no framebuffer; skipping the aliasing check");
+        return;
+    }
+    // Map the first page of the framebuffer twice (at an unaligned offset
+    // too): a write through one mapping is visible through the other.
+    let a = mmio::map(fb.phys_addr, 4096).expect("map failed");
+    let b = mmio::map(fb.phys_addr + 8, 16).expect("map failed");
+    assert!(a.virt() >= MMIO_BASE && b.virt() >= MMIO_BASE);
+    assert_ne!(a.virt() & !0xFFF, b.virt() & !0xFFF);
+    assert_eq!(paging::translate(a.virt()), Some(fb.phys_addr));
+    assert_eq!(paging::translate(b.virt()), Some(fb.phys_addr + 8));
+    let saved = a.read_u32(8);
+    a.write_u32(8, 0x0012_3456);
+    assert_eq!(b.read_u32(0), 0x0012_3456);
+    b.write_u32(0, saved);
+    assert_eq!(a.read_u32(8), saved);
+    // MMIO pages cannot be unmapped as if they were frames.
+    assert!(paging::unmap(a.virt() & !0xFFF).is_err());
+    kprintln!(
+        "selftest:   framebuffer {:#x} mapped at {:#x}",
+        fb.phys_addr,
+        a.virt()
+    );
 }

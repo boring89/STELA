@@ -6,7 +6,8 @@
 //! ```text
 //!  virtual address                      what
 //!  0xFFFF_8000_0000_0000 ...            HHDM: physical 0.. mapped 1:1 (2 MiB pages)
-//!  0xFFFF_FF00_0000_0000 ... +512 GiB   dynamic region: heap, then other mappings
+//!  0xFFFF_FF00_0000_0000 ... +256 GiB   dynamic region: heap, then other mappings
+//!  0xFFFF_FF40_0000_0000 ... +256 GiB   dynamic region, MMIO window (uncached)
 //!  0xFFFF_FFFF_8000_0000 ...            kernel image (linker.ld)
 //! ```
 
@@ -14,6 +15,8 @@ pub mod bitmap;
 pub mod frames;
 #[cfg(target_os = "none")]
 pub mod heap;
+#[cfg(target_os = "none")]
+pub mod mmio;
 #[cfg(target_os = "none")]
 pub mod paging;
 #[cfg(target_os = "none")]
@@ -24,6 +27,10 @@ pub mod pmm;
 pub const DYNAMIC_BASE: u64 = 0xFFFF_FF00_0000_0000;
 /// Size of the dynamic region: one PML4 entry.
 pub const DYNAMIC_SIZE: u64 = 512 << 30;
+/// The upper half of the dynamic region holds device (MMIO) mappings.
+pub const MMIO_BASE: u64 = DYNAMIC_BASE + DYNAMIC_SIZE / 2;
+/// Size of the MMIO window.
+pub const MMIO_SIZE: u64 = DYNAMIC_SIZE / 2;
 /// The kernel heap occupies the start of the dynamic region.
 pub const HEAP_BASE: u64 = DYNAMIC_BASE;
 /// Initial (and for now fixed) heap size.
@@ -36,4 +43,5 @@ pub(crate) fn init(info: &'static bootinfo::BootInfo) {
     pmm::init(info);
     paging::init(info);
     heap::init();
+    mmio::init(info);
 }

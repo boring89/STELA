@@ -7,20 +7,27 @@
 //! removes the loader's identity map of the lower half and maps 4 KiB pages
 //! in the dynamic region (`DYNAMIC_BASE`). Mapping and unmapping are limited
 //! to that region, so safe code cannot disturb the kernel image or the HHDM.
+//! Its upper half is the MMIO window: only [`super::mmio`] maps there, and
+//! [`unmap`] refuses it (device pages are not frames).
 //!
 //! Entry format: Intel SDM Vol. 3A 4.5 "4-Level Paging and 5-Level Paging",
 //! Tables 4-15 to 4-20; TLB maintenance: Vol. 3A 4.10.4 "Invalidation of TLBs
 //! and Paging-Structure Caches".
 
 use super::pmm::{self, PhysFrame};
-use super::{DYNAMIC_BASE, DYNAMIC_SIZE};
+use super::{DYNAMIC_BASE, MMIO_BASE, MMIO_SIZE};
 use crate::sync::SpinLock;
 use bootinfo::{BootInfo, HHDM_BASE};
 use core::arch::asm;
+use core::ops::Range;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
+/// PWT: page-level write-through.
+const WRITE_THROUGH: u64 = 1 << 3;
+/// PCD: page-level cache disable.
+const CACHE_DISABLE: u64 = 1 << 4;
 /// PS: in a PDPTE or PDE, the entry maps a 1 GiB or 2 MiB page.
 const HUGE: u64 = 1 << 7;
 const NO_EXECUTE: u64 = 1 << 63;
@@ -55,7 +62,7 @@ impl Flags {
 pub enum MapError {
     /// The address is not 4 KiB aligned.
     Unaligned,
-    /// The address is outside the dynamic region.
+    /// The address is outside the allowed part of the dynamic region.
     OutOfRegion,
     /// Something is already mapped there (map).
     AlreadyMapped,
@@ -120,28 +127,58 @@ pub(crate) fn init(info: &'static BootInfo) {
     };
 }
 
-/// Checks that `virt` is a page of the dynamic region.
-fn check(virt: u64) -> Result<(), MapError> {
+/// Checks that `virt` is a page inside `region`.
+fn check(virt: u64, region: Range<u64>) -> Result<(), MapError> {
     if !virt.is_multiple_of(4096) {
         return Err(MapError::Unaligned);
     }
-    if !(DYNAMIC_BASE..DYNAMIC_BASE + DYNAMIC_SIZE).contains(&virt) {
+    if !region.contains(&virt) {
         return Err(MapError::OutOfRegion);
     }
     Ok(())
 }
 
-/// Maps the page at `virt` (in the dynamic region) to `frame`, which the
+/// Maps the page at `virt` (in the dynamic region, below the MMIO window)
+/// to `frame`, which the
 /// mapping then owns until [`unmap`] returns it.
 pub fn map(virt: u64, frame: PhysFrame, flags: Flags) -> Result<(), MapError> {
-    check(virt)?;
+    check(virt, DYNAMIC_BASE..MMIO_BASE)?;
+    let mut bits = PRESENT;
+    if flags.writable {
+        bits |= WRITABLE;
+    }
+    if !flags.executable && NX.load(Ordering::Relaxed) {
+        bits |= NO_EXECUTE;
+    }
+    // On success the mapping owns the frame (the token ends here); `unmap`
+    // hands out a new token.
+    map_page(virt, frame.addr(), bits)
+}
+
+/// Maps the page at `virt` (in the dynamic region) to device memory at
+/// `phys`: writable, not executable, uncached (PCD and PWT set: with the
+/// power-on PAT that selects PAT entry 3, UC; Vol. 3A "Page Attribute
+/// Table (PAT)", table "Selection of PAT Entries with PAT, PCD, and PWT
+/// Flags"). `virt` must be in the MMIO window. Used by [`super::mmio`].
+pub(crate) fn map_device(virt: u64, phys: u64) -> Result<(), MapError> {
+    check(virt, MMIO_BASE..MMIO_BASE + MMIO_SIZE)?;
+    let mut bits = PRESENT | WRITABLE | WRITE_THROUGH | CACHE_DISABLE;
+    if NX.load(Ordering::Relaxed) {
+        bits |= NO_EXECUTE;
+    }
+    map_page(virt, phys & ADDR_MASK, bits)
+}
+
+/// Installs the leaf entry `phys | bits` for `virt`, creating the missing
+/// intermediate tables.
+fn map_page(virt: u64, phys: u64, bits: u64) -> Result<(), MapError> {
     let _guard = LOCK.lock();
-    let mut phys = root();
+    let mut table_phys = root();
     for level in [4, 3, 2] {
-        // SAFETY: `phys` is a table of the active hierarchy (the root, or
-        // taken from a present non-huge entry); LOCK is held; the reference
-        // ends before the next table is opened.
-        let entry = &mut unsafe { table(phys) }[index(virt, level)];
+        // SAFETY: `table_phys` is a table of the active hierarchy (the root,
+        // or taken from a present non-huge entry); LOCK is held; the
+        // reference ends before the next table is opened.
+        let entry = &mut unsafe { table(table_phys) }[index(virt, level)];
         if *entry & PRESENT == 0 {
             let new = pmm::alloc_zeroed_frame().ok_or(MapError::OutOfMemory)?;
             // Intermediate entries allow everything; the leaf decides.
@@ -150,31 +187,24 @@ pub fn map(virt: u64, frame: PhysFrame, flags: Flags) -> Result<(), MapError> {
         } else if *entry & HUGE != 0 {
             return Err(MapError::AlreadyMapped);
         }
-        phys = *entry & ADDR_MASK;
+        table_phys = *entry & ADDR_MASK;
     }
     // SAFETY: as above, for the page table (level 1).
-    let entry = &mut unsafe { table(phys) }[index(virt, 1)];
+    let entry = &mut unsafe { table(table_phys) }[index(virt, 1)];
     if *entry & PRESENT != 0 {
         return Err(MapError::AlreadyMapped);
     }
-    let mut bits = frame.addr() | PRESENT;
-    if flags.writable {
-        bits |= WRITABLE;
-    }
-    if !flags.executable && NX.load(Ordering::Relaxed) {
-        bits |= NO_EXECUTE;
-    }
-    // The mapping now owns the frame (the token ends here); `unmap` hands
-    // out a new token.
-    *entry = bits;
+    *entry = phys | bits;
     invlpg(virt);
     Ok(())
 }
 
-/// Removes the mapping of the page at `virt` (in the dynamic region) and
+/// Removes the mapping of the page at `virt` (in the dynamic region, below
+/// the MMIO window) and
 /// returns its frame. Page tables that become empty are kept.
 pub fn unmap(virt: u64) -> Result<PhysFrame, MapError> {
-    check(virt)?;
+    // Not the MMIO window: its pages are device memory, not frames.
+    check(virt, DYNAMIC_BASE..MMIO_BASE)?;
     let _guard = LOCK.lock();
     let mut phys = root();
     for level in [4, 3, 2] {

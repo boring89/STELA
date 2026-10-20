@@ -22,8 +22,8 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 ```bash
 make            # 建置 loader、kernel、使用者程式與 initrd → build/esp/（EFI/BOOT/BOOTX64.EFI、STELA/kernel.elf、STELA/initrd.tar）
 make musl       # 複製 68k_HAL 已下載的 musl-1.2.5.tar.gz、檢查 SHA-256、建在 build/musl/（MIT；只用來建 Linux 測試程式）
-make linux-tests # linux/tests/*.c → build/user/linux/（musl-gcc -static），打包進 initrd 的 linux/
-make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo、fstest、proctest、init、shell、windowserver、terminal、echo_win、mouseion、viewer）與 classic/（Classic.app）→ build/user/
+make linux-tests # linux/tests/*.c（hello、files、memory、time、tty、nosys、net） → build/user/linux/（musl-gcc -static），打包進 initrd 的 linux/
+make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo、fstest、proctest、init、shell、windowserver、terminal、echo_win、mouseion、viewer、ifconfig、ping、fetch）與 classic/（Classic.app）→ build/user/
 make classic    # 同 make user（Classic.app 的 C 由 classic/build.rs 用 gcc 編）
 make initrd     # 把 build/user/ 排成 build/initrd-root/（linux/、Terminal.app 等 bundle）再打包成 build/initrd.tar（GNU tar --format=ustar）
 make run        # QEMU + OVMF 開機（一般 kernel：init → shell，提示符 Initrd:/> ），serial 輸出到 stdio
@@ -42,7 +42,7 @@ make clean
 - 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）、`mtools`、`gdisk`（測試映像）、`gcc`（建 musl、Linux 測試程式與 Classic 環境的 C）、`binutils-m68k-linux-gnu`（Classic 的 68k 測試程式）。musl 的 tarball 不下載：預設從 `~/文件/68k_HAL/third_party/downloads/musl/` 複製（`MUSL_TARBALL=` 可改），CI 從 musl.libc.org 抓一次並快取（`third_party/README.md`）。
 - cargo 的輸出在 `build/target/`（`.cargo/config.toml`）。
 - CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `cargo fmt --check`、`make clippy` 與 `make test`。
-- `make test` 的組成：`test-host`（依賴 `make initrd` 與 `host-images`（mtools／sgdisk 做的 FAT、GPT 映像）；`HOST_CRATES` = abi、block、bootinfo、drivers、ehfs、ehfs-tools、elfload、frame、libstela、toolbox 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel、windowserver、terminal、mouseion、viewer 的 `cargo test --lib`；另外檢查 `assets/generated/` 與圖檔一致）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter、印 `mouse: waiting` 時 `--mouse` 經 `input-send-event` 移動 PS/2 滑鼠並按左鍵，依序檢查 `input: OK`、`mouse: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`proctest: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP；也接 AHCI 測試磁碟跑 fstest）、`test-textmode`（一般 kernel、`boot.cfg` = `textmode` + `nousb`：init 直接開 shell、不啟動 xHCI）、`test-disk-image`（`make_disk_image.py` 做 Data 128 MiB 的映像當唯一的 AHCI 磁碟開機：桌面、shell `mkdir` 後 `shutdown`、host fsck、第二次開機讀回）、`test-window`（一般 kernel 開機進桌面：視窗伺服器 + terminal + shell；經 QMP 打 `uptime`、`run echo_win`、在 echo_win 打一行，screendump 後 `tools/fb_check.py --expect-rect/--expect-text` 檢查桌面、選單列、兩個視窗的標題列與文字）、`test-storage`（`make test-images` 在 `build/images/` 造 AHCI（GPT：FAT ESP + eHFS Data）與 NVMe（4Kn，eHFS Archive）兩顆磁碟，selftest 開機兩次檢查持久性與 fstest，最後 host 的 `fsck.ehfs` 檢查）、`test-shell`（一般 kernel + AHCI 測試磁碟，`qemu_test.py --type` 依序打 shell 指令並檢查輸出）、`test-shutdown`（一般 kernel + AHCI 測試磁碟：shell 打 `shutdown`，QEMU 自己結束（status 0），host 的 fsck 確認正常卸載；再開機打 `reboot`）、`test-linux`（一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打一行字）並檢查輸出與 exit code）、`test-panic`（selftest kernel + 多一個 `panic-test` 檔的 initrd：故意 panic，截圖檢查裂碑的 panic 畫面）、`test-mouseion`（一般 kernel + 乾淨的 AHCI 測試磁碟：`qemu_test.py --click` 雙擊 Data、welcome.txt（viewer）、Initrd、Terminal.app，截圖檢查卷宗圖示與新視窗）、`test-usb`（一般 kernel、`-machine q35,i8042=off`、`qemu-xhci` + usb-kbd + usb-mouse + usb-hub（後面一個 usb-kbd）：USB 鍵盤打字到 shell、滑鼠報告、`qemu_test.py --qmp` 的 `device_del`／`device_add` 熱插拔 root port 與 hub port）。shell、Linux、關機與 USB 測試都經過桌面（terminal 把 shell 的輸出鏡像到 serial）。`qemu_test.py --log FILE` 把 serial 輸出存檔（`make test-qemu` 寫 `build/test-qemu.log`）。`make run` 永遠跑沒有 selftest 的 kernel（開機畫面的石碑 → init 啟動視窗伺服器與 Mouseion，Mouseion 打開一個 terminal，裡面是 shell；`help` 列出指令，`run Echo.app` 開一個視窗；shell 的輸出也鏡像到 serial）。
+- `make test` 的組成：`test-host`（依賴 `make initrd` 與 `host-images`（mtools／sgdisk 做的 FAT、GPT 映像）；`HOST_CRATES` = abi、block、bootinfo、drivers、ehfs、ehfs-tools、elfload、frame、libstela、net、toolbox 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel、windowserver、terminal、mouseion、viewer、classic 的 `cargo test --lib`；另外檢查 `assets/generated/` 與圖檔一致）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter、印 `mouse: waiting` 時 `--mouse` 經 `input-send-event` 移動 PS/2 滑鼠並按左鍵，依序檢查 `input: OK`、`mouse: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`proctest: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP；也接 AHCI 測試磁碟跑 fstest）、`test-textmode`（一般 kernel、`boot.cfg` = `textmode` + `nousb`：init 直接開 shell、不啟動 xHCI）、`test-disk-image`（`make_disk_image.py` 做 Data 128 MiB 的映像當唯一的 AHCI 磁碟開機：桌面、shell `mkdir` 後 `shutdown`、host fsck、第二次開機讀回）、`test-net`（`tools/with_http.py` 在 host serve `build/www`，e1000、e1000e、virtio-net 各開機一次：`ifconfig`、`ping 10.0.2.2`、host 有 DNS 時 `ifconfig resolve example.com`、`fetch`、`run linux/net`）、`test-window`（一般 kernel 開機進桌面：視窗伺服器 + terminal + shell；經 QMP 打 `uptime`、`run echo_win`、在 echo_win 打一行，screendump 後 `tools/fb_check.py --expect-rect/--expect-text` 檢查桌面、選單列、兩個視窗的標題列與文字）、`test-storage`（`make test-images` 在 `build/images/` 造 AHCI（GPT：FAT ESP + eHFS Data）與 NVMe（4Kn，eHFS Archive）兩顆磁碟，selftest 開機兩次檢查持久性與 fstest，最後 host 的 `fsck.ehfs` 檢查）、`test-shell`（一般 kernel + AHCI 測試磁碟，`qemu_test.py --type` 依序打 shell 指令並檢查輸出）、`test-shutdown`（一般 kernel + AHCI 測試磁碟：shell 打 `shutdown`，QEMU 自己結束（status 0），host 的 fsck 確認正常卸載；再開機打 `reboot`）、`test-linux`（一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打一行字）並檢查輸出與 exit code）、`test-panic`（selftest kernel + 多一個 `panic-test` 檔的 initrd：故意 panic，截圖檢查裂碑的 panic 畫面）、`test-mouseion`（一般 kernel + 乾淨的 AHCI 測試磁碟：`qemu_test.py --click` 雙擊 Data、welcome.txt（viewer）、Initrd、Terminal.app，截圖檢查卷宗圖示與新視窗）、`test-usb`（一般 kernel、`-machine q35,i8042=off`、`qemu-xhci` + usb-kbd + usb-mouse + usb-hub（後面一個 usb-kbd）：USB 鍵盤打字到 shell、滑鼠報告、`qemu_test.py --qmp` 的 `device_del`／`device_add` 熱插拔 root port 與 hub port）。shell、Linux、關機與 USB 測試都經過桌面（terminal 把 shell 的輸出鏡像到 serial）。`qemu_test.py --log FILE` 把 serial 輸出存檔（`make test-qemu` 寫 `build/test-qemu.log`）。`make run` 永遠跑沒有 selftest 的 kernel（開機畫面的石碑 → init 啟動視窗伺服器與 Mouseion，Mouseion 打開一個 terminal，裡面是 shell；`help` 列出指令，`run Echo.app` 開一個視窗；shell 的輸出也鏡像到 serial）。
 - QEMU 的 TCG 不支援 invariant TSC，`make test` 只測得到 tick 退路；TSC 路徑要在本機用 `-enable-kvm -cpu host,+invtsc` 手動驗證（`docs/time.md` §5.3）。
 
 ### 測試
@@ -61,6 +61,7 @@ boot/          UEFI loader（x86_64-unknown-uefi）：讀 kernel.elf 與 initrd.
 bootinfo/      loader 與 kernel 共用的 BootInfo 結構（版本 3：含 boot.cfg 的 cmdline 與 AP trampoline 頁，no_std，host 測試）
 elfload/       最小 ELF64 解析（只處理 PT_LOAD，host 測試）
 ehfs/          eHFS（與 68k_HAL 的 eHFS v1 格式相容；no_std，host 測試）（docs/ehfs.md）
+net/           網路協定（純邏輯，no_std，host 測試）：wire（Ethernet/ARP/IPv4/ICMP/UDP/TCP 封包）、dhcp、tcp（狀態機）、stack（路由、ARP、DHCP client、socket）（docs/net.md）
 frame/         框架 crate：所有 unsafe 的家，對外只提供 safe API（docs/frame.md）
   src/arch/x86_64/  架構相關：port I/O、MSR、GDT/TSS、IDT、256 個向量的 stub、8259、local/I/O APIC、PIT、i8042、CMOS RTC（cmos.rs）、
                     context 切換與 enter_user（context.rs）、syscall 進入點與 MSR（syscall.rs）
@@ -81,15 +82,17 @@ kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）；
   src/console.rs    console 服務；src/input.rs  input-router（docs/ipc.md）
   src/block.rs      磁碟 probe；src/fs/  區塊快取（cache.rs）、FAT 唯讀（fat.rs）（docs/storage.md）
   src/vfs/          卷宗、資料夾／檔案 Node、eHFS、FAT、Initrd（資料夾樹）與 Tmp（tmpfs.rs，記憶體）後端、掛載（docs/vfs.md）；src/fsyscall.rs  檔案 syscall
-  src/linux/        Linux 人格：號碼（nr）、errno、fd 表、合成根目錄的路徑、初始堆疊（host 測試）；分派（sys）、檔案（files）、brk／mmap（memory）（docs/linux.md）
+  src/linux/        Linux 人格：號碼（nr）、errno、fd 表、合成根目錄的路徑、初始堆疊（host 測試）；分派（sys）、檔案（files）、brk／mmap（memory）、BSD socket（socket）（docs/linux.md）
+  src/net.rs        網路：net 執行緒、Socket 物件、socket syscall（docs/net.md）
   src/psyscall.rs   行程 syscall（ProcessSpawn 等）、SysInfo、SystemPower（docs/userland.md、docs/acpi.md）
   src/power.rs      卸載卷宗後關機／重新開機（docs/acpi.md）
   src/syscall.rs    syscall 分派（docs/syscall.md、docs/ipc.md）
   src/initrd.rs     ustar 解析與資料夾樹（host 測試）
   src/program.rs    從檔案（經 VFS）載入 ELF、人格判定（STELA note）、參數訊息或 Linux 初始堆疊、建立行程
 user/          使用者程式（x86_64-unknown-none，user.ld 連結在 0x40_0000）（docs/syscall.md §5）
-  libstela/         執行期：entry!（含參數）、STELA ELF note、syscall 包裝、ipc、fs、process、tty、heap（global allocator）、path、line、print!／println!（經 console 服務）、ThreadStack/spawn、panic handler（docs/userland.md）
+  libstela/         執行期：entry!（含參數）、STELA ELF note、syscall 包裝、ipc、fs、process、tty、net（socket、DNS、HTTP GET）、heap（global allocator）、path、line、print!／println!（經 console 服務）、ThreadStack/spawn、panic handler（docs/userland.md）
   hello/ spin/ fault/ ipc_server/ ipc_client/ fstest/ proctest/  initrd 裡的測試程式；echo/  鍵盤 echo（文字模式）
+  ifconfig/ ping/ fetch/  網路工具（shell 直接打名字；docs/net.md §6）
   windowserver/     視窗伺服器：compose.rs（純邏輯，host 測試）、server.rs（docs/window.md）
   toolbox/          UI 工具箱 lib：draw、window、event、menu、control（docs/toolbox.md）
   terminal/         視窗版的終端機：grid.rs（純邏輯，host 測試）、tty master、shell（docs/window.md §7）
@@ -103,7 +106,7 @@ classic/       Classic 環境（Classic.app，STELA 原生程式；docs/classic.
   build.rs          gcc 編 m68kmake → m68kops.c、全部 C → libclassic_c.a；user.ld
   src/              ffi.rs（唯一的 unsafe）、keys.rs（ADB 鍵碼）、screen.rs（改變的列、Mac 時鐘）、main.rs（Classic.app）、tests.rs（tests/m68k 在 host 跑）
 linux/tests/   Linux 人格的測試程式（C，musl 靜態連結）（docs/linux.md）
-drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）：PCI、AHCI、NVMe、USB（usb/：描述子、HID、TRB 純邏輯 host 測試；xhci.rs）、sync（排程 hooks、SleepLock、SleepMutex）（docs/pci.md、docs/storage.md、docs/usb.md）
+drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）：PCI、AHCI、NVMe、USB（usb/：描述子、HID、TRB 純邏輯 host 測試；xhci.rs）、網卡（net/：e1000.rs（e1000、e1000e/I219）、virtio.rs）、sync（排程 hooks、SleepLock、SleepMutex）（docs/pci.md、docs/storage.md、docs/usb.md、docs/net.md）
 third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause；README.md：清單與 musl 的 SHA-256）
 docs/          設計文件（每個元件完成後寫 docs/<元件>.md）
 assets/        圖示（PPM／PBM，**草稿**）與產生的 Rust 資料（generated/）（docs/identity.md）
@@ -200,5 +203,6 @@ Claude 依照上方工作規則直接實作。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。
 - 儲存：一次一個請求（AHCI 一個 slot、NVMe 每次一個 4 KiB 區塊）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；`DirRead` 每次重新列出（O(n²)）；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。
 - 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；`SystemPower` 任何程式都能呼叫；關機前不通知程式（docs/acpi.md §9）。
-- Linux 人格：只有靜態非 PIE 的 musl 程式；單執行緒（沒有 clone、fork、execve、pipe、訊號遞送）；Linux 程式不受能力限制（看得到所有卷宗）；cwd 只從 `[3]` 的卷宗根開始；`getrandom` 不安全；`PROT_NONE` 可讀（docs/linux.md §13）。
+- Linux 人格：只有靜態非 PIE 的 musl 程式；單執行緒（沒有 clone、fork、execve、pipe、訊號遞送、poll/select）；Linux 程式不受能力限制（看得到所有卷宗）；cwd 只從 `[3]` 的卷宗根開始；`getrandom` 不安全；`PROT_NONE` 可讀（docs/linux.md §13）。
+- 網路：一次一張網卡；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 沒有 poll（Linux 的 getaddrinfo 不能用）；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
 - IPC：沒有 port set；訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；任何有 port SEND 的程式都能 `InputAttach` 搶鍵盤；共享記憶體是 eager（`docs/ipc.md` §12）。

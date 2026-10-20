@@ -13,6 +13,7 @@
 extern crate alloc;
 
 pub mod ahci;
+pub mod net;
 pub mod nvme;
 pub mod pci;
 pub mod sync;

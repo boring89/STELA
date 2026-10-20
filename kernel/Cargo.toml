@@ -32,6 +32,7 @@ drivers = { path = "../drivers" }
 ehfs = { path = "../ehfs" }
 elfload = { path = "../elfload" }
 frame = { path = "../frame" }
+net = { path = "../net" }
 
 [lints]
 workspace = true

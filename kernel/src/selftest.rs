@@ -66,6 +66,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("ipc programs", ipc_programs),
         ("pci", pci),
         ("block devices", block_devices),
+        ("network card", network_card),
         ("file systems", file_systems),
         ("processes", processes),
         ("linux personality", linux_personality),
@@ -1169,6 +1170,57 @@ fn pci(_: &'static BootInfo) {
 /// The first bytes of a disk image made for the storage tests
 /// (`make test-storage`); only such disks are written.
 const TEST_DISK_MAGIC: &[u8] = b"STELATEST";
+
+/// The first network card (QEMU's default NIC with user networking, or
+/// the one a test adds): a DHCP DISCOVER built by the `net` crate goes
+/// out raw, and slirp's OFFER must come back within 5 seconds. Skipped
+/// without a card.
+fn network_card(_: &'static BootInfo) {
+    use net::wire;
+    let Some(card) = drivers::net::probe() else {
+        kprintln!("net: no network card (skipped)");
+        return;
+    };
+    let mac = card.mac();
+    let xid = 0x5354_454C;
+    let discover = net::dhcp::build(net::dhcp::DISCOVER, xid, mac, None, None);
+    let udp = wire::build_udp(wire::ANY, wire::BROADCAST_IP, 68, 67, &discover);
+    let ip = wire::build_ipv4(wire::ANY, wire::BROADCAST_IP, wire::PROTO_UDP, 1, &udp);
+    let eth = wire::build_eth(wire::BROADCAST_MAC, mac, wire::ETHERTYPE_IPV4, &ip);
+    card.send(&eth).expect("sending a frame");
+    let deadline = time::now_ns() + 5_000_000_000;
+    let mut buf = [0u8; 2048];
+    let mut frames = 0;
+    loop {
+        while let Some(n) = card.receive(&mut buf) {
+            frames += 1;
+            let offer = wire::parse_eth(&buf[..n])
+                .filter(|e| e.ethertype == wire::ETHERTYPE_IPV4)
+                .and_then(|e| wire::parse_ipv4(e.payload))
+                .filter(|p| p.proto == wire::PROTO_UDP)
+                .and_then(|p| {
+                    wire::parse_udp(p.src, p.dst, p.payload)
+                        .filter(|u| u.dst_port == 68)
+                        .and_then(|u| net::dhcp::parse(u.data, mac))
+                });
+            if let Some(o) = offer
+                && o.xid == xid
+                && o.kind == net::dhcp::OFFER
+            {
+                let [a, b, c, d] = o.your_ip;
+                kprintln!(
+                    "net: raw frames work: DHCP offer of {a}.{b}.{c}.{d} after {frames} frame(s)"
+                );
+                return;
+            }
+        }
+        assert!(
+            time::now_ns() < deadline,
+            "no DHCP offer within 5 s ({frames} frames received)"
+        );
+        task::sleep_ms(10);
+    }
+}
 
 fn block_devices(_: &'static BootInfo) {
     use block::BLOCK_SIZE;

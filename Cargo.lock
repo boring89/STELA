@@ -146,6 +146,7 @@ dependencies = [
  "ehfs",
  "elfload",
  "frame",
+ "net",
 ]
 
 [[package]]

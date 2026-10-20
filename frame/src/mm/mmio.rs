@@ -140,6 +140,43 @@ impl MmioRegion {
         unsafe { register.write_volatile(value) }
     }
 
+    /// The address of the `size`-byte register at `offset`. Panics unless
+    /// it is `size`-aligned and inside the range.
+    fn small_register(&self, offset: usize, size: usize) -> u64 {
+        assert!(
+            offset.is_multiple_of(size) && offset.checked_add(size).is_some_and(|e| e <= self.len),
+            "mmio: offset {offset:#x} outside the {:#x}-byte range at {:#x}",
+            self.len,
+            self.phys
+        );
+        self.virt + offset as u64
+    }
+
+    /// Reads the 16-bit register at `offset` (panics if out of range or
+    /// unaligned). Some devices want each field read at its own width
+    /// (virtio, VIRTIO 1.1 4.1.3.1).
+    pub fn read_u16(&self, offset: usize) -> u16 {
+        let register = self.small_register(offset, 2) as *const u16;
+        // SAFETY: as in `read_u32`: aligned, inside the mapped device
+        // range, which is never removed.
+        unsafe { register.read_volatile() }
+    }
+
+    /// Writes the 16-bit register at `offset` (panics if out of range or
+    /// unaligned).
+    pub fn write_u16(&self, offset: usize, value: u16) {
+        let register = self.small_register(offset, 2) as *mut u16;
+        // SAFETY: as in `read_u16`; the mapping is writable.
+        unsafe { register.write_volatile(value) }
+    }
+
+    /// Reads the 8-bit register at `offset` (panics if out of range).
+    pub fn read_u8(&self, offset: usize) -> u8 {
+        let register = self.small_register(offset, 1) as *const u8;
+        // SAFETY: as in `read_u16`.
+        unsafe { register.read_volatile() }
+    }
+
     /// Writes the 8-bit register at `offset` (panics if out of range).
     pub fn write_u8(&self, offset: usize, value: u8) {
         assert!(

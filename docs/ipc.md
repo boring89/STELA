@@ -1,6 +1,6 @@
 # IPC 與 handle
 
-> P4 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P4 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 行程之間怎麼溝通、怎麼指稱 kernel 裡的東西：kernel 物件、handle 與權限、port 與訊息、handle 的轉移、共享記憶體、每個行程一出生就有的 handle、console 服務、鍵盤事件的投遞，以及等待佇列。架構決定見 `docs/architecture.md` §4 的 C（IPC）、D（handle + 權限）、I（能力式安全）。syscall 的暫存器慣例見 `docs/syscall.md`。
 

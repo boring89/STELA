@@ -1,6 +1,6 @@
 # 行程、執行緒與使用者模式
 
-> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（`block_until`、`WaitQueue`、被 kill 時阻塞點的重檢查、共享映射與映射區、行程的 handle 表）**使用者尚未審核**，見 `docs/ipc.md`。
+> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（`block_until`、`WaitQueue`、被 kill 時阻塞點的重檢查、共享映射與映射區、行程的 handle 表）使用者已於 2026-10-20 審核，見 `docs/ipc.md`。
 
 這份文件說明 STELA 怎麼讓「很多件事輪流做」：kernel 執行緒、排程與搶佔、context 切換、每個行程自己的位址空間、進出 ring 3、使用者程式出錯時怎麼收拾，以及第一個使用者程式怎麼從 initrd 載入。syscall 的 ABI 與 libstela 見 `docs/syscall.md`。
 

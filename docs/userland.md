@@ -1,6 +1,6 @@
 # 使用者空間：libstela、行程、init 與 shell
 
-> P6 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P6 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 開機之後使用者看到的東西：init 啟動 shell，shell 讀鍵盤、跑指令、啟動程式。以及寫一個 STELA 程式需要知道的：libstela 的 API、heap、參數、從檔案啟動行程。IPC 與 handle 見 `docs/ipc.md`，檔案與卷宗見 `docs/vfs.md`，syscall 慣例見 `docs/syscall.md`。
 

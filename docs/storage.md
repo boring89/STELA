@@ -1,6 +1,6 @@
 # 儲存：區塊層、DMA、AHCI、NVMe、快取、GPT、FAT
 
-> P5 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P5 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 磁碟怎麼被讀寫：從「一個 4 KiB 區塊」的抽象，到 SATA（AHCI）與 NVMe 控制器的命令，到分割表與 ESP 的 FAT。檔案系統 eHFS 見 `docs/ehfs.md`，卷宗與檔案 syscall 見 `docs/vfs.md`。
 

@@ -1,6 +1,6 @@
 # System call ABI 與 libstela
 
-> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（handle／port／memory／input 的呼叫、移除 `DebugWrite`、libstela 經 console 服務印字）**使用者尚未審核**，見 `docs/ipc.md`。
+> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（handle／port／memory／input 的呼叫、移除 `DebugWrite`、libstela 經 console 服務印字）使用者已於 2026-10-20 審核，見 `docs/ipc.md`。
 
 使用者程式怎麼請 kernel 辦事：暫存器怎麼放、有哪些呼叫、錯誤怎麼回報、kernel 怎麼進出，以及使用者程式用的執行期 libstela。行程、執行緒與位址空間見 `docs/process.md`。
 
@@ -53,8 +53,8 @@
 | 13 | `MemoryMap` | memory, flags | 位址 | 在 `MAP_BASE..MAP_END` |
 | 14 | `MemoryUnmap` | addr | 0 | |
 | 15 | `InputAttach` | port | 0 | 鍵盤事件送到 port |
-| 16–26 | `DirOpen`…`VolumeOpenById` | | | 檔案與卷宗，見 `docs/vfs.md` §4（P5，**使用者尚未審核**） |
-| 27–31 | `ProcessSpawn`、`ProcessWait`、`ProcessKill`、`ProcessSelf`、`SysInfo` | | | 行程，見 `docs/userland.md` §2（P6，**使用者尚未審核**） |
+| 16–26 | `DirOpen`…`VolumeOpenById` | | | 檔案與卷宗，見 `docs/vfs.md` §4（P5，使用者已於 2026-10-20 審核） |
+| 27–31 | `ProcessSpawn`、`ProcessWait`、`ProcessKill`、`ProcessSelf`、`SysInfo` | | | 行程，見 `docs/userland.md` §2（P6，使用者已於 2026-10-20 審核） |
 
 編號就是 ABI：`abi` 的 host 測試把每個值鎖住。未知編號 → `InvalidSyscall`。
 

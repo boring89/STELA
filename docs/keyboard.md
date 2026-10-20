@@ -1,6 +1,6 @@
 # 鍵盤與輸入事件：i8042、掃描碼 set 1、KeyCode、事件佇列
 
-> P2 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（`KeyCode`／`KeyEvent`／`key_to_char` 搬到 `abi::key`、notify hook、input-router 與使用者程式 echo 取代 kernel 主迴圈，§7）**使用者尚未審核**。
+> P2 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（`KeyCode`／`KeyEvent`／`key_to_char` 搬到 `abi::key`、notify hook、input-router 與使用者程式 echo 取代 kernel 主迴圈，§7）使用者已於 2026-10-20 審核。
 
 程式碼：`frame/src/arch/x86_64/i8042.rs`（控制器）、`frame/src/input/keyboard.rs`（解碼，純邏輯）、`abi/src/key.rs`（KeyCode、KeyEvent 與其 4 bytes 編碼、字元，純邏輯；P4 從 frame 搬來，使用者程式也用）、`frame/src/input/queue.rs`（ring buffer，純邏輯）、`frame/src/input/mod.rs`（中斷處理、全域佇列、notify hook）、`kernel/src/input.rs`（input-router）、`user/echo`、`tools/qemu_test.py`（QMP 打字）。
 

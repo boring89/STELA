@@ -464,6 +464,7 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::Tty(_) => k::TTY,
         KernelObject::TtyMaster(_) => k::TTY_MASTER,
         KernelObject::Framebuffer(_) => k::FRAMEBUFFER,
+        KernelObject::Socket(_) => k::SOCKET,
     })
 }
 
@@ -492,6 +493,14 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::SystemPower => crate::psyscall::system_power(a0),
         Syscall::FileGetInfo => file_get_info(&p, a0, a1),
         Syscall::FileSetInfo => file_set_info(&p, a0, a1),
+        Syscall::SocketCreate => crate::net::socket_create(&p, a0),
+        Syscall::SocketBind => crate::net::socket_bind(&p, a0, a1),
+        Syscall::SocketConnect => crate::net::socket_connect(&p, a0, a1, a2),
+        Syscall::SocketListen => crate::net::socket_listen(&p, a0, a1),
+        Syscall::SocketAccept => crate::net::socket_accept(&p, a0, a1),
+        Syscall::SocketSend => crate::net::socket_send(&p, a0, a1, a2, a3),
+        Syscall::SocketRecv => crate::net::socket_recv(&p, args),
+        Syscall::NetInfo => crate::net::net_info(&p, a0),
         _ => Err(Error::InvalidSyscall),
     }
 }

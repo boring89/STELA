@@ -22,6 +22,8 @@ pub mod initrd;
 #[cfg(target_os = "none")]
 pub mod input;
 pub mod linux;
+#[cfg(target_os = "none")]
+pub mod net;
 pub mod object;
 #[cfg(target_os = "none")]
 pub mod power;

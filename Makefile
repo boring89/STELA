@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the

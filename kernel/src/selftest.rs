@@ -67,6 +67,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("pci", pci),
         ("block devices", block_devices),
         ("network card", network_card),
+        ("network stack", network_stack),
         ("file systems", file_systems),
         ("processes", processes),
         ("linux personality", linux_personality),
@@ -1220,6 +1221,20 @@ fn network_card(_: &'static BootInfo) {
         );
         task::sleep_ms(10);
     }
+}
+
+/// The stack on the card: DHCP must give the interface an address
+/// within 10 seconds (slirp: 10.0.2.15). Skipped without a card.
+fn network_stack(_: &'static BootInfo) {
+    kernel::net::start();
+    if drivers::net::probe().is_none() {
+        return;
+    }
+    assert!(
+        kernel::net::wait_configured(10_000_000_000),
+        "no address from DHCP"
+    );
+    kprintln!("net: stack configured");
 }
 
 fn block_devices(_: &'static BootInfo) {

@@ -1,0 +1,20 @@
+[package]
+name = "ping"
+description = "STELA network tool: ping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ping"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

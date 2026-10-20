@@ -28,6 +28,9 @@ members = [
     "user/echo_win",
     "user/mouseion",
     "user/viewer",
+    "user/ifconfig",
+    "user/ping",
+    "user/fetch",
     "classic",
     "tools/ehfs",
 ]

@@ -36,7 +36,16 @@ pub const ERANGE: i64 = 34;
 pub const ENAMETOOLONG: i64 = 36;
 pub const ENOSYS: i64 = 38;
 pub const ENOTEMPTY: i64 = 39;
+pub const ENOTSOCK: i64 = 88;
+pub const EPROTONOSUPPORT: i64 = 93;
+pub const EOPNOTSUPP: i64 = 95;
+pub const EAFNOSUPPORT: i64 = 97;
+pub const EADDRINUSE: i64 = 98;
+pub const ENETDOWN: i64 = 100;
+pub const ECONNRESET: i64 = 104;
+pub const ENOTCONN: i64 = 107;
 pub const ETIMEDOUT: i64 = 110;
+pub const ECONNREFUSED: i64 = 111;
 
 /// The errno for a STELA error.
 pub fn from_error(e: Error) -> i64 {
@@ -61,6 +70,10 @@ pub fn from_error(e: Error) -> i64 {
         Error::ReadOnly => EROFS,
         Error::NoSpace => ENOSPC,
         Error::IoError => EIO,
+        Error::ConnectionRefused => ECONNREFUSED,
+        Error::ConnectionReset => ECONNRESET,
+        Error::NetworkDown => ENETDOWN,
+        Error::AddressInUse => EADDRINUSE,
     }
 }
 

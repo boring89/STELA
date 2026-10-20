@@ -49,6 +49,8 @@ mod target {
         /// The boot framebuffer (`MemoryMap` maps it write-combining;
         /// `docs/display.md`).
         Framebuffer(Arc<frame::console::FramebufferDevice>),
+        /// A network socket (`docs/net.md`).
+        Socket(Arc<crate::net::Socket>),
     }
 
     impl KernelObject {

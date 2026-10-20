@@ -1,0 +1,20 @@
+[package]
+name = "ifconfig"
+description = "STELA network tool: ifconfig"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ifconfig"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

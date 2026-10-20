@@ -30,6 +30,7 @@ pub mod fs;
 pub mod heap;
 pub mod ipc;
 pub mod line;
+pub mod net;
 pub mod path;
 pub mod process;
 pub mod sync;

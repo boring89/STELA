@@ -147,11 +147,38 @@ pub enum Syscall {
     /// `FileSetInfo(file or folder, &[u8; 32])`: stores it (needs
     /// `WRITE` on the handle).
     FileSetInfo = 38,
+    /// `SocketCreate(kind) -> handle`: a network socket (`net::UDP`,
+    /// `net::TCP`, `net::ICMP`; `docs/net.md`).
+    SocketCreate = 39,
+    /// `SocketBind(socket, port) -> port`: the local port (0: any free
+    /// one).
+    SocketBind = 40,
+    /// `SocketConnect(socket, addr, timeout)`: TCP connects to `addr`
+    /// (`net::pack`), waiting up to `timeout` ns; UDP sets the default
+    /// destination.
+    SocketConnect = 41,
+    /// `SocketListen(socket, backlog)`: TCP waits for connections on its
+    /// bound port.
+    SocketListen = 42,
+    /// `SocketAccept(socket, timeout) -> handle`: the next connection.
+    SocketAccept = 43,
+    /// `SocketSend(socket, buf, len, addr) -> bytes`: TCP queues data
+    /// (waiting for room); UDP sends one datagram to `addr` (0: the
+    /// connected peer); ICMP sends an echo request (`addr`'s port is the
+    /// sequence number).
+    SocketSend = 44,
+    /// `SocketRecv(socket, buf, len, timeout, &mut addr) -> bytes`: TCP
+    /// reads (0 at the end of the stream); UDP and ICMP take one datagram
+    /// and write its source (`net::pack`, 8 bytes) if `addr` is not 0.
+    SocketRecv = 45,
+    /// `NetInfo(&mut [u8; 48]) -> 0 or 1`: the network card and address
+    /// (`net::NetInfo`); 0 when there is no card.
+    NetInfo = 46,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 38] = [
+    pub const ALL: [Syscall; 46] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -190,6 +217,14 @@ impl Syscall {
         Syscall::HandleKind,
         Syscall::FileGetInfo,
         Syscall::FileSetInfo,
+        Syscall::SocketCreate,
+        Syscall::SocketBind,
+        Syscall::SocketConnect,
+        Syscall::SocketListen,
+        Syscall::SocketAccept,
+        Syscall::SocketSend,
+        Syscall::SocketRecv,
+        Syscall::NetInfo,
     ];
 
     /// The call with number `raw`, if any.
@@ -263,11 +298,19 @@ pub enum Error {
     NoSpace = 20,
     /// The device failed or the volume is damaged.
     IoError = 21,
+    /// Nothing listens at the address (TCP RST to the SYN).
+    ConnectionRefused = 22,
+    /// The peer reset the connection.
+    ConnectionReset = 23,
+    /// No network card, or no address yet (DHCP not done).
+    NetworkDown = 24,
+    /// The port is taken.
+    AddressInUse = 25,
 }
 
 impl Error {
     /// Every error, in value order.
-    pub const ALL: [Error; 21] = [
+    pub const ALL: [Error; 25] = [
         Error::InvalidSyscall,
         Error::InvalidArgument,
         Error::BadAddress,
@@ -289,6 +332,10 @@ impl Error {
         Error::ReadOnly,
         Error::NoSpace,
         Error::IoError,
+        Error::ConnectionRefused,
+        Error::ConnectionReset,
+        Error::NetworkDown,
+        Error::AddressInUse,
     ];
 
     /// The error with status `raw` (`None` for 0 and unknown values).
@@ -328,6 +375,10 @@ impl Error {
             Error::NotEmpty => "folder not empty",
             Error::ReadOnly => "read-only volume",
             Error::NoSpace => "no space left",
+            Error::ConnectionRefused => "connection refused",
+            Error::ConnectionReset => "connection reset",
+            Error::NetworkDown => "network down",
+            Error::AddressInUse => "address in use",
             Error::IoError => "I/O error",
         }
     }
@@ -650,6 +701,8 @@ pub mod object_kind {
     pub const TTY_MASTER: u64 = 7;
     /// The framebuffer (`docs/display.md`).
     pub const FRAMEBUFFER: u64 = 8;
+    /// A network socket (`docs/net.md`).
+    pub const SOCKET: u64 = 9;
 }
 
 /// `SystemPower` kinds.
@@ -658,6 +711,96 @@ pub mod power {
     pub const SHUTDOWN: u64 = 0;
     /// Restart the machine.
     pub const REBOOT: u64 = 1;
+}
+
+/// Networking (`docs/net.md`): socket kinds, addresses packed in a
+/// `u64`, the `NetInfo` record.
+pub mod net {
+    /// Datagrams.
+    pub const UDP: u64 = 1;
+    /// A byte stream (or a listener).
+    pub const TCP: u64 = 2;
+    /// ICMP echo (ping).
+    pub const ICMP: u64 = 3;
+
+    /// An IPv4 address and port in one `u64`: the address's four bytes
+    /// (most significant first) in bits 47..16, the port in bits 15..0.
+    pub const fn pack(ip: [u8; 4], port: u16) -> u64 {
+        (u32::from_be_bytes(ip) as u64) << 16 | port as u64
+    }
+
+    /// The address and port of [`pack`].
+    pub const fn unpack(v: u64) -> ([u8; 4], u16) {
+        (((v >> 16) as u32).to_be_bytes(), v as u16)
+    }
+
+    /// Size of the `NetInfo` record.
+    pub const NET_INFO_SIZE: usize = 48;
+
+    /// The network card and the interface's address.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct NetInfo {
+        /// The driver's name ("e1000", "e1000e", "virtio-net"), NUL padded.
+        pub driver: [u8; 16],
+        /// The card's MAC address.
+        pub mac: [u8; 6],
+        /// The link is up.
+        pub link: bool,
+        /// The interface has an address.
+        pub configured: bool,
+        /// Our address.
+        pub ip: [u8; 4],
+        /// Subnet mask.
+        pub mask: [u8; 4],
+        /// Default gateway.
+        pub gateway: [u8; 4],
+        /// DNS server.
+        pub dns: [u8; 4],
+    }
+
+    impl NetInfo {
+        /// The 48-byte record.
+        pub fn to_bytes(&self) -> [u8; NET_INFO_SIZE] {
+            let mut b = [0u8; NET_INFO_SIZE];
+            b[0..16].copy_from_slice(&self.driver);
+            b[16..22].copy_from_slice(&self.mac);
+            b[22] = self.link as u8;
+            b[23] = self.configured as u8;
+            b[24..28].copy_from_slice(&self.ip);
+            b[28..32].copy_from_slice(&self.mask);
+            b[32..36].copy_from_slice(&self.gateway);
+            b[36..40].copy_from_slice(&self.dns);
+            b
+        }
+
+        /// Decodes the record.
+        pub fn from_bytes(b: &[u8]) -> Option<NetInfo> {
+            if b.len() < NET_INFO_SIZE {
+                return None;
+            }
+            let ip = |at: usize| [b[at], b[at + 1], b[at + 2], b[at + 3]];
+            let mut driver = [0u8; 16];
+            driver.copy_from_slice(&b[0..16]);
+            let mut mac = [0u8; 6];
+            mac.copy_from_slice(&b[16..22]);
+            Some(NetInfo {
+                driver,
+                mac,
+                link: b[22] != 0,
+                configured: b[23] != 0,
+                ip: ip(24),
+                mask: ip(28),
+                gateway: ip(32),
+                dns: ip(36),
+            })
+        }
+
+        /// The driver's name.
+        pub fn driver_name(&self) -> &str {
+            let end = self.driver.iter().position(|&c| c == 0).unwrap_or(16);
+            core::str::from_utf8(&self.driver[..end]).unwrap_or("?")
+        }
+    }
 }
 
 /// `SysInfo` kinds and records.
@@ -1238,7 +1381,7 @@ mod tests {
         assert_eq!(Syscall::FileGetInfo.raw(), 37);
         assert_eq!(Syscall::FileSetInfo.raw(), 38);
         assert_eq!(FINDER_INFO_SIZE, 32);
-        assert_eq!(Syscall::from_raw(39), None);
+        assert_eq!(Syscall::from_raw(47), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 
@@ -1270,7 +1413,7 @@ mod tests {
             assert!(!e.name().is_empty());
         }
         assert_eq!(Error::from_raw(0), None);
-        assert_eq!(Error::from_raw(22), None);
+        assert_eq!(Error::from_raw(26), None);
     }
 
     #[test]
@@ -1406,5 +1549,27 @@ mod tests {
         assert_eq!(cmdline_option(b"", "text"), None);
         assert_eq!(sysinfo::CMDLINE, 5);
         assert_eq!(sysinfo::TIME, 6);
+    }
+
+    #[test]
+    fn network_abi() {
+        assert_eq!(Syscall::SocketCreate.raw(), 39);
+        assert_eq!(Syscall::NetInfo.raw(), 46);
+        assert_eq!(Error::AddressInUse.raw(), 25);
+        let v = net::pack([10, 0, 2, 2], 8080);
+        assert_eq!(net::unpack(v), ([10, 0, 2, 2], 8080));
+        assert_eq!(v, 0x0A00_0202_1F90);
+        let info = net::NetInfo {
+            driver: *b"e1000\0\0\0\0\0\0\0\0\0\0\0",
+            mac: [0x52, 0x54, 0, 0x12, 0x34, 0x56],
+            link: true,
+            configured: true,
+            ip: [10, 0, 2, 15],
+            mask: [255, 255, 255, 0],
+            gateway: [10, 0, 2, 2],
+            dns: [10, 0, 2, 3],
+        };
+        assert_eq!(net::NetInfo::from_bytes(&info.to_bytes()), Some(info));
+        assert_eq!(info.driver_name(), "e1000");
     }
 }

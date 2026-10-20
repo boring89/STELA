@@ -37,6 +37,9 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     drivers::pci::system::init();
     kernel::block::probe();
     kernel::usb::start();
+    // The self test drives the card raw first, then starts the stack.
+    #[cfg(not(feature = "selftest"))]
+    kernel::net::start();
     kernel::vfs::mount::mount_all();
     kprintln!("STELA kernel {}", env!("CARGO_PKG_VERSION"));
     let usable: u64 = info

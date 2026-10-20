@@ -1,0 +1,15 @@
+[package]
+name = "block"
+description = "STELA block devices: the BlockDevice trait, partitions, GPT and the block cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+doctest = false
+
+[lints]
+workspace = true

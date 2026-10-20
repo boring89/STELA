@@ -12,6 +12,7 @@ bench = false
 doctest = false
 
 [dependencies]
+block = { path = "../block" }
 frame = { path = "../frame" }
 
 [lints]

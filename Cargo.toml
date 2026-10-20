@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "abi",
+    "block",
     "boot",
     "bootinfo",
     "drivers",

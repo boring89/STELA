@@ -53,6 +53,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("ports", ports),
         ("ipc programs", ipc_programs),
         ("pci", pci),
+        ("block devices", block_devices),
     ];
     // Let the service threads (console) reach their first wait, so that
     // their start-up allocations do not land in the middle of a test.
@@ -1045,4 +1046,51 @@ fn pci(_: &'static BootInfo) {
     let first = frame::irq::alloc_vector().expect("no vector");
     let second = frame::irq::alloc_vector().expect("no vector");
     assert!(first >= frame::irq::FIRST_FREE_VECTOR && second == first + 1);
+}
+
+/// The first bytes of a disk image made for the storage tests
+/// (`make test-storage`); only such disks are written.
+const TEST_DISK_MAGIC: &[u8] = b"STELATEST";
+
+fn block_devices(_: &'static BootInfo) {
+    use block::BLOCK_SIZE;
+    let disks = kernel::block::disks();
+    kprintln!("selftest:   {} disk(s)", disks.len());
+    for (name, disk) in disks {
+        let mut first = vec![0u8; BLOCK_SIZE];
+        disk.read(0, &mut first).expect("read block 0");
+        if !first.starts_with(TEST_DISK_MAGIC) {
+            kprintln!("selftest:   {name}: not a test disk; only read");
+            continue;
+        }
+        let blocks = disk.block_count();
+        assert!(blocks >= 64, "test disk too small");
+        // 20 blocks (more than one 64 KiB AHCI command) written and read
+        // back at block 8.
+        let pattern: Vec<u8> = (0..20 * BLOCK_SIZE)
+            .map(|i| (i / 7 + i / BLOCK_SIZE) as u8)
+            .collect();
+        disk.write(8, &pattern).expect("write");
+        let mut back = vec![0u8; pattern.len()];
+        disk.read(8, &mut back).expect("read back");
+        assert!(back == pattern, "{name}: data read back differs");
+        assert_eq!(
+            disk.read(blocks, &mut first),
+            Err(block::BlockError::OutOfRange)
+        );
+        // The boot counter in the last block survives a restart.
+        let last = blocks - 1;
+        let mut counter = vec![0u8; BLOCK_SIZE];
+        disk.read(last, &mut counter).expect("read last block");
+        let boots = if counter.starts_with(b"BOOTS") {
+            u64::from_le_bytes(counter[8..16].try_into().expect("8 bytes")) + 1
+        } else {
+            1
+        };
+        counter[..8].copy_from_slice(b"BOOTS\0\0\0");
+        counter[8..16].copy_from_slice(&boots.to_le_bytes());
+        disk.write(last, &counter).expect("write last block");
+        disk.flush().expect("flush");
+        kprintln!("storage: {name} boot {boots}");
+    }
 }

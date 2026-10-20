@@ -175,20 +175,60 @@ pub enum InterruptError {
     Register(frame::irq::IrqError),
 }
 
-/// Allocates a vector, installs `handler` for it and points `f`'s MSI at
-/// this processor. Returns the vector.
+/// The MSI-X table regions mapped so far (kept for good: the mapping
+/// must outlive the device's use of it).
+static MSIX_TABLES: SpinLock<Vec<MmioRegion>> = SpinLock::new(Vec::new());
+
+/// Allocates a vector, installs `handler` for it and points `f`'s MSI (or,
+/// without MSI, entry 0 of its MSI-X table) at this processor. Returns the
+/// vector.
 pub fn enable_msi(f: &Function, handler: frame::irq::Handler) -> Result<u8, InterruptError> {
-    super::find_capability(config(), f.address, super::capability::MSI)
-        .ok_or(InterruptError::NoMsi)?;
+    let cfg = config();
+    let msi = super::find_capability(cfg, f.address, super::capability::MSI);
+    let msix = super::find_capability(cfg, f.address, super::capability::MSI_X);
+    if msi.is_none() && msix.is_none() {
+        return Err(InterruptError::NoMsi);
+    }
     let vector = frame::irq::alloc_vector().ok_or(InterruptError::NoVector)?;
     frame::irq::register(vector, handler).map_err(InterruptError::Register)?;
     // xAPIC ids are 8 bits (Intel SDM Vol. 3A 11.4.6).
     let apic_id = frame::cpu::current().apic_id() as u8;
-    match super::enable_msi(config(), f.address, vector, apic_id) {
-        Ok(()) => Ok(vector),
-        Err(MsiError::NoCapability) => {
-            frame::irq::unregister(vector);
-            Err(InterruptError::NoMsi)
-        }
+    let result = match (msi, msix) {
+        (Some(_), _) => super::enable_msi(cfg, f.address, vector, apic_id).map_err(|e| match e {
+            MsiError::NoCapability => InterruptError::NoMsi,
+        }),
+        (None, Some(cap)) => enable_msix(f, cap, vector, apic_id),
+        (None, None) => Err(InterruptError::NoMsi),
+    };
+    if result.is_err() {
+        frame::irq::unregister(vector);
     }
+    result.map(|()| vector)
+}
+
+/// Programs entry 0 of the MSI-X table (PCI Local Bus Specification 3.0
+/// section 6.8.2: message control at +2, bit 15 enable, bit 14 function
+/// mask; table offset and BAR indicator at +4; each entry is address low,
+/// address high, data, vector control (bit 0 masked)).
+fn enable_msix(f: &Function, cap: u16, vector: u8, apic_id: u8) -> Result<(), InterruptError> {
+    let cfg = config();
+    let table = cfg.read32(f.address, cap + 4);
+    let bir = (table & 7) as u8;
+    let Some(Bar::Memory { addr, .. }) = super::bar(cfg, f, bir) else {
+        return Err(InterruptError::NoMsi);
+    };
+    let region = mmio::map(addr + u64::from(table & !7), 16).map_err(|_| InterruptError::NoMsi)?;
+    region.write_u32(0, super::msi_address(apic_id));
+    region.write_u32(4, 0);
+    region.write_u32(8, u32::from(super::msi_data(vector)));
+    region.write_u32(12, 0);
+    let control = super::read16(cfg, f.address, cap + 2);
+    super::write16(cfg, f.address, cap + 2, (control | 1 << 15) & !(1 << 14));
+    super::enable(
+        cfg,
+        f.address,
+        super::command::INTX_DISABLE | super::command::MEMORY_SPACE,
+    );
+    MSIX_TABLES.lock().push(region);
+    Ok(())
 }

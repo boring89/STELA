@@ -29,15 +29,16 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi bootinfo drivers elfload frame
+HOST_CRATES := abi block bootinfo drivers elfload frame
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel
 # Crates built for the bare-metal kernel target.
-KERNEL_CRATES := abi bootinfo drivers frame kernel
+KERNEL_CRATES := abi block bootinfo drivers frame kernel
 # User-space crates (same target).
 USER_CRATES := libstela $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd esp esp-test run test test-host test-qemu test-qemu-min test-fb clippy fmt clean
+.PHONY: all boot kernel user initrd esp esp-test run test test-host test-qemu test-qemu-min test-fb \
+	test-images test-storage clippy fmt clean
 
 all: esp
 
@@ -81,7 +82,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-fb
+test: test-host test-qemu test-qemu-min test-fb test-storage
 
 test-host: initrd
 	cargo test $(addprefix -p ,$(HOST_CRATES))
@@ -112,6 +113,30 @@ test-fb: esp $(BUILD)/OVMF_VARS.fd
 		--expect "hello from user mode" --expect "exited with code 0" --expect "echo: ready" \
 		--expect "uptime:" -- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm
+
+# Disk images for the storage test, made fresh for every run (the test
+# writes them): an AHCI disk (512-byte sectors) and an NVMe namespace
+# (4096-byte blocks), 64 MiB each, starting with the test-disk magic.
+IMAGES      := $(BUILD)/images
+STORAGE_FLAGS = -drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci.img \
+	-device ide-hd,drive=sata1,bus=ide.1 \
+	-drive if=none,id=nvm1,format=raw,file=$(IMAGES)/nvme.img \
+	-device nvme,serial=stela-nvme,drive=nvm1,logical_block_size=4096,physical_block_size=4096
+
+test-images:
+	mkdir -p $(IMAGES)
+	python3 tools/make_test_disk.py $(IMAGES)/ahci.img 64
+	python3 tools/make_test_disk.py $(IMAGES)/nvme.img 64
+
+# Boots the self-test kernel twice with the test disks: the second boot
+# must find what the first one wrote.
+test-storage: esp-test test-images $(BUILD)/OVMF_VARS.fd
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) \
+		--expect "storage: ahci0p1 boot 1" --expect "storage: nvme0n1 boot 1" \
+		--expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS) $(STORAGE_FLAGS)
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) \
+		--expect "storage: ahci0p1 boot 2" --expect "storage: nvme0n1 boot 2" \
+		--expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS) $(STORAGE_FLAGS)
 
 clippy:
 	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings

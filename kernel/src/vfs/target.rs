@@ -448,3 +448,133 @@ impl FileSystem for FatFs {
         abi::volume_kind::FAT
     }
 }
+
+// ---- The initrd ----
+
+/// The initial RAM disk as a read-only volume (`Initrd`): the ustar
+/// archive the loader brought (`frame::mm::initrd`). Its files are in the
+/// root folder (paths inside the archive keep their `/`, so `a/b` is
+/// reached as folder `a`, file `b`); ids are 2 + the member's index.
+pub struct InitrdFs {
+    archive: &'static [u8],
+}
+
+const INITRD_ROOT: u64 = 1;
+
+impl InitrdFs {
+    /// The volume over `archive`.
+    pub fn new(archive: &'static [u8]) -> InitrdFs {
+        InitrdFs { archive }
+    }
+
+    fn members(&self) -> impl Iterator<Item = (u64, crate::initrd::Entry<'static>)> {
+        crate::initrd::entries(self.archive)
+            .map_while(Result::ok)
+            .enumerate()
+            .filter(|(_, e)| e.kind == crate::initrd::Kind::File)
+            .map(|(i, e)| (i as u64 + 2, e))
+    }
+
+    fn info(id: u64, e: &crate::initrd::Entry<'_>) -> NodeInfo {
+        let full = if e.prefix.is_empty() {
+            String::from(e.name)
+        } else {
+            alloc::format!("{}/{}", e.prefix, e.name)
+        };
+        let name = full.rsplit('/').next().unwrap_or("").into();
+        NodeInfo {
+            id,
+            is_dir: false,
+            size: e.data.len() as u64,
+            ctime: 0,
+            mtime: 0,
+            name,
+        }
+    }
+}
+
+impl FileSystem for InitrdFs {
+    fn root(&self) -> u64 {
+        INITRD_ROOT
+    }
+
+    fn lookup(&self, dir: u64, name: &str) -> Result<NodeInfo, Error> {
+        if dir != INITRD_ROOT {
+            return Err(Error::NotDir);
+        }
+        self.members()
+            .find(|(_, e)| e.is(name) || e.name.eq_ignore_ascii_case(name))
+            .map(|(id, e)| Self::info(id, &e))
+            .ok_or(Error::NotFound)
+    }
+
+    fn get(&self, id: u64) -> Result<NodeInfo, Error> {
+        if id == INITRD_ROOT {
+            return Ok(NodeInfo {
+                id,
+                is_dir: true,
+                size: 0,
+                ctime: 0,
+                mtime: 0,
+                name: String::new(),
+            });
+        }
+        self.members()
+            .find(|(i, _)| *i == id)
+            .map(|(i, e)| Self::info(i, &e))
+            .ok_or(Error::NotFound)
+    }
+
+    fn list(&self, dir: u64) -> Result<Vec<NodeInfo>, Error> {
+        if dir != INITRD_ROOT {
+            return Err(Error::NotDir);
+        }
+        Ok(self.members().map(|(id, e)| Self::info(id, &e)).collect())
+    }
+
+    fn read(&self, id: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
+        let (_, e) = self
+            .members()
+            .find(|(i, _)| *i == id)
+            .ok_or(Error::NotFound)?;
+        let data = e.data;
+        if offset >= data.len() as u64 {
+            return Ok(0);
+        }
+        let n = (data.len() - offset as usize).min(buf.len());
+        buf[..n].copy_from_slice(&data[offset as usize..offset as usize + n]);
+        Ok(n)
+    }
+
+    fn write(&self, _: u64, _: u64, _: &[u8]) -> Result<(), Error> {
+        Err(Error::ReadOnly)
+    }
+
+    fn create(&self, _: u64, _: &str, _: bool) -> Result<NodeInfo, Error> {
+        Err(Error::ReadOnly)
+    }
+
+    fn remove(&self, _: u64, _: &str) -> Result<(), Error> {
+        Err(Error::ReadOnly)
+    }
+
+    fn rename(&self, _: u64, _: &str, _: u64, _: &str) -> Result<(), Error> {
+        Err(Error::ReadOnly)
+    }
+
+    fn set_size(&self, _: u64, _: u64) -> Result<(), Error> {
+        Err(Error::ReadOnly)
+    }
+
+    fn read_only(&self) -> bool {
+        true
+    }
+
+    fn space(&self) -> (u64, u64) {
+        (self.archive.len() as u64, 0)
+    }
+
+    fn kind(&self) -> u32 {
+        abi::volume_kind::INITRD
+    }
+}

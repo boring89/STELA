@@ -18,6 +18,7 @@ members = [
     "user/ipc_client",
     "user/echo",
     "user/fstest",
+    "user/proctest",
     "tools/ehfs",
 ]
 

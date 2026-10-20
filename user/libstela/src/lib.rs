@@ -7,7 +7,11 @@
 //!   the process with the code it returns.
 //! - Safe wrappers for every system call ([`exit`], [`thread_exit`],
 //!   [`spawn`], [`yield_now`], [`sleep_ns`], [`now_ns`]).
-//! - Handles, ports, messages and shared memory ([`ipc`]).
+//! - Handles, ports, messages and shared memory ([`ipc`]); files and
+//!   volumes ([`fs`]); processes, arguments and system information
+//!   ([`process`]).
+//! - A heap ([`heap`], `alloc` works), path resolution ([`path`]) and
+//!   line editing ([`line`]).
 //! - [`console_write`], [`debug_print!`] / [`debug_println!`]: output
 //!   through the console service (bootstrap handle `[1]`).
 //! - The panic handler: prints the message and exits with code 101.
@@ -15,13 +19,20 @@
 //! The `syscall` instruction in [`sys`], [`ThreadStack`] and the copies in
 //! [`ipc::Mapping`] are the only `unsafe` code a STELA program needs.
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
 
 pub use abi;
 pub use abi::{Error, Handle, MESSAGE_DATA, Message, PORT_QUEUE_DEPTH, Rights, bootstrap, tag};
 
 pub mod fs;
+pub mod heap;
 pub mod ipc;
+pub mod line;
+pub mod path;
+pub mod process;
+pub mod sync;
 pub mod sys;
 
 use core::cell::UnsafeCell;
@@ -40,6 +51,7 @@ macro_rules! entry {
         #[unsafe(no_mangle)]
         extern "C" fn _start() -> ! {
             let main: fn() -> i64 = $main;
+            $crate::process::take_args();
             $crate::exit(main())
         }
     };
@@ -236,6 +248,7 @@ pub fn spawn<const N: usize>(
     )
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     debug_println!("panic: {}", info);

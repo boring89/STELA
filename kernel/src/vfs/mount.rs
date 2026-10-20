@@ -8,7 +8,7 @@
 //! writable eHFS volume is `Data` (a volume named otherwise is renamed,
 //! with a warning). A disk without a GPT that starts with an eHFS
 //! superblock is mounted whole. Partitions must start on a 4 KiB
-//! boundary.
+//! boundary. The initrd is mounted last as the read-only `Initrd`.
 
 use super::{EhfsFs, FatFs, VolumeDevice, mount};
 use crate::block::{Disk, disks};
@@ -61,6 +61,15 @@ pub fn mount_all() {
                 summary.push(line);
             }
         }
+    }
+    let archive = frame::mm::initrd();
+    if !archive.is_empty() {
+        let volume = mount("Initrd", Arc::new(super::InitrdFs::new(archive)));
+        summary.push(alloc::format!(
+            "{} (initrd, ro, {} KiB)",
+            volume.name,
+            archive.len() / 1024
+        ));
     }
     if summary.is_empty() {
         frame::kprintln!("vfs: no volumes");

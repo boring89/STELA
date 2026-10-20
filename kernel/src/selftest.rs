@@ -55,6 +55,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("pci", pci),
         ("block devices", block_devices),
         ("file systems", file_systems),
+        ("processes", processes),
     ];
     // Let the service threads (console) reach their first wait, so that
     // their start-up allocations do not land in the middle of a test.
@@ -875,26 +876,33 @@ fn elf_loading(_: &'static BootInfo) {
     ));
     assert_eq!(pmm::stats().0, free, "failed loads leaked memory");
     assert_eq!(
-        program::spawn_from_initrd("no-such-program"),
-        Err(LoadError::NotFound)
+        program::spawn_path("Initrd", "no-such-program", None).err(),
+        Some(LoadError::NotFound)
     );
     // An unknown process id.
     assert_eq!(task::wait_process(u64::MAX), None);
     kprintln!("selftest:   initrd {} bytes", frame::mm::initrd().len());
 }
 
+/// Starts program `name` from the Initrd volume; returns its id.
+fn initrd_program(name: &str) -> u64 {
+    match kernel::program::spawn_path("Initrd", name, None) {
+        Ok(p) => p.id(),
+        Err(e) => panic!("cannot start {name}: {e:?}"),
+    }
+}
+
 fn initrd_programs(_: &'static BootInfo) {
-    use kernel::program;
     assert!(!frame::mm::initrd().is_empty(), "no initrd");
     let (free, _) = pmm::stats();
     // hello: prints from two threads, exits with 0.
-    let pid = program::spawn_from_initrd("hello").expect("cannot start hello");
+    let pid = initrd_program("hello");
     assert_eq!(task::wait_process(pid), Some(0));
     // fault: reads address 0 -> page fault -> 128 + 14; the kernel goes on.
-    let pid = program::spawn_from_initrd("fault").expect("cannot start fault");
+    let pid = initrd_program("fault");
     assert_eq!(task::wait_process(pid), Some(128 + 14));
     // spin: 200 ms without yielding; main still gets to run.
-    let pid = program::spawn_from_initrd("spin").expect("cannot start spin");
+    let pid = initrd_program("spin");
     task::yield_now();
     for _ in 0..5 {
         let start = time::ticks();
@@ -986,27 +994,27 @@ fn run_ipc_pair() {
     use abi::Rights;
     use alloc::sync::Arc;
     use kernel::object::{Entry, KernelObject};
-    use kernel::program::spawn_initrd_process;
-    let server = spawn_initrd_process("ipc_server", None).expect("cannot start ipc_server");
+    use kernel::program::spawn_path;
+    let server = spawn_path("Initrd", "ipc_server", None).expect("cannot start ipc_server");
     let to_server = Entry {
         object: KernelObject::Port(Arc::clone(server.main_port())),
         rights: Rights::SEND,
     };
     let client =
-        spawn_initrd_process("ipc_client", Some(to_server)).expect("cannot start ipc_client");
+        spawn_path("Initrd", "ipc_client", Some(to_server)).expect("cannot start ipc_client");
     let (server, client) = (server.id(), client.id());
     assert_eq!(task::wait_process(client), Some(0), "ipc_client failed");
     assert_eq!(task::wait_process(server), Some(0), "ipc_server failed");
 }
 
 fn ipc_programs(_: &'static BootInfo) {
-    use kernel::program::spawn_initrd_process;
+    use kernel::program::spawn_path;
     run_ipc_pair();
     let (free, _) = pmm::stats();
     run_ipc_pair();
     // A server blocked in PortReceive is killed: it ends with the kill's
     // exit code and leaves nothing behind.
-    let server = spawn_initrd_process("ipc_server", None).expect("cannot start ipc_server");
+    let server = spawn_path("Initrd", "ipc_server", None).expect("cannot start ipc_server");
     task::sleep_ms(20);
     assert_eq!(task::process::exit_status(server.id()), None);
     task::kill(&server, 99);
@@ -1125,6 +1133,21 @@ fn file_systems(_: &'static BootInfo) {
         kprintln!("selftest:   no Data volume; fstest not run");
         return;
     }
-    let pid = kernel::program::spawn_from_initrd("fstest").expect("cannot start fstest");
+    let pid = initrd_program("fstest");
     assert_eq!(task::wait_process(pid), Some(0), "fstest failed");
+}
+
+fn processes(_: &'static BootInfo) {
+    // proctest starts copies of itself through ProcessSpawn, waits, kills
+    // and uses the heap. Warm up once, then check that everything came
+    // back.
+    let pid = initrd_program("proctest");
+    assert_eq!(task::wait_process(pid), Some(0), "proctest failed");
+    task::sleep_ms(1);
+    let (free, _) = pmm::stats();
+    let pid = initrd_program("proctest");
+    assert_eq!(task::wait_process(pid), Some(0), "proctest failed");
+    task::sleep_ms(1);
+    assert_eq!(task::stats().zombies, 0);
+    assert_eq!(pmm::stats().0, free, "process memory not freed");
 }

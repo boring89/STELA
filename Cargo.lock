@@ -151,6 +151,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "proctest"
+version = "0.1.0"
+dependencies = [
+ "libstela",
+]
+
+[[package]]
 name = "ptr_meta"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

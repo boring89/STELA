@@ -100,11 +100,29 @@ pub enum Syscall {
     /// `VolumeOpenById(dir, id) -> handle`: the item with persistent id
     /// `id` on `dir`'s volume.
     VolumeOpenById = 26,
+    /// `ProcessSpawn(file, &Message, &[Handle; 3], count) -> handle`: starts
+    /// the ELF program in `file` (a handle with `READ`) as a new process.
+    /// The message (or an empty one) is queued on its main port as its
+    /// `BOOTSTRAP_ARGS`; the handles become its `[1]`..`[3]` (moved, each
+    /// needs `TRANSFER`; `Handle::NONE` leaves a slot empty). The handle
+    /// returned has `WAIT | KILL | DUPLICATE | TRANSFER`.
+    ProcessSpawn = 27,
+    /// `ProcessWait(process, timeout_ns) -> exit code`: waits until the
+    /// process ended (`TimedOut` otherwise); the code is an `i64`.
+    ProcessWait = 28,
+    /// `ProcessKill(process)`: ends it with exit code `EXIT_KILLED`.
+    ProcessKill = 29,
+    /// `ProcessSelf() -> handle`: the caller's own process (`KILL |
+    /// DUPLICATE | TRANSFER`).
+    ProcessSelf = 30,
+    /// `SysInfo(kind, buf, len) -> count`: system information
+    /// (`sysinfo::*`).
+    SysInfo = 31,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 26] = [
+    pub const ALL: [Syscall; 31] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -131,6 +149,11 @@ impl Syscall {
         Syscall::VolumeList,
         Syscall::VolumeOpen,
         Syscall::VolumeOpenById,
+        Syscall::ProcessSpawn,
+        Syscall::ProcessWait,
+        Syscall::ProcessKill,
+        Syscall::ProcessSelf,
+        Syscall::SysInfo,
     ];
 
     /// The call with number `raw`, if any.
@@ -341,10 +364,12 @@ impl Rights {
     pub const WRITE: Rights = Rights(1 << 5);
     /// `MemoryMap`.
     pub const MAP: Rights = Rights(1 << 6);
-    /// Wait for the object.
+    /// Wait for the object (`ProcessWait`).
     pub const WAIT: Rights = Rights(1 << 7);
+    /// End the object (`ProcessKill`).
+    pub const KILL: Rights = Rights(1 << 8);
     /// Every right defined so far.
-    pub const ALL: Rights = Rights(0xFF);
+    pub const ALL: Rights = Rights(0x1FF);
 
     /// Whether every right in `other` is in `self`.
     pub const fn contains(self, other: Rights) -> bool {
@@ -513,6 +538,119 @@ pub mod tag {
     /// From the kernel to the `InputAttach` port: the data is an encoded
     /// `key::KeyEvent`.
     pub const INPUT_KEY: u32 = 2;
+    /// The first message on a new process's main port: its arguments,
+    /// NUL-separated (the program name first). Up to 112 bytes are in the
+    /// data; longer lists are in a `Memory` object carried in slot 0, with
+    /// the length (u64, little endian) in the data.
+    pub const BOOTSTRAP_ARGS: u32 = 3;
+    /// From a shell to its parent (init): handle slot 0 is a `SEND` handle
+    /// to the shell's main port, for keyboard input.
+    pub const SHELL_READY: u32 = 4;
+}
+
+/// The exit code of a process ended by `ProcessKill`.
+pub const EXIT_KILLED: i64 = 137;
+
+/// `SysInfo` kinds and records.
+pub mod sysinfo {
+    /// Running and ended processes: an array of `ProcessInfo` (48 bytes
+    /// each); returns how many there are (it may be more than fit).
+    pub const PROCESSES: u64 = 1;
+    /// Memory: one `MemInfo` (32 bytes); returns 1.
+    pub const MEMORY: u64 = 2;
+    /// Time: `[uptime ns, timer ticks]` (16 bytes); returns 1.
+    pub const UPTIME: u64 = 3;
+
+    /// Size of a process record.
+    pub const PROCESS_INFO_SIZE: usize = 48;
+    /// Size of the memory record.
+    pub const MEM_INFO_SIZE: usize = 32;
+
+    /// One process.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ProcessInfo {
+        /// Process id.
+        pub pid: u64,
+        /// Live threads (0 once ended).
+        pub threads: u32,
+        /// 1 running, 2 ended.
+        pub state: u32,
+        /// The exit code once ended.
+        pub exit_code: i64,
+        /// The name (UTF-8, NUL padded).
+        pub name: [u8; 24],
+    }
+
+    impl ProcessInfo {
+        /// The record as copied to user memory.
+        pub fn to_bytes(&self) -> [u8; PROCESS_INFO_SIZE] {
+            let mut b = [0u8; PROCESS_INFO_SIZE];
+            b[0..8].copy_from_slice(&self.pid.to_le_bytes());
+            b[8..12].copy_from_slice(&self.threads.to_le_bytes());
+            b[12..16].copy_from_slice(&self.state.to_le_bytes());
+            b[16..24].copy_from_slice(&self.exit_code.to_le_bytes());
+            b[24..48].copy_from_slice(&self.name);
+            b
+        }
+
+        /// The inverse of [`ProcessInfo::to_bytes`].
+        pub fn from_bytes(b: &[u8]) -> Option<ProcessInfo> {
+            let b = b.get(..PROCESS_INFO_SIZE)?;
+            let mut name = [0u8; 24];
+            name.copy_from_slice(&b[24..48]);
+            Some(ProcessInfo {
+                pid: u64::from_le_bytes(b[0..8].try_into().ok()?),
+                threads: u32::from_le_bytes(b[8..12].try_into().ok()?),
+                state: u32::from_le_bytes(b[12..16].try_into().ok()?),
+                exit_code: i64::from_le_bytes(b[16..24].try_into().ok()?),
+                name,
+            })
+        }
+
+        /// The name.
+        pub fn name(&self) -> &str {
+            let n = self.name.iter().position(|&c| c == 0).unwrap_or(24);
+            core::str::from_utf8(&self.name[..n]).unwrap_or("?")
+        }
+    }
+
+    /// Memory.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct MemInfo {
+        /// Physical frames (4 KiB) the allocator manages.
+        pub total_frames: u64,
+        /// Free frames.
+        pub free_frames: u64,
+        /// Kernel heap size in bytes.
+        pub heap_size: u64,
+        /// Kernel heap bytes in use.
+        pub heap_used: u64,
+    }
+
+    impl MemInfo {
+        /// The record as copied to user memory.
+        pub fn to_bytes(&self) -> [u8; MEM_INFO_SIZE] {
+            let mut b = [0u8; MEM_INFO_SIZE];
+            b[0..8].copy_from_slice(&self.total_frames.to_le_bytes());
+            b[8..16].copy_from_slice(&self.free_frames.to_le_bytes());
+            b[16..24].copy_from_slice(&self.heap_size.to_le_bytes());
+            b[24..32].copy_from_slice(&self.heap_used.to_le_bytes());
+            b
+        }
+
+        /// The inverse of [`MemInfo::to_bytes`].
+        pub fn from_bytes(b: &[u8]) -> Option<MemInfo> {
+            let w = |i: usize| -> Option<u64> {
+                Some(u64::from_le_bytes(b.get(i..i + 8)?.try_into().ok()?))
+            };
+            Some(MemInfo {
+                total_frames: w(0)?,
+                free_frames: w(8)?,
+                heap_size: w(16)?,
+                heap_used: w(24)?,
+            })
+        }
+    }
 }
 
 /// The handles every process starts with, by slot. A slot that was not
@@ -847,7 +985,12 @@ mod tests {
             assert_eq!(Syscall::from_raw(call.raw()), Some(call));
         }
         assert_eq!(Syscall::from_raw(REMOVED_DEBUG_WRITE), None);
-        assert_eq!(Syscall::from_raw(27), None);
+        assert_eq!(Syscall::ProcessSpawn.raw(), 27);
+        assert_eq!(Syscall::ProcessWait.raw(), 28);
+        assert_eq!(Syscall::ProcessKill.raw(), 29);
+        assert_eq!(Syscall::ProcessSelf.raw(), 30);
+        assert_eq!(Syscall::SysInfo.raw(), 31);
+        assert_eq!(Syscall::from_raw(32), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 
@@ -920,12 +1063,13 @@ mod tests {
         assert_eq!(Rights::WRITE.0, 32);
         assert_eq!(Rights::MAP.0, 64);
         assert_eq!(Rights::WAIT.0, 128);
+        assert_eq!(Rights::KILL.0, 256);
         let r = Rights::SEND | Rights::RECEIVE;
         assert!(r.contains(Rights::SEND));
         assert!(!r.contains(Rights::SEND | Rights::MAP));
         assert_eq!(r.without(Rights::SEND), Rights::RECEIVE);
-        assert_eq!(Rights::from_raw(0x100), None);
-        assert_eq!(Rights::from_raw(0xFF), Some(Rights::ALL));
+        assert_eq!(Rights::from_raw(0x200), None);
+        assert_eq!(Rights::from_raw(0x1FF), Some(Rights::ALL));
     }
 
     #[test]
@@ -970,5 +1114,31 @@ mod tests {
         assert_eq!(core::mem::offset_of!(VolumeInfo, name), 32);
         assert_eq!(bootstrap::CWD.0, 0x0100_0003);
         assert_eq!(open::ALL, 0x3F);
+    }
+
+    #[test]
+    fn sysinfo_records() {
+        let mut name = [0u8; 24];
+        name[..5].copy_from_slice(b"shell");
+        let p = sysinfo::ProcessInfo {
+            pid: 3,
+            threads: 1,
+            state: 1,
+            exit_code: -1,
+            name,
+        };
+        let b = p.to_bytes();
+        assert_eq!(&b[0..8], &3u64.to_le_bytes());
+        assert_eq!(sysinfo::ProcessInfo::from_bytes(&b), Some(p));
+        assert_eq!(p.name(), "shell");
+        let m = sysinfo::MemInfo {
+            total_frames: 1,
+            free_frames: 2,
+            heap_size: 3,
+            heap_used: 4,
+        };
+        assert_eq!(sysinfo::MemInfo::from_bytes(&m.to_bytes()), Some(m));
+        assert_eq!(tag::BOOTSTRAP_ARGS, 3);
+        assert_eq!(EXIT_KILLED, 137);
     }
 }

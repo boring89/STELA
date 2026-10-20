@@ -9,7 +9,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 
@@ -29,7 +29,7 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame
+HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel
 # Crates built for the bare-metal kernel target.
@@ -101,7 +101,7 @@ test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 		--expect "STELA kernel" --expect "input: OK" \
 		--expect "user: hello from built-in user code" --expect "hello from user mode" \
 		--expect "hello from a second thread" --expect "fault: reading address 0" \
-		--expect "spin: " --expect "ipc_client: OK" --expect "selftest: OK" \
+		--expect "spin: " --expect "ipc_client: OK" --expect "proctest: OK" --expect "selftest: OK" \
 		-- $(QEMU) $(QEMU_TEST_FLAGS)
 
 # The minimal machine also gets the AHCI test disk (a copy of its own):

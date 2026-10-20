@@ -134,7 +134,10 @@ impl Drop for Process {
     fn drop(&mut self) {
         // A process that never got a thread (its program failed to load)
         // ends here, so that waiting for it does not hang.
-        let never_ran = matches!(TABLE.lock().get(&self.id), Some(Status::Running { .. }));
+        let never_ran = matches!(
+            TABLE.lock().get(&self.id).map(|r| &r.status),
+            Some(Status::Running { .. })
+        );
         if never_ran {
             self.release();
             finish(self.id, -1);
@@ -148,25 +151,23 @@ enum Status {
     Exited(i64),
 }
 
-static TABLE: SpinLock<BTreeMap<ProcessId, Status>> = SpinLock::new(BTreeMap::new());
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Creates a process with an empty address space, no threads and the
-/// bootstrap handles: `[0]` its main port, `[1]` the console service (if
-/// it runs), `[2]` nothing, `[3]` the root of `Data` (if mounted).
-pub fn create(name: &str) -> Result<Arc<Process>, MapError> {
-    create_with(name, None)
+/// A process table record.
+struct Record {
+    name: String,
+    /// The process while it exists (its threads hold it).
+    process: Weak<Process>,
+    status: Status,
 }
 
-/// Like [`create`], with `bootstrap` as handle `[2]`.
-pub fn create_with(name: &str, bootstrap: Option<Entry>) -> Result<Arc<Process>, MapError> {
-    let space = AddressSpace::new()?;
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let main_port = Port::new(id);
-    let main = Entry {
-        object: KernelObject::Port(Arc::clone(&main_port)),
-        rights: Rights::RECEIVE | Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
-    };
+static TABLE: SpinLock<BTreeMap<ProcessId, Record>> = SpinLock::new(BTreeMap::new());
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+/// The bootstrap handles `[1]`, `[2]`, `[3]` of a new process.
+pub type Initial = [Option<Entry>; 3];
+
+/// The usual `[1]`..`[3]`: the console service (if it runs), `bootstrap`,
+/// the root of `Data` (if mounted).
+pub fn standard_initial(bootstrap: Option<Entry>) -> Initial {
     let console = crate::console::service_port().map(|port| Entry {
         object: KernelObject::Port(port),
         rights: Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
@@ -179,14 +180,28 @@ pub fn create_with(name: &str, bootstrap: Option<Entry>) -> Result<Arc<Process>,
             rights,
         }
     });
+    [console, bootstrap, cwd]
+}
+
+/// Creates a process with an empty address space, no threads and the
+/// bootstrap handles: `[0]` its main port, `[1]` the console service (if
+/// it runs), `[2]` nothing, `[3]` the root of `Data` (if mounted).
+pub fn create(name: &str) -> Result<Arc<Process>, MapError> {
+    create_with(name, standard_initial(None))
+}
+
+/// Like [`create`], with `initial` as handles `[1]`..`[3]`.
+pub fn create_with(name: &str, initial: Initial) -> Result<Arc<Process>, MapError> {
+    let space = AddressSpace::new()?;
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let main_port = Port::new(id);
+    let main = Entry {
+        object: KernelObject::Port(Arc::clone(&main_port)),
+        rights: Rights::RECEIVE | Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+    };
+    let [console, bootstrap, cwd] = initial;
     let handles = HandleTable::with_initial([Some(main), console, bootstrap, cwd]);
-    TABLE.lock().insert(
-        id,
-        Status::Running {
-            waiters: Vec::new(),
-        },
-    );
-    Ok(Arc::new(Process {
+    let process = Arc::new(Process {
         id,
         name: String::from(name),
         space,
@@ -196,16 +211,30 @@ pub fn create_with(name: &str, bootstrap: Option<Entry>) -> Result<Arc<Process>,
         main_port,
         ports: SpinLock::new(Vec::new()),
         maps: SpinLock::new(Regions::new(MAP_BASE, MAP_END)),
-    }))
+    });
+    TABLE.lock().insert(
+        id,
+        Record {
+            name: String::from(name),
+            process: Arc::downgrade(&process),
+            status: Status::Running {
+                waiters: Vec::new(),
+            },
+        },
+    );
+    Ok(process)
 }
 
 /// Records the end of process `id` and wakes its waiters.
 fn finish(id: ProcessId, code: i64) {
     let waiters = {
         let mut table = TABLE.lock();
-        match table.insert(id, Status::Exited(code)) {
-            Some(Status::Running { waiters }) => waiters,
-            _ => Vec::new(),
+        match table.get_mut(&id) {
+            Some(record) => match core::mem::replace(&mut record.status, Status::Exited(code)) {
+                Status::Running { waiters } => waiters,
+                Status::Exited(_) => Vec::new(),
+            },
+            None => Vec::new(),
         }
     };
     for waiter in waiters {
@@ -213,32 +242,88 @@ fn finish(id: ProcessId, code: i64) {
     }
 }
 
-/// Waits until process `id` has ended and returns its exit code (`None`
-/// for an unknown id). The status stays, so waiting again returns it again.
-pub fn wait_process(id: ProcessId) -> Option<i64> {
+/// Why [`wait_until`] returned without an exit code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitError {
+    /// No such process.
+    Unknown,
+    /// The deadline passed.
+    TimedOut,
+    /// The waiting thread's process was killed.
+    Killed,
+}
+
+/// Waits until process `id` has ended (or `deadline`, `now_ns`; `None`:
+/// forever) and returns its exit code. The status stays, so waiting again
+/// returns it again.
+pub fn wait_until(id: ProcessId, deadline: Option<u64>) -> Result<i64, WaitError> {
     let me = super::current_id();
     loop {
+        if super::current_killed() {
+            return Err(WaitError::Killed);
+        }
         {
             let mut table = TABLE.lock();
-            match table.get_mut(&id)? {
-                Status::Exited(code) => return Some(*code),
+            let record = table.get_mut(&id).ok_or(WaitError::Unknown)?;
+            match &mut record.status {
+                Status::Exited(code) => return Ok(*code),
                 Status::Running { waiters } => {
+                    if deadline.is_some_and(|d| frame::time::now_ns() >= d) {
+                        waiters.retain(|&w| w != me);
+                        return Err(WaitError::TimedOut);
+                    }
                     if !waiters.contains(&me) {
                         waiters.push(me);
                     }
                 }
             }
         }
-        // A wake-up between the unlock and here makes `block` return at
+        // A wake-up between the unlock and here makes this return at
         // once, and the loop checks again.
-        super::block();
+        super::block_until(deadline);
     }
+}
+
+/// Waits until process `id` has ended and returns its exit code (`None`
+/// for an unknown id).
+pub fn wait_process(id: ProcessId) -> Option<i64> {
+    wait_until(id, None).ok()
 }
 
 /// The exit code of process `id` if it has ended.
 pub fn exit_status(id: ProcessId) -> Option<i64> {
-    match TABLE.lock().get(&id)? {
-        Status::Exited(code) => Some(*code),
+    match TABLE.lock().get(&id)?.status {
+        Status::Exited(code) => Some(code),
         Status::Running { .. } => None,
     }
+}
+
+/// The process `id` while it exists.
+pub fn find(id: ProcessId) -> Option<Arc<Process>> {
+    TABLE.lock().get(&id)?.process.upgrade()
+}
+
+/// One line of the process list: (id, name, live threads, exit code once
+/// ended).
+pub fn list() -> Vec<(ProcessId, String, usize, Option<i64>)> {
+    // The processes are looked at outside the table's lock: dropping the
+    // last reference to one takes the lock (Drop).
+    let records: Vec<_> = TABLE
+        .lock()
+        .iter()
+        .map(|(&id, r)| {
+            let code = match r.status {
+                Status::Exited(code) => Some(code),
+                Status::Running { .. } => None,
+            };
+            (id, r.name.clone(), r.process.clone(), code)
+        })
+        .collect();
+    records
+        .into_iter()
+        .map(|(id, name, weak, code)| {
+            let threads = weak.upgrade().map_or(0, |p| p.live.load(Ordering::Relaxed));
+            (id, name, threads, code)
+        })
+        .collect()
 }

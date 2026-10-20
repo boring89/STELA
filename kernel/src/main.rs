@@ -83,11 +83,13 @@ fn init() {
     run("echo");
 }
 
-/// Runs program `name` from the initrd and waits for it to end.
+/// Runs program `name` from the `Initrd` volume and waits for it to end.
 #[cfg(not(feature = "selftest"))]
 fn run(name: &str) {
-    match kernel::program::spawn_from_initrd(name) {
-        Ok(pid) => {
+    match kernel::program::spawn_path("Initrd", name, None) {
+        Ok(process) => {
+            let pid = process.id();
+            drop(process);
             let code = kernel::task::wait_process(pid).unwrap_or(-1);
             kprintln!("kernel: {name} (process {pid}) exited with code {code}");
         }

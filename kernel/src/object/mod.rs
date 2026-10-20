@@ -34,6 +34,9 @@ mod target {
         Directory(Node),
         /// A file on a volume.
         File(Node),
+        /// A process, by id (the handle does not keep its memory alive;
+        /// its exit status stays in the process table).
+        Process(crate::task::ProcessId),
     }
 
     impl KernelObject {

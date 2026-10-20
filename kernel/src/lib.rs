@@ -25,6 +25,8 @@ pub mod object;
 #[cfg(target_os = "none")]
 pub mod program;
 #[cfg(target_os = "none")]
+pub mod psyscall;
+#[cfg(target_os = "none")]
 pub mod syscall;
 pub mod task;
 pub mod vfs;

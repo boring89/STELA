@@ -289,6 +289,11 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::VolumeList => volume_list(&p, a0, a1),
         Syscall::VolumeOpen => volume_open(&p, a0, a1),
         Syscall::VolumeOpenById => volume_open_by_id(&p, a0, a1),
+        Syscall::ProcessSpawn => crate::psyscall::process_spawn(&p, a0, a1, a2, a3),
+        Syscall::ProcessWait => crate::psyscall::process_wait(&p, a0, a1),
+        Syscall::ProcessKill => crate::psyscall::process_kill(&p, a0),
+        Syscall::ProcessSelf => crate::psyscall::process_self(&p),
+        Syscall::SysInfo => crate::psyscall::sys_info(&p, a0, a1, a2),
         _ => Err(Error::InvalidSyscall),
     }
 }

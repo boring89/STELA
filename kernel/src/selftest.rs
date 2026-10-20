@@ -49,6 +49,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("user mode faults", user_mode_faults),
         ("system calls", system_calls),
         ("elf loading", elf_loading),
+        ("initrd programs", initrd_programs),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -841,4 +842,29 @@ fn elf_loading(_: &'static BootInfo) {
     // An unknown process id.
     assert_eq!(task::wait_process(u64::MAX), None);
     kprintln!("selftest:   initrd {} bytes", frame::mm::initrd().len());
+}
+
+fn initrd_programs(_: &'static BootInfo) {
+    use kernel::program;
+    assert!(!frame::mm::initrd().is_empty(), "no initrd");
+    let (free, _) = pmm::stats();
+    // hello: prints from two threads, exits with 0.
+    let pid = program::spawn_from_initrd("hello").expect("cannot start hello");
+    assert_eq!(task::wait_process(pid), Some(0));
+    // fault: reads address 0 -> page fault -> 128 + 14; the kernel goes on.
+    let pid = program::spawn_from_initrd("fault").expect("cannot start fault");
+    assert_eq!(task::wait_process(pid), Some(128 + 14));
+    // spin: 200 ms without yielding; main still gets to run.
+    let pid = program::spawn_from_initrd("spin").expect("cannot start spin");
+    task::yield_now();
+    for _ in 0..5 {
+        let start = time::ticks();
+        task::sleep_ms(10);
+        let took = time::ticks() - start;
+        assert!(took < 100, "main slept {took} ticks next to spin");
+    }
+    assert_eq!(task::wait_process(pid), Some(0));
+    // Every process's memory came back.
+    assert_eq!(task::stats().zombies, 0);
+    assert_eq!(pmm::stats().0, free, "program memory not freed");
 }

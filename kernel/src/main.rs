@@ -61,12 +61,26 @@ fn kernel_main(info: &'static BootInfo) -> ! {
 
     #[cfg(not(feature = "selftest"))]
     {
-        if let Err(e) = kernel::task::spawn("echo", echo_loop) {
-            panic!("kernel: cannot start the echo thread: {e:?}");
+        if let Err(e) = kernel::task::spawn("init", init) {
+            panic!("kernel: cannot start the init thread: {e:?}");
         }
         // The boot thread's work is done; the scheduler takes over.
         kernel::task::exit();
     }
+}
+
+/// The first kernel thread: runs `hello` from the initrd, waits for it,
+/// then becomes the echo loop.
+#[cfg(not(feature = "selftest"))]
+fn init() {
+    match kernel::program::spawn_from_initrd("hello") {
+        Ok(pid) => {
+            let code = kernel::task::wait_process(pid).unwrap_or(-1);
+            kprintln!("kernel: hello (process {pid}) exited with code {code}");
+        }
+        Err(e) => kprintln!("kernel: cannot start hello from the initrd: {e:?}"),
+    }
+    echo_loop();
 }
 
 /// Echoes what is typed and prints the uptime on Enter, sleeping between

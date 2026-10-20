@@ -1,0 +1,20 @@
+[package]
+name = "hello"
+description = "STELA test program: hello"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hello"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

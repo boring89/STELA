@@ -1,0 +1,19 @@
+[package]
+name = "libstela"
+description = "The STELA user-space runtime: program entry, system-call wrappers, debug output"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+abi = { path = "../../abi" }
+
+[lints]
+workspace = true

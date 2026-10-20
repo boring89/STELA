@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Input delivery: the `input-router` kernel thread takes the events the
-//! keyboard interrupt queued in `frame::input` and sends each one, as an
-//! `INPUT_KEY` message, to the port a program attached with `InputAttach`.
+//! keyboard and mouse interrupts queued in `frame::input` and sends each
+//! one, as an `INPUT_KEY` or `INPUT_MOUSE` message, to the port a program
+//! attached with `InputAttach` (or types keys into a tty).
 //!
 //! ```text
 //!  IRQ 1 ─► frame::input queue ─► notify hook: wake(input-router)
@@ -78,16 +79,22 @@ pub fn attach(target: Target) {
 
 fn route() {
     loop {
-        while let Some(InputEvent::Key(event)) = input::pop() {
+        while let Some(event) = input::pop() {
             let target = TARGET.lock().clone();
-            match target {
-                Some(Target::Port(port)) => deliver(port, &event.encode()),
-                Some(Target::Tty(tty)) => {
-                    if let Some(c) = abi::key::key_to_char(&event) {
+            match (event, target) {
+                (InputEvent::Key(key), Some(Target::Port(port))) => {
+                    deliver(port, tag::INPUT_KEY, &key.encode());
+                }
+                (InputEvent::Mouse(mouse), Some(Target::Port(port))) => {
+                    deliver(port, tag::INPUT_MOUSE, &mouse.encode());
+                }
+                (InputEvent::Key(key), Some(Target::Tty(tty))) => {
+                    if let Some(c) = abi::key::key_to_char(&key) {
                         tty.feed(c);
                     }
                 }
-                None => {}
+                // A terminal has no use for the mouse.
+                (InputEvent::Mouse(_), Some(Target::Tty(_))) | (_, None) => {}
             }
         }
         // An event pushed after the last pop leaves a pending wake-up, so
@@ -96,8 +103,8 @@ fn route() {
     }
 }
 
-fn deliver(port: Arc<Port>, key: &[u8]) {
-    let msg = Message::with_data(tag::INPUT_KEY, key);
+fn deliver(port: Arc<Port>, tag: u32, data: &[u8]) {
+    let msg = Message::with_data(tag, data);
     if port.send(QueuedMessage::plain(msg)) == Err(Error::PeerClosed) {
         let mut target = TARGET.lock();
         if matches!(&*target, Some(Target::Port(t)) if Arc::ptr_eq(t, &port)) {

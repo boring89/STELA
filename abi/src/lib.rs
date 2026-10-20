@@ -572,6 +572,9 @@ pub mod tag {
     /// From a shell to its parent (init): handle slot 0 is a `SEND` handle
     /// to the shell's main port, for keyboard input.
     pub const SHELL_READY: u32 = 4;
+    /// A mouse event (`key::MouseEvent::encode`, 8 bytes), from the kernel
+    /// to the port attached with `InputAttach`.
+    pub const INPUT_MOUSE: u32 = 5;
 }
 
 /// The exit code of a process ended by `ProcessKill`.

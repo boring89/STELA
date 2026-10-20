@@ -1,9 +1,10 @@
 // Copyright (C) 2026 YuanChi Hsieh
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The i8042 PS/2 controller, first port only (the keyboard), polled during
-//! set-up and interrupt driven afterwards (OSDev Wiki "8042 PS/2
-//! Controller", "Initialising the PS/2 Controller"; "PS/2 Keyboard").
+//! The i8042 PS/2 controller: the keyboard on the first port and the
+//! mouse on the second, polled during set-up and interrupt driven
+//! afterwards (OSDev Wiki "8042 PS/2 Controller", "Initialising the PS/2
+//! Controller"; "PS/2 Keyboard"; "PS/2 Mouse").
 //!
 //! ```text
 //! port  read            write
@@ -35,6 +36,10 @@ const FROM_PORT2: u8 = 1 << 5;
 const READ_CONFIG: u8 = 0x20;
 const WRITE_CONFIG: u8 = 0x60;
 const DISABLE_PORT2: u8 = 0xA7;
+const ENABLE_PORT2: u8 = 0xA8;
+const TEST_PORT2: u8 = 0xA9;
+/// The next data byte goes to the second port's device.
+const WRITE_PORT2: u8 = 0xD4;
 const SELF_TEST: u8 = 0xAA;
 const TEST_PORT1: u8 = 0xAB;
 const DISABLE_PORT1: u8 = 0xAD;
@@ -49,6 +54,11 @@ const CONFIG_TRANSLATE: u8 = 1 << 6;
 /// Keyboard command: enable scanning; the keyboard answers 0xFA (ACK).
 const KBD_ENABLE_SCANNING: u8 = 0xF4;
 const KBD_ACK: u8 = 0xFA;
+/// Mouse commands: set defaults (100 samples/s, 4 counts/mm, stream
+/// mode, reporting off), enable data reporting. Both are acknowledged
+/// with 0xFA.
+const MOUSE_SET_DEFAULTS: u8 = 0xF6;
+const MOUSE_ENABLE_REPORTING: u8 = 0xF4;
 
 /// Status polls before giving up (well over 10 ms on real hardware, where
 /// each port read takes about a microsecond).
@@ -151,18 +161,44 @@ pub(crate) fn init() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The next byte from the keyboard, if one is waiting. Bytes from the
-/// second port are discarded.
-pub(crate) fn read_keyboard_byte() -> Option<u8> {
-    loop {
-        let status = status();
-        if status & OUTPUT_FULL == 0 {
-            return None;
-        }
-        // SAFETY: a byte is waiting; reading port 0x60 takes it.
-        let byte = unsafe { inb(DATA) };
-        if status & FROM_PORT2 == 0 {
-            return Some(byte);
-        }
+/// Sends `byte` to the mouse and waits for its acknowledgement.
+fn mouse_command(byte: u8) -> Result<(), &'static str> {
+    command(WRITE_PORT2)?;
+    write_data(byte)?;
+    if read()? != KBD_ACK {
+        return Err("mouse did not acknowledge");
     }
+    Ok(())
+}
+
+/// Sets up the mouse on the second port, with its interrupt (IRQ 12) on.
+/// Call after [`init`], with interrupts disabled (the replies are polled).
+pub(crate) fn init_mouse() -> Result<(), &'static str> {
+    command(TEST_PORT2)?;
+    if read()? != 0x00 {
+        return Err("mouse port test failed");
+    }
+    command(ENABLE_PORT2)?;
+    flush();
+    mouse_command(MOUSE_SET_DEFAULTS)?;
+    mouse_command(MOUSE_ENABLE_REPORTING)?;
+    command(READ_CONFIG)?;
+    let mut config = read()?;
+    config |= CONFIG_IRQ12;
+    config &= !CONFIG_PORT2_OFF;
+    command(WRITE_CONFIG)?;
+    write_data(config)?;
+    Ok(())
+}
+
+/// The next byte, if one is waiting, and whether it came from the second
+/// port (the mouse).
+pub(crate) fn read_byte() -> Option<(u8, bool)> {
+    let status = status();
+    if status & OUTPUT_FULL == 0 {
+        return None;
+    }
+    // SAFETY: a byte is waiting; reading port 0x60 takes it.
+    let byte = unsafe { inb(DATA) };
+    Some((byte, status & FROM_PORT2 != 0))
 }

@@ -134,12 +134,12 @@ test-host: initrd host-images
 
 # The keyboard self test prints "input: waiting"; the script then types
 # "stela" and Enter through QMP send-key.
-SEND_KEYS := --send-keys "input: waiting" "s t e l a ret"
+SEND_KEYS := --send-keys "input: waiting" "s t e l a ret" --mouse "mouse: waiting" 40 30 left
 
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --log $(BUILD)/test-qemu.log \
 		--expect "STELA boot loader" --expect "time: RTC " \
-		--expect "STELA kernel" --expect "input: OK" \
+		--expect "STELA kernel" --expect "input: OK" --expect "mouse: OK" \
 		--expect "user: hello from built-in user code" --expect "hello from user mode" \
 		--expect "hello from a second thread" --expect "fault: reading address 0" \
 		--expect "spin: " --expect "ipc_client: OK" --expect "proctest: OK" \

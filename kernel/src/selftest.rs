@@ -44,6 +44,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("clock and sleep", clock_and_sleep),
         ("real-time clock", real_time_clock),
         ("keyboard", keyboard),
+        ("mouse", mouse),
         ("kernel threads", kernel_threads),
         ("thread reaping", thread_reaping),
         ("preemption", preemption),
@@ -443,6 +444,32 @@ fn keyboard(_: &'static BootInfo) {
     assert_eq!(text, TYPED);
     assert_eq!(input::dropped(), 0);
     kprintln!("input: OK");
+}
+
+fn mouse(_: &'static BootInfo) {
+    assert!(input::mouse_present(), "no PS/2 mouse");
+    let entry = irq::isa_entry(12).expect("IRQ 12 has no I/O APIC input");
+    assert_eq!(entry & 0x1_00FF, u32::from(irq::isa_vector(12)));
+    while input::pop().is_some() {}
+    // qemu_test.py moves the mouse right 40 and down 30 and clicks.
+    kprintln!("mouse: waiting");
+    let (mut x, mut y, mut clicked) = (0i32, 0i32, false);
+    let deadline = time::ticks() + 5 * time::TICK_HZ;
+    while !(x >= 40 && y >= 30 && clicked) {
+        let Some(InputEvent::Mouse(event)) = input::pop() else {
+            assert!(
+                time::ticks() < deadline,
+                "no mouse within 5 s (so far {x},{y}, clicked {clicked})"
+            );
+            frame::halt_until_interrupt();
+            continue;
+        };
+        x += i32::from(event.dx);
+        y += i32::from(event.dy);
+        clicked |= event.buttons & abi::key::button::LEFT != 0;
+    }
+    kprintln!("selftest:   mouse moved {x},{y}, left button");
+    kprintln!("mouse: OK");
 }
 
 fn timer_tick(_: &'static BootInfo) {

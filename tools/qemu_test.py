@@ -4,7 +4,8 @@
 """Boot STELA in QEMU and check its serial output.
 
 Usage: qemu_test.py [--timeout S] [--exit-code N] [--screendump FILE]
-                    [--send-keys TRIGGER KEYS] [--log FILE]
+                    [--send-keys TRIGGER KEYS] [--type TRIGGER TEXT]
+                    [--mouse TRIGGER DX DY BUTTON] [--log FILE]
                     --expect TEXT [--expect TEXT ...] -- <qemu command>
 
 The expected strings must appear on the serial console in the given order.
@@ -23,6 +24,10 @@ typed one after another with the QMP command send-key. The keyboard self
 test uses this. --type TRIGGER TEXT does the same with plain text ("\n" is
 Enter). Both may be given several times: each fires once, in the order
 given, when its trigger appears after the previous one fired.
+
+--mouse TRIGGER DX DY BUTTON moves the mouse by (DX, DY) and clicks BUTTON
+(left, right, middle or none) through QMP input-send-event when TRIGGER
+appears; mouse actions fire after all --send-keys and --type entries.
 """
 import argparse
 import json
@@ -149,6 +154,24 @@ def send_keys(path, keys, deadline):
         qmp.close()
 
 
+def mouse(path, dx, dy, button, deadline):
+    """Moves the mouse by (dx, dy) and clicks `button` ("left", "right",
+    "middle" or "none") with QMP input-send-event."""
+    qmp = Qmp(path, deadline)
+    try:
+        qmp.execute("input-send-event", {"events": [
+            {"type": "rel", "data": {"axis": "x", "value": dx}},
+            {"type": "rel", "data": {"axis": "y", "value": dy}}]})
+        time.sleep(0.1)
+        if button != "none":
+            for down in (True, False):
+                qmp.execute("input-send-event", {"events": [
+                    {"type": "btn", "data": {"down": down, "button": button}}]})
+                time.sleep(0.1)
+    finally:
+        qmp.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--timeout", type=float, default=60.0)
@@ -158,6 +181,8 @@ def main():
                     metavar=("TRIGGER", "KEYS"))
     ap.add_argument("--type", nargs=2, action="append", default=[],
                     metavar=("TRIGGER", "TEXT"))
+    ap.add_argument("--mouse", nargs=4, action="append", default=[],
+                    metavar=("TRIGGER", "DX", "DY", "BUTTON"))
     ap.add_argument("--expect", action="append", required=True)
     ap.add_argument("--log", help="also write the serial output to this file")
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
@@ -178,6 +203,8 @@ def main():
     # (trigger, keys) in firing order: --send-keys first, then --type.
     typing = [(t, k.split()) for t, k in args.send_keys]
     typing += [(t, text_to_keys(x)) for t, x in args.type]
+    # Mouse actions are typed entries too: ("mouse", dx, dy, button).
+    typing += [(t, ("mouse", int(dx), int(dy), b)) for t, dx, dy, b in args.mouse]
     if typing:
         qmp = os.path.abspath(os.path.join("build", f"qmp-{os.getpid()}.sock"))
         if os.path.exists(qmp):
@@ -195,7 +222,11 @@ def main():
         for text in serial_lines(proc, deadline, state):
             log.append(text)
             if qmp and typing and typing[0][0] in text:
-                send_keys(qmp, typing.pop(0)[1], deadline)
+                action = typing.pop(0)[1]
+                if isinstance(action, tuple):
+                    mouse(qmp, action[1], action[2], action[3], deadline)
+                else:
+                    send_keys(qmp, action, deadline)
             if pending and pending[0] in text:
                 pending.pop(0)
             if not pending and args.exit_code is None:

@@ -457,3 +457,81 @@ mod tests {
         assert_eq!(key_to_char(&release), None);
     }
 }
+
+/// Size of an encoded [`MouseEvent`].
+pub const MOUSE_EVENT_SIZE: usize = 8;
+
+/// Mouse buttons in [`MouseEvent::buttons`].
+pub mod button {
+    /// The left (primary) button.
+    pub const LEFT: u8 = 1 << 0;
+    /// The right button.
+    pub const RIGHT: u8 = 1 << 1;
+    /// The middle button (or wheel press).
+    pub const MIDDLE: u8 = 1 << 2;
+}
+
+/// A mouse moved or a button changed: relative motion in screen
+/// directions (positive `dy` is down), the buttons held after it, and
+/// wheel clicks (positive = away from the user).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MouseEvent {
+    /// Horizontal motion (right is positive).
+    pub dx: i16,
+    /// Vertical motion (down is positive).
+    pub dy: i16,
+    /// `button::*` bits held now.
+    pub buttons: u8,
+    /// Wheel motion.
+    pub wheel: i8,
+}
+
+impl MouseEvent {
+    /// The event as message data: dx, dy (i16 LE), buttons, wheel, two
+    /// zero bytes.
+    pub fn encode(&self) -> [u8; MOUSE_EVENT_SIZE] {
+        let dx = self.dx.to_le_bytes();
+        let dy = self.dy.to_le_bytes();
+        [
+            dx[0],
+            dx[1],
+            dy[0],
+            dy[1],
+            self.buttons,
+            self.wheel as u8,
+            0,
+            0,
+        ]
+    }
+
+    /// Decodes the first [`MOUSE_EVENT_SIZE`] bytes of `bytes`.
+    pub fn decode(bytes: &[u8]) -> Option<MouseEvent> {
+        let b = bytes.get(..MOUSE_EVENT_SIZE)?;
+        Some(MouseEvent {
+            dx: i16::from_le_bytes([b[0], b[1]]),
+            dy: i16::from_le_bytes([b[2], b[3]]),
+            buttons: b[4],
+            wheel: b[5] as i8,
+        })
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::*;
+
+    #[test]
+    fn mouse_event_round_trip() {
+        let e = MouseEvent {
+            dx: -300,
+            dy: 7,
+            buttons: button::LEFT | button::MIDDLE,
+            wheel: -1,
+        };
+        let b = e.encode();
+        assert_eq!(b, [0xD4, 0xFE, 7, 0, 5, 0xFF, 0, 0]);
+        assert_eq!(MouseEvent::decode(&b), Some(e));
+        assert_eq!(MouseEvent::decode(&b[..7]), None);
+        assert_eq!((button::LEFT, button::RIGHT, button::MIDDLE), (1, 2, 4));
+    }
+}

@@ -16,3 +16,4 @@ pub mod ahci;
 pub mod nvme;
 pub mod pci;
 pub mod sync;
+pub mod usb;

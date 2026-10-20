@@ -1,6 +1,6 @@
 [package]
 name = "drivers"
-description = "STELA device drivers in safe Rust: PCI, AHCI, NVMe"
+description = "STELA device drivers in safe Rust: PCI, AHCI, NVMe, xHCI USB"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,7 @@ bench = false
 doctest = false
 
 [dependencies]
+abi = { path = "../abi" }
 block = { path = "../block" }
 frame = { path = "../frame" }
 

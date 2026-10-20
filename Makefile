@@ -1,6 +1,7 @@
 # STELA build driver: a thin wrapper around cargo and QEMU.
 
 BUILD       := build
+comma       := ,
 ESP         := $(BUILD)/esp
 ESP_TEST    := $(BUILD)/esp-test
 UEFI_TARGET := x86_64-unknown-uefi
@@ -55,7 +56,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests esp esp-test run test test-host test-qemu test-qemu-min test-window \
-	host-images test-images test-storage test-shell test-shutdown test-linux ehfs-tools test-ehfs-compat clippy fmt clean
+	host-images test-images test-storage test-shell test-shutdown test-linux test-usb ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -122,7 +123,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux
+test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux test-usb
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -247,6 +248,30 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-linux.img \
 		-device ide-hd,drive=sata1,bus=ide.1
+
+# USB: the normal kernel without PS/2 (i8042=off) and with an xHCI
+# controller: a keyboard, a mouse and a hub with a keyboard behind it.
+# Once the hub's keyboard is enumerated, a command typed (QMP send-key
+# goes to a USB keyboard) must reach the shell in the terminal; mouse
+# motion sent to the mouse must arrive as reports; then hot plugging: the
+# mouse and the hub's keyboard are removed and added back (on another hub
+# port).
+USB_FLAGS := -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0,id=kbd \
+	-device usb-mouse,bus=xhci.0,id=mouse -device usb-hub,bus=xhci.0,id=hub \
+	-device usb-kbd,bus=xhci.0,port=3.1,id=kbd2
+test-usb: esp $(BUILD)/OVMF_VARS.fd
+	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-usb.log \
+		--type "usb: 7: hub" "uptime\n" \
+		--qmp "uptime:" input-send-event '{"events":[{"type":"rel","data":{"axis":"x","value":30}}]}' \
+		--qmp "usb: 6: first report" device_del '{"id":"mouse"}' \
+		--qmp "usb: 6: removed" device_add '{"driver":"usb-mouse","bus":"xhci.0","id":"mouse2"}' \
+		--qmp "usb: 8: mouse" device_del '{"id":"kbd2"}' \
+		--qmp "usb: 7.1: removed" device_add '{"driver":"usb-kbd","bus":"xhci.0","port":"3.2","id":"kbd3"}' \
+		--expect "usb: xhci0" --expect "usb: 7: hub" --expect "uptime:" \
+		--expect "usb: 6: first report" --expect "usb: 6: removed" --expect "usb: 8: mouse" \
+		--expect "usb: 7.1: removed" --expect "usb: 7.2: keyboard" \
+		-- $(QEMU) $(subst -machine q35,-machine q35$(comma)i8042=off,$(QEMU_FLAGS)) \
+		-display none -serial stdio $(USB_FLAGS)
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.
 EHFS_TOOLS  := $(BUILD)/host/ehfs

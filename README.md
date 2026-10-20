@@ -11,7 +11,7 @@ whose experience it reuses and whose code it does not.
 
 ## Status
 
-Early (phase P7 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+Early (phase P8 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -36,13 +36,18 @@ faulting program is killed and the system goes on. The date comes from the CMOS 
 clock; `shutdown` unmounts the volumes and turns the machine off through ACPI (FADT and the
 DSDT's `\_S5`). Static x86-64 Linux programs (musl) run with a Linux personality: Linux
 system calls are translated onto STELA's objects (descriptors, a synthetic root over the volumes
-with `/tmp` and `/dev`, ttys with a line discipline, brk and anonymous mmap, TLS). Only the boot processor runs. See
+with `/tmp` and `/dev`, ttys with a line discipline, brk and anonymous mmap, TLS). `make run`
+boots into a desktop: a window server in user space (dirty-rectangle compositing on the
+write-combining framebuffer, menu bar, window frames, pointer, focus) with a terminal window
+running the shell, and a small UI toolbox (drawing, windows, events, menus, controls). Input
+comes from PS/2 and from USB (xHCI, hubs, HID boot keyboards and mice, hot plugging). Only the boot processor runs. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
 [docs/ipc.md](docs/ipc.md), [docs/pci.md](docs/pci.md), [docs/storage.md](docs/storage.md),
 [docs/ehfs.md](docs/ehfs.md), [docs/vfs.md](docs/vfs.md), [docs/userland.md](docs/userland.md),
-[docs/acpi.md](docs/acpi.md) and [docs/linux.md](docs/linux.md).
+[docs/acpi.md](docs/acpi.md), [docs/linux.md](docs/linux.md), [docs/display.md](docs/display.md),
+[docs/window.md](docs/window.md), [docs/toolbox.md](docs/toolbox.md) and [docs/usb.md](docs/usb.md).
 
 ## Building
 
@@ -53,7 +58,7 @@ programs; the musl tarball is copied, not downloaded: see [third_party/README.md
 
 ```bash
 make        # build the loader, the kernel, the user programs and the initrd into build/esp/
-make run    # boot it in QEMU with OVMF into the shell, serial on stdio
+make run    # boot it in QEMU with OVMF into the desktop (a terminal with the shell), serial on stdio
 make test   # host unit tests + QEMU self tests (keys typed via QMP) + a screen check + disk tests
 make ehfs-tools  # mkfs.ehfs, fsck.ehfs, ehfs-cp, ehfs-ls for image files, in build/host/ehfs/
 ```

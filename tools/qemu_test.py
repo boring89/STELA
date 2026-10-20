@@ -27,7 +27,9 @@ given, when its trigger appears after the previous one fired.
 
 --mouse TRIGGER DX DY BUTTON moves the mouse by (DX, DY) and clicks BUTTON
 (left, right, middle or none) through QMP input-send-event when TRIGGER
-appears; mouse actions fire after all --send-keys and --type entries.
+appears; --qmp TRIGGER COMMAND JSON runs any QMP command (device_add,
+device_del, input-send-event with a device...). The order of firing is
+--send-keys, --type, --mouse, --qmp, each in the order given.
 """
 import argparse
 import json
@@ -172,6 +174,15 @@ def mouse(path, dx, dy, button, deadline):
         qmp.close()
 
 
+def command(path, name, arguments, deadline):
+    """Runs one QMP command (device_add, device_del, input-send-event...)."""
+    qmp = Qmp(path, deadline)
+    try:
+        qmp.execute(name, arguments)
+    finally:
+        qmp.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--timeout", type=float, default=60.0)
@@ -183,6 +194,8 @@ def main():
                     metavar=("TRIGGER", "TEXT"))
     ap.add_argument("--mouse", nargs=4, action="append", default=[],
                     metavar=("TRIGGER", "DX", "DY", "BUTTON"))
+    ap.add_argument("--qmp", nargs=3, action="append", default=[],
+                    metavar=("TRIGGER", "COMMAND", "JSON"))
     ap.add_argument("--expect", action="append", required=True)
     ap.add_argument("--log", help="also write the serial output to this file")
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
@@ -205,6 +218,8 @@ def main():
     typing += [(t, text_to_keys(x)) for t, x in args.type]
     # Mouse actions are typed entries too: ("mouse", dx, dy, button).
     typing += [(t, ("mouse", int(dx), int(dy), b)) for t, dx, dy, b in args.mouse]
+    # So are raw QMP commands: ("qmp", command, arguments).
+    typing += [(t, ("qmp", c, json.loads(j))) for t, c, j in args.qmp]
     if typing:
         qmp = os.path.abspath(os.path.join("build", f"qmp-{os.getpid()}.sock"))
         if os.path.exists(qmp):
@@ -223,7 +238,9 @@ def main():
             log.append(text)
             if qmp and typing and typing[0][0] in text:
                 action = typing.pop(0)[1]
-                if isinstance(action, tuple):
+                if isinstance(action, tuple) and action[0] == "qmp":
+                    command(qmp, action[1], action[2], deadline)
+                elif isinstance(action, tuple):
                     mouse(qmp, action[1], action[2], action[3], deadline)
                 else:
                     send_keys(qmp, action, deadline)
@@ -239,6 +256,9 @@ def main():
                     pass
         if not pending and monitor:
             screendump(monitor, os.path.abspath(args.screendump), deadline)
+    except (OSError, RuntimeError) as e:
+        log.append(f"qemu_test: QMP failed: {e!r}")
+        pending = pending or ["(QMP failure)"]
     finally:
         if monitor and os.path.exists(monitor):
             os.unlink(monitor)

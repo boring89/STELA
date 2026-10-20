@@ -138,6 +138,10 @@ N = 4，push 1 2 3 4 5：
 
 P2–P3 時 kernel 的 `init` 執行緒每 4 ms 輪詢佇列並 echo。P4 起：`frame::input::push` 之後呼叫 kernel 註冊的 notify hook（中斷裡，只叫醒 `input-router` 執行緒）；router 把事件編成 4 bytes 的 `INPUT_KEY` 訊息送到 `InputAttach` 的 port；使用者程式 `user/echo` 收到後 `key_to_char`、印字（控制字元印成 `^X`），Enter 印 `uptime: 0.307 s`。細節見 `docs/ipc.md` §8。selftest 不啟動 router（"keyboard" 測試直接 `pop`）。
 
+### 7.1 P8：PS/2 滑鼠與 USB
+
+P8 加了 i8042 的第二個 port（滑鼠：測試 port 2、啟用、`0xD4` 轉送 `0xF6` 預設值與 `0xF4` 開始回報、config 的 IRQ 12 位元；兩個 IRQ 共用 `drain()`，依狀態暫存器 bit 5 分給鍵盤或滑鼠的解碼器；`frame/src/input/mouse.rs` 解 3 bytes 的封包）與 USB HID（`docs/usb.md`）。滑鼠事件是 `InputEvent::Mouse`（`abi::key::MouseEvent`，8 bytes，`INPUT_MOUSE` 訊息）；USB 鍵盤產生和 PS/2 一樣的 `KeyEvent`。桌面模式下事件給視窗伺服器（`docs/window.md`）。
+
 ## 8. 測試
 
 | 測試 | 內容 |
@@ -145,13 +149,14 @@ P2–P3 時 kernel 的 `init` 執行緒每 4 ms 輪詢佇列並 echo。P4 起：
 | host `input::keyboard` | make/break、"stela\n"、Shift／右 Shift／Caps Lock、Ctrl 字母、E0 鍵、PrintScreen 與 Pause、回覆位元組、Enter/Tab/Backspace/Escape |
 | host `input::queue` | FIFO、滿了丟最舊、與 `VecDeque` 模型比對 1000 輪 |
 | selftest "keyboard" | IRQ 1 的 I/O APIC 項目 = 向量 33 且沒遮蔽；印 `input: waiting`；5 秒內收到 `stela\n`、沒有丟事件；印 `key: S 's'` … `input: OK` |
-| `make test-fb` | 一般 kernel：P6 起看到 `STELA shell` 後打 `uptime`（`qemu_test.py --type`），等 `uptime:` 再 screendump；`make test-shell` 打一整串 shell 指令 |
+| selftest "mouse"（P8） | IRQ 12 的項目；印 `mouse: waiting`；`qemu_test.py --mouse` 移動 (40, 30) 並按左鍵；印 `mouse: OK` |
+| `make test-window`（P8 起，原 `test-fb`） | 桌面：terminal 裡打 `uptime` 等，見 `docs/window.md` §9；`make test-shell` 打一整串 shell 指令 |
 
 `tools/qemu_test.py --send-keys TRIGGER KEYS`：在 QEMU 命令加上 `-qmp unix:build/qmp-<pid>.sock,server=on,wait=off`；serial 出現 TRIGGER 那一行時，連上 QMP（QEMU Machine Protocol，JSON）、送 `qmp_capabilities`，再對每個鍵送 `send-key`（QKeyCode 名稱，例如 `s`、`ret`；按住 50 ms、間隔 150 ms）。腳本讀 serial 改用 `select` 加逾時，guest 卡住不印字時也會在時限內失敗。
 
 ## 9. 已知限制與待辦
 
-- 很多新電腦（尤其筆電、沒有 legacy 支援的 UEFI 機器）沒有 i8042，或只靠 SMM 模擬：那時 `i8042: no PS/2 keyboard`，要等 P8 的 USB HID。ACPI FADT 的 `IAPC_BOOT_ARCH` bit 1（有沒有 8042）沒有檢查。
-- 只有 US 配置；沒有數字鍵台、LED、按住重複、滑鼠（port 2 關閉）。
+- 很多新電腦（尤其筆電、沒有 legacy 支援的 UEFI 機器）沒有 i8042，或只靠 SMM 模擬：那時 `i8042: no PS/2 keyboard`，靠 P8 的 USB HID（`docs/usb.md`）。ACPI FADT 的 `IAPC_BOOT_ARCH` bit 1（有沒有 8042）只在重新開機時用到（`docs/acpi.md`）。
+- 只有 US 配置；沒有數字鍵台、LED、按住重複；PS/2 滑鼠沒有滾輪（IntelliMouse 的 4 bytes 模式沒開）。
 - 沒有重設鍵盤（0xFF）；假設韌體留下的狀態是正常的。
 - 一次只有一個 `InputAttach` 的接收者；之後由 shell（P6）、視窗伺服器（P8）決定前景。

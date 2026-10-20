@@ -53,7 +53,8 @@ frame/src/
   console/
     font.rs           Spleen 字型（純邏輯，host 測試）
     text.rs           文字格線與捲動（純邏輯，host 測試）
-    fb.rs             framebuffer canvas、主控台、panic 畫面
+    fb.rs             framebuffer canvas、主控台、開機與 panic 畫面、交給視窗伺服器（P8、P9）
+    art.rs            石碑與裂碑的圖（assets/generated，P9）
     mod.rs            kprint!／kprintln!
 ```
 
@@ -249,7 +250,7 @@ kprintln!  ──►  serial（無鎖）
 
 ### 10.3 Panic 畫面
 
-`report_panic`：先直接寫 serial（不經主控台的鎖），再畫 panic 畫面——另建一個 canvas（不拿主控台的鎖），清成深紅 #5C1A14，置中畫「S T E L A」「kernel panic」，訊息與位置以左對齊的方塊置中；之後停用主控台以免被覆蓋。訊息先格式化進 4 KiB 的堆疊緩衝區（不碰 heap，因為 heap 的鎖可能正被持有）。裂開的石碑圖之後由使用者設計。
+`report_panic`：先直接寫 serial（不經主控台的鎖），再畫 panic 畫面——另建一個 canvas（不拿主控台的鎖），清成深紅 #5C1A14，置中畫「S T E L A」「kernel panic」，訊息與位置以左對齊的方塊置中；之後停用主控台以免被覆蓋。訊息先格式化進 4 KiB 的堆疊緩衝區（不碰 heap，因為 heap 的鎖可能正被持有）。P9 起畫面中央多了裂開的石碑（`console/art.rs`，**草稿**，`docs/identity.md`），開機時也有石碑的開機畫面；畫完在 serial 印 `(the panic screen is up)`。
 
 ## 11. 測試
 

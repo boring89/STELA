@@ -40,6 +40,8 @@ frame/src/arch/x86_64/i8042.rs 第二個 port（滑鼠，IRQ 12）
 
 selftest 版的 kernel 不跑 init，所以 `make test-qemu` 仍是文字模式。
 
+P9 起 init 啟動的是 `windowserver mouseion`：Mouseion 畫桌面（`DESKTOP` 視窗）並打開 `Initrd:/Terminal.app`（terminal 包成 bundle），流程的其餘部分不變（`docs/mouseion.md` §2）。
+
 ## 3. 協定（`abi::window`，經 port 的訊息）
 
 client 的 `[2]` 是伺服器主 port 的 `SEND`。回覆與事件送到 client 的**主 port**（`CONNECT` 夾帶它的 `SEND`）。每個請求的第一個 word 是 `CONNECTED` 給的 client id。數字一律 little endian；座標是 i32 螢幕像素；視窗位置指**內容區**的左上角（框與標題列由伺服器畫在外面）；像素是 u32 `0x00RRGGBB`。

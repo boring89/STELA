@@ -15,7 +15,7 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 - **開機**：自己的 UEFI loader（`boot/`，`uefi` crate），不用 Limine／GRUB。
 - **使用者程式**：STELA 自己的 syscall ABI 是主要介面；Linux 等其他系統的相容是相容層，與 Classic 環境同級。
 - **Classic 環境**：縮減版 68k_HAL（Musashi 直譯 + Mac 機器模型）跑在使用者空間行程，呈現方式類似 Windows 7 的 XP Mode；執行使用者自己的 ROM 與 System，是可選功能。
-- **識別**：標誌是一塊石碑（stela），panic 畫面是裂開的石碑，檔案管理員叫 Mouseion，主題是古希臘；有畫面之後再做。
+- **識別**：標誌是一塊石碑（stela），panic 畫面是裂開的石碑，檔案管理員叫 Mouseion，主題是古希臘；P9 做了機制與**草稿**圖示（`assets/`、`docs/identity.md`），正式的圖由使用者畫。
 
 ## 建置與執行
 
@@ -23,11 +23,13 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 make            # 建置 loader、kernel、使用者程式與 initrd → build/esp/（EFI/BOOT/BOOTX64.EFI、STELA/kernel.elf、STELA/initrd.tar）
 make musl       # 複製 68k_HAL 已下載的 musl-1.2.5.tar.gz、檢查 SHA-256、建在 build/musl/（MIT；只用來建 Linux 測試程式）
 make linux-tests # linux/tests/*.c → build/user/linux/（musl-gcc -static），打包進 initrd 的 linux/
-make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo、fstest、proctest、init、shell、windowserver、terminal、echo_win）→ build/user/
-make initrd     # 把 build/user/（含 linux/）打包成 build/initrd.tar（GNU tar --format=ustar）
+make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo、fstest、proctest、init、shell、windowserver、terminal、echo_win、mouseion、viewer）→ build/user/
+make initrd     # 把 build/user/ 排成 build/initrd-root/（linux/、Terminal.app 等 bundle）再打包成 build/initrd.tar（GNU tar --format=ustar）
 make run        # QEMU + OVMF 開機（一般 kernel：init → shell，提示符 Initrd:/> ），serial 輸出到 stdio
-make test       # host 單元測試 + QEMU selftest + 最低硬體 selftest + 桌面測試 + 儲存測試 + shell 測試 + 關機測試 + Linux 測試 + USB 測試，修改後必須通過
+make test       # host 單元測試 + QEMU selftest + 最低硬體 selftest + 桌面、儲存、shell、關機、Linux、USB、panic 畫面、Mouseion 測試，修改後必須通過
 make ehfs-tools # host 的 mkfs.ehfs、fsck.ehfs、ehfs-cp、ehfs-ls → build/host/ehfs/
+make assets     # assets/*.ppm、*.pbm → assets/generated/（Rust 資料；換圖後執行）
+make draft-assets # 重畫草稿圖示（會覆蓋 assets/；使用者的圖放進去之後不要跑）
 make test-ehfs-compat  # 本機專用：與 68k_HAL 的 eHFS 工具交叉檢查（不在 make test／CI）
 make clippy     # cargo clippy（loader、kernel 端 crate 含 selftest feature、使用者程式、host 測試），警告視為錯誤
 make fmt        # cargo fmt
@@ -37,7 +39,7 @@ make clean
 - 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）、`mtools`、`gdisk`（測試映像）、`gcc`（建 musl 與 Linux 測試程式）。musl 的 tarball 不下載：預設從 `~/文件/68k_HAL/third_party/downloads/musl/` 複製（`MUSL_TARBALL=` 可改），CI 從 musl.libc.org 抓一次並快取（`third_party/README.md`）。
 - cargo 的輸出在 `build/target/`（`.cargo/config.toml`）。
 - CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `cargo fmt --check`、`make clippy` 與 `make test`。
-- `make test` 的組成：`test-host`（依賴 `make initrd` 與 `host-images`（mtools／sgdisk 做的 FAT、GPT 映像）；`HOST_CRATES` = abi、block、bootinfo、drivers、ehfs、ehfs-tools、elfload、frame、libstela、toolbox 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel、windowserver、terminal 的 `cargo test --lib`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter、印 `mouse: waiting` 時 `--mouse` 經 `input-send-event` 移動 PS/2 滑鼠並按左鍵，依序檢查 `input: OK`、`mouse: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`proctest: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP；也接 AHCI 測試磁碟跑 fstest）、`test-window`（一般 kernel 開機進桌面：視窗伺服器 + terminal + shell；經 QMP 打 `uptime`、`run echo_win`、在 echo_win 打一行，screendump 後 `tools/fb_check.py --expect-rect/--expect-text` 檢查桌面、選單列、兩個視窗的標題列與文字）、`test-storage`（`make test-images` 在 `build/images/` 造 AHCI（GPT：FAT ESP + eHFS Data）與 NVMe（4Kn，eHFS Archive）兩顆磁碟，selftest 開機兩次檢查持久性與 fstest，最後 host 的 `fsck.ehfs` 檢查）、`test-shell`（一般 kernel + AHCI 測試磁碟，`qemu_test.py --type` 依序打 shell 指令並檢查輸出）、`test-shutdown`（一般 kernel + AHCI 測試磁碟：shell 打 `shutdown`，QEMU 自己結束（status 0），host 的 fsck 確認正常卸載；再開機打 `reboot`）、`test-linux`（一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打一行字）並檢查輸出與 exit code）、`test-usb`（一般 kernel、`-machine q35,i8042=off`、`qemu-xhci` + usb-kbd + usb-mouse + usb-hub（後面一個 usb-kbd）：USB 鍵盤打字到 shell、滑鼠報告、`qemu_test.py --qmp` 的 `device_del`／`device_add` 熱插拔 root port 與 hub port）。shell、Linux、關機與 USB 測試都經過桌面（terminal 把 shell 的輸出鏡像到 serial）。`qemu_test.py --log FILE` 把 serial 輸出存檔（`make test-qemu` 寫 `build/test-qemu.log`）。`make run` 永遠跑沒有 selftest 的 kernel（init 啟動視窗伺服器與 terminal，terminal 裡是 shell；`help` 列出指令，`run echo_win` 開一個視窗；shell 的輸出也鏡像到 serial）。
+- `make test` 的組成：`test-host`（依賴 `make initrd` 與 `host-images`（mtools／sgdisk 做的 FAT、GPT 映像）；`HOST_CRATES` = abi、block、bootinfo、drivers、ehfs、ehfs-tools、elfload、frame、libstela、toolbox 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel、windowserver、terminal、mouseion、viewer 的 `cargo test --lib`；另外檢查 `assets/generated/` 與圖檔一致）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter、印 `mouse: waiting` 時 `--mouse` 經 `input-send-event` 移動 PS/2 滑鼠並按左鍵，依序檢查 `input: OK`、`mouse: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`proctest: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP；也接 AHCI 測試磁碟跑 fstest）、`test-window`（一般 kernel 開機進桌面：視窗伺服器 + terminal + shell；經 QMP 打 `uptime`、`run echo_win`、在 echo_win 打一行，screendump 後 `tools/fb_check.py --expect-rect/--expect-text` 檢查桌面、選單列、兩個視窗的標題列與文字）、`test-storage`（`make test-images` 在 `build/images/` 造 AHCI（GPT：FAT ESP + eHFS Data）與 NVMe（4Kn，eHFS Archive）兩顆磁碟，selftest 開機兩次檢查持久性與 fstest，最後 host 的 `fsck.ehfs` 檢查）、`test-shell`（一般 kernel + AHCI 測試磁碟，`qemu_test.py --type` 依序打 shell 指令並檢查輸出）、`test-shutdown`（一般 kernel + AHCI 測試磁碟：shell 打 `shutdown`，QEMU 自己結束（status 0），host 的 fsck 確認正常卸載；再開機打 `reboot`）、`test-linux`（一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打一行字）並檢查輸出與 exit code）、`test-panic`（selftest kernel + 多一個 `panic-test` 檔的 initrd：故意 panic，截圖檢查裂碑的 panic 畫面）、`test-mouseion`（一般 kernel + 乾淨的 AHCI 測試磁碟：`qemu_test.py --click` 雙擊 Data、welcome.txt（viewer）、Initrd、Terminal.app，截圖檢查卷宗圖示與新視窗）、`test-usb`（一般 kernel、`-machine q35,i8042=off`、`qemu-xhci` + usb-kbd + usb-mouse + usb-hub（後面一個 usb-kbd）：USB 鍵盤打字到 shell、滑鼠報告、`qemu_test.py --qmp` 的 `device_del`／`device_add` 熱插拔 root port 與 hub port）。shell、Linux、關機與 USB 測試都經過桌面（terminal 把 shell 的輸出鏡像到 serial）。`qemu_test.py --log FILE` 把 serial 輸出存檔（`make test-qemu` 寫 `build/test-qemu.log`）。`make run` 永遠跑沒有 selftest 的 kernel（開機畫面的石碑 → init 啟動視窗伺服器與 Mouseion，Mouseion 打開一個 terminal，裡面是 shell；`help` 列出指令，`run Echo.app` 開一個視窗；shell 的輸出也鏡像到 serial）。
 - QEMU 的 TCG 不支援 invariant TSC，`make test` 只測得到 tick 退路；TSC 路徑要在本機用 `-enable-kvm -cpu host,+invtsc` 手動驗證（`docs/time.md` §5.3）。
 
 ### 測試
@@ -88,13 +90,16 @@ user/          使用者程式（x86_64-unknown-none，user.ld 連結在 0x40_00
   windowserver/     視窗伺服器：compose.rs（純邏輯，host 測試）、server.rs（docs/window.md）
   toolbox/          UI 工具箱 lib：draw、window、event、menu、control（docs/toolbox.md）
   terminal/         視窗版的終端機：grid.rs（純邏輯，host 測試）、tty master、shell（docs/window.md §7）
-  echo_win/         工具箱的範例
-  init/ shell/      開機後的 init（有 framebuffer 就跑 windowserver terminal）與 shell（docs/userland.md）
+  echo_win/         工具箱的範例（Echo.app）
+  mouseion/         空間式檔案管理員：model.rs（純邏輯，host 測試）、桌面、資料夾視窗、拖放（docs/mouseion.md）
+  viewer/           Viewer.app：唯讀的文字檢視
+  init/ shell/      開機後的 init（有 framebuffer 就跑 windowserver mouseion）與 shell（docs/userland.md）
 linux/tests/   Linux 人格的測試程式（C，musl 靜態連結）（docs/linux.md）
 drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）：PCI、AHCI、NVMe、USB（usb/：描述子、HID、TRB 純邏輯 host 測試；xhci.rs）、sync（排程 hooks、SleepLock、SleepMutex）（docs/pci.md、docs/storage.md、docs/usb.md）
 third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause；README.md：清單與 musl 的 SHA-256）
 docs/          設計文件（每個元件完成後寫 docs/<元件>.md）
-tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、font_to_rs.py、make_test_images.py、make_test_disk.py、gen_casefold.py、ehfs_compat.py）
+assets/        圖示（PPM／PBM，**草稿**）與產生的 Rust 資料（generated/）（docs/identity.md）
+tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、font_to_rs.py、make_test_images.py、make_test_disk.py、gen_casefold.py、ehfs_compat.py、make_draft_assets.py、img_to_rs.py）
   ehfs/             host 工具 crate：mkfs.ehfs、fsck.ehfs、ehfs-cp、ehfs-ls
 ```
 
@@ -166,6 +171,7 @@ Claude 依照上方工作規則直接實作。
 - P6.5（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：RTC 與關機（`docs/time.md` §5.5、`docs/acpi.md`）
 - P7（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：Linux 相容層（`docs/linux.md`）
 - P8（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：USB、顯示、視窗伺服器、工具箱（`docs/usb.md`、`docs/display.md`、`docs/window.md`、`docs/toolbox.md`）
+- P9（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：Mouseion 與識別（`docs/mouseion.md`、`docs/identity.md`）
 
 ## 已知問題（尚未修正）
 
@@ -181,6 +187,7 @@ Claude 依照上方工作規則直接實作。
 - 位址空間只有 4 KiB 頁、沒有需求分頁／mmap；kernel 半部不能新增 PML4 項目（行程的 PML4 是建立時複製的）；使用者 FPU 只有 FXSAVE（無 XSAVE/AVX）；沒有 SMAP（kernel 不直接解參考使用者指標）。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。
 - 使用者空間：沒有 Thread 物件；shell 沒有管線、重新導向、背景工作、歷史；heap 不還記憶體（docs/userland.md §9）。
+- Mouseion：拖曳沒有影子、不能多選、沒有刪除與改名、資料夾圖示位置不存、開機不重開上次的視窗；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
 - 視窗：client 以 id 辨識（可冒用）、沒有 port set；拖外框不即時移動；選單一層；client 結束最多 1 秒後才被發現；terminal 沒有 ANSI 顏色與捲回（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。
 - 儲存：一次一個請求（AHCI 一個 slot、NVMe 每次一個 4 KiB 區塊）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；`DirRead` 每次重新列出（O(n²)）；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。

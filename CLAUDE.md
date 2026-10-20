@@ -23,7 +23,8 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 make            # 建置 loader、kernel、使用者程式與 initrd → build/esp/（EFI/BOOT/BOOTX64.EFI、STELA/kernel.elf、STELA/initrd.tar）
 make musl       # 複製 68k_HAL 已下載的 musl-1.2.5.tar.gz、檢查 SHA-256、建在 build/musl/（MIT；只用來建 Linux 測試程式）
 make linux-tests # linux/tests/*.c → build/user/linux/（musl-gcc -static），打包進 initrd 的 linux/
-make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo、fstest、proctest、init、shell、windowserver、terminal、echo_win、mouseion、viewer）→ build/user/
+make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo、fstest、proctest、init、shell、windowserver、terminal、echo_win、mouseion、viewer）與 classic/（Classic.app）→ build/user/
+make classic    # 同 make user（Classic.app 的 C 由 classic/build.rs 用 gcc 編）
 make initrd     # 把 build/user/ 排成 build/initrd-root/（linux/、Terminal.app 等 bundle）再打包成 build/initrd.tar（GNU tar --format=ustar）
 make run        # QEMU + OVMF 開機（一般 kernel：init → shell，提示符 Initrd:/> ），serial 輸出到 stdio
 make test       # host 單元測試 + QEMU selftest + 最低硬體 selftest + 桌面、儲存、shell、關機、Linux、USB、panic 畫面、Mouseion 測試，修改後必須通過
@@ -31,13 +32,14 @@ make disk-image # 實機用的 build/stela.img（GPT：FAT ESP 含 boot.cfg + eH
 make ehfs-tools # host 的 mkfs.ehfs、fsck.ehfs、ehfs-cp、ehfs-ls → build/host/ehfs/
 make assets     # assets/*.ppm、*.pbm → assets/generated/（Rust 資料；換圖後執行）
 make draft-assets # 重畫草稿圖示（會覆蓋 assets/；使用者的圖放進去之後不要跑）
+make test-classic # 本機專用：MAC_ROM、MAC_DISK（預設 ~/mac/，只讀）複製進 build/images/classic-data.img 的 Data:/Classic/，開機 run Classic.app 到 Finder 並截圖檢查（不在 make test／CI）
 make test-ehfs-compat  # 本機專用：與 68k_HAL 的 eHFS 工具交叉檢查（不在 make test／CI）
 make clippy     # cargo clippy（loader、kernel 端 crate 含 selftest feature、使用者程式、host 測試），警告視為錯誤
 make fmt        # cargo fmt
 make clean
 ```
 
-- 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）、`mtools`、`gdisk`（測試映像）、`gcc`（建 musl 與 Linux 測試程式）。musl 的 tarball 不下載：預設從 `~/文件/68k_HAL/third_party/downloads/musl/` 複製（`MUSL_TARBALL=` 可改），CI 從 musl.libc.org 抓一次並快取（`third_party/README.md`）。
+- 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）、`mtools`、`gdisk`（測試映像）、`gcc`（建 musl、Linux 測試程式與 Classic 環境的 C）、`binutils-m68k-linux-gnu`（Classic 的 68k 測試程式）。musl 的 tarball 不下載：預設從 `~/文件/68k_HAL/third_party/downloads/musl/` 複製（`MUSL_TARBALL=` 可改），CI 從 musl.libc.org 抓一次並快取（`third_party/README.md`）。
 - cargo 的輸出在 `build/target/`（`.cargo/config.toml`）。
 - CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `cargo fmt --check`、`make clippy` 與 `make test`。
 - `make test` 的組成：`test-host`（依賴 `make initrd` 與 `host-images`（mtools／sgdisk 做的 FAT、GPT 映像）；`HOST_CRATES` = abi、block、bootinfo、drivers、ehfs、ehfs-tools、elfload、frame、libstela、toolbox 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel、windowserver、terminal、mouseion、viewer 的 `cargo test --lib`；另外檢查 `assets/generated/` 與圖檔一致）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter、印 `mouse: waiting` 時 `--mouse` 經 `input-send-event` 移動 PS/2 滑鼠並按左鍵，依序檢查 `input: OK`、`mouse: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`proctest: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP；也接 AHCI 測試磁碟跑 fstest）、`test-textmode`（一般 kernel、`boot.cfg` = `textmode` + `nousb`：init 直接開 shell、不啟動 xHCI）、`test-disk-image`（`make_disk_image.py` 做 Data 128 MiB 的映像當唯一的 AHCI 磁碟開機：桌面、shell `mkdir` 後 `shutdown`、host fsck、第二次開機讀回）、`test-window`（一般 kernel 開機進桌面：視窗伺服器 + terminal + shell；經 QMP 打 `uptime`、`run echo_win`、在 echo_win 打一行，screendump 後 `tools/fb_check.py --expect-rect/--expect-text` 檢查桌面、選單列、兩個視窗的標題列與文字）、`test-storage`（`make test-images` 在 `build/images/` 造 AHCI（GPT：FAT ESP + eHFS Data）與 NVMe（4Kn，eHFS Archive）兩顆磁碟，selftest 開機兩次檢查持久性與 fstest，最後 host 的 `fsck.ehfs` 檢查）、`test-shell`（一般 kernel + AHCI 測試磁碟，`qemu_test.py --type` 依序打 shell 指令並檢查輸出）、`test-shutdown`（一般 kernel + AHCI 測試磁碟：shell 打 `shutdown`，QEMU 自己結束（status 0），host 的 fsck 確認正常卸載；再開機打 `reboot`）、`test-linux`（一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打一行字）並檢查輸出與 exit code）、`test-panic`（selftest kernel + 多一個 `panic-test` 檔的 initrd：故意 panic，截圖檢查裂碑的 panic 畫面）、`test-mouseion`（一般 kernel + 乾淨的 AHCI 測試磁碟：`qemu_test.py --click` 雙擊 Data、welcome.txt（viewer）、Initrd、Terminal.app，截圖檢查卷宗圖示與新視窗）、`test-usb`（一般 kernel、`-machine q35,i8042=off`、`qemu-xhci` + usb-kbd + usb-mouse + usb-hub（後面一個 usb-kbd）：USB 鍵盤打字到 shell、滑鼠報告、`qemu_test.py --qmp` 的 `device_del`／`device_add` 熱插拔 root port 與 hub port）。shell、Linux、關機與 USB 測試都經過桌面（terminal 把 shell 的輸出鏡像到 serial）。`qemu_test.py --log FILE` 把 serial 輸出存檔（`make test-qemu` 寫 `build/test-qemu.log`）。`make run` 永遠跑沒有 selftest 的 kernel（開機畫面的石碑 → init 啟動視窗伺服器與 Mouseion，Mouseion 打開一個 terminal，裡面是 shell；`help` 列出指令，`run Echo.app` 開一個視窗；shell 的輸出也鏡像到 serial）。
@@ -95,6 +97,11 @@ user/          使用者程式（x86_64-unknown-none，user.ld 連結在 0x40_00
   mouseion/         空間式檔案管理員：model.rs（純邏輯，host 測試）、桌面、資料夾視窗、拖放（docs/mouseion.md）
   viewer/           Viewer.app：唯讀的文字檢視
   init/ shell/      開機後的 init（有 framebuffer 就跑 windowserver mouseion）與 shell（docs/userland.md）
+classic/       Classic 環境（Classic.app，STELA 原生程式；docs/classic.md、classic/README.md）
+  musashi/          Musashi（MIT，從 68k_HAL 複製，不改）
+  c/                68k_HAL 的 emu/m68k、emu/mac、freestanding/（複製，commit ceb904d）與 shim/（k_lib、host：classic_host_ops 與一台 mac_t）
+  build.rs          gcc 編 m68kmake → m68kops.c、全部 C → libclassic_c.a；user.ld
+  src/              ffi.rs（唯一的 unsafe）、keys.rs（ADB 鍵碼）、screen.rs（改變的列、Mac 時鐘）、main.rs（Classic.app）、tests.rs（tests/m68k 在 host 跑）
 linux/tests/   Linux 人格的測試程式（C，musl 靜態連結）（docs/linux.md）
 drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）：PCI、AHCI、NVMe、USB（usb/：描述子、HID、TRB 純邏輯 host 測試；xhci.rs）、sync（排程 hooks、SleepLock、SleepMutex）（docs/pci.md、docs/storage.md、docs/usb.md）
 third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause；README.md：清單與 musl 的 SHA-256）
@@ -112,7 +119,7 @@ tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、font_t
   // SPDX-License-Identifier: GPL-3.0-or-later
   ```
 - `cargo fmt` 的預設格式；`cargo clippy` 零警告（`make clippy`）。
-- `unsafe` 只能出現在 `frame/`，以及 `boot/` 的兩處（`exit_boot_services` 與跳進 kernel 的 inline asm；`boot/` 用 `#![deny(unsafe_code)]` 加局部 `#[allow(unsafe_code)]`）、`user/libstela`（`syscall` 指令、`ThreadStack`、`ipc::Mapping` 的複製、`heap` 與 `sync::SpinMutex`，使用者程式唯一需要 unsafe 的地方）、`user/fault`（故意讀位址 0 的一處 inline asm）；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
+- `unsafe` 只能出現在 `frame/`，以及 `boot/` 的兩處（`exit_boot_services` 與跳進 kernel 的 inline asm；`boot/` 用 `#![deny(unsafe_code)]` 加局部 `#[allow(unsafe_code)]`）、`user/libstela`（`syscall` 指令、`ThreadStack`、`ipc::Mapping` 的複製、`heap` 與 `sync::SpinMutex`，使用者程式唯一需要 unsafe 的地方）、`user/fault`（故意讀位址 0 的一處 inline asm）、`classic/src/ffi.rs`（Classic 環境呼叫 C 的 FFI；`classic` 的 lib 用 `#![deny(unsafe_code)]`，只有這個檔案 `#![allow(unsafe_code)]`）；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
 - 不用 `unwrap()`／`expect()` 處理可能失敗的情況；錯誤用 `Result` 傳回。無法恢復的錯誤用 `panic!`（kernel 的 panic handler 負責顯示）。
 - 與既有程式碼保持一致；不要只為了風格而修改無關的程式碼。
 
@@ -136,7 +143,7 @@ frame/paging: map the higher half
 - 硬體相關的數值（暫存器、descriptor 位元、UEFI 結構）要註明出處（Intel SDM、UEFI Specification、OSDev Wiki），不確定時明說。
 - 第三方 crate：只用授權相容 GPL-3.0-or-later 的（MIT／Apache-2.0／BSD 等）；不引入 GPL-2.0-only 的程式碼。每加一個相依先說明用途與授權。
 - 不要加入任何 Apple ROM、System Software 或其他受版權保護的內容。使用者的 ROM 與磁碟映像（`~/mac/`）只能讀取，不可複製進 repo、不可 commit、不可進 `make test` 或 CI。
-- 68k_HAL 的程式碼在 `~/文件/68k_HAL`（唯讀的參考）；可以參考它的設計與文件，不要複製 C 程式碼進來。
+- 68k_HAL 的程式碼在 `~/文件/68k_HAL`（唯讀的參考）；可以參考它的設計與文件，不要複製 C 程式碼進來。唯一的例外是 `classic/`（使用者 2026-10-20 同意：Musashi、emu/m68k、emu/mac、tests/m68k，見 `classic/README.md`）。
 
 ## 開發模式
 

@@ -69,6 +69,7 @@
 - **F 驅動**：kernel 內 safe Rust，只透過 frame 的 API 碰 MMIO／DMA；大型驅動（GPU）之後可例外放使用者空間。驅動永遠不開放第三方。
 - **G 圖形**：kernel 只提供 framebuffer／顯示模式與輸入事件；視窗伺服器與繪圖在使用者空間；髒矩形合成、不做全畫面 alpha、不做動畫與透明效果。
 - **H 相容層**：Linux 只做 syscall 翻譯，先支援 musl 靜態程式；Classic 環境以 Linux 相容層的程式形式存在，不另養 C 執行期。
+  - P10 偏離（使用者 2026-10-20 同意）：Classic 環境是 **STELA 原生程式**（`classic/`，Rust 包裝 + C 核心經 FFI，C 以 freestanding 的 gcc 編、只用最小的 libc 替身），不是 Linux 相容程式（`docs/classic.md`）。
 - **I 安全**：單使用者 + handle 式能力 + 應用程式沙箱。
 
 ### 4.1 應用程式（3-A、3-C）

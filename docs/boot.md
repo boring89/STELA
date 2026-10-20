@@ -1,6 +1,6 @@
 # 開機：UEFI loader 與 bootinfo
 
-> P1 由自動排程一次做完，使用者已於 2026-10-20 審核。P3 加入的 initrd 與 BootInfo 版本 2（§3、§9）**使用者尚未審核**，細節在 `docs/process.md` §12。
+> P1 由自動排程一次做完，使用者已於 2026-10-20 審核；P3 加入的 initrd 與 BootInfo 版本 2（§3、§9）同日審核，細節在 `docs/process.md` §12。
 
 這份文件說明 STELA 從按下電源到 kernel 第一行程式碼之間發生的事：`boot/`（loader）、`elfload/`（ELF 解析）、`bootinfo/`（loader 交給 kernel 的資料）。
 

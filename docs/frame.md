@@ -1,6 +1,6 @@
 # frame：kernel 與硬體之間的那一層
 
-> P1 與 P2 由自動排程一次做完，使用者已於 2026-10-20 審核。P2 加入的部分（中斷、APIC、per-CPU、MMIO、計時器、鍵盤）的細節在 `docs/irq.md`、`docs/time.md`、`docs/keyboard.md`。P3 加入的部分（context 切換、kernel 堆疊、user 段、`swapgs`、位址空間、syscall 進入點、initrd）**使用者尚未審核**，細節在 `docs/process.md`、`docs/syscall.md`。
+> P1–P3 由自動排程一次做完，使用者已於 2026-10-20 審核。P2 加入的部分（中斷、APIC、per-CPU、MMIO、計時器、鍵盤）的細節在 `docs/irq.md`、`docs/time.md`、`docs/keyboard.md`；P3 加入的部分（context 切換、kernel 堆疊、user 段、`swapgs`、位址空間、syscall 進入點、initrd）在 `docs/process.md`、`docs/syscall.md`。
 
 `frame/` 是 STELA 唯一可以寫 `unsafe` 的 kernel crate（framekernel 架構）。kernel 與之後的驅動都是 `#![forbid(unsafe_code)]`，只能透過 frame 提供的 safe API 碰硬體。
 

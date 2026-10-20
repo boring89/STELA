@@ -27,9 +27,9 @@ pub(crate) const WRITABLE: u64 = 1 << 1;
 /// U/S: user-mode accesses allowed (needed at every level).
 pub(crate) const USER: u64 = 1 << 2;
 /// PWT: page-level write-through.
-const WRITE_THROUGH: u64 = 1 << 3;
+pub(crate) const WRITE_THROUGH: u64 = 1 << 3;
 /// PCD: page-level cache disable.
-const CACHE_DISABLE: u64 = 1 << 4;
+pub(crate) const CACHE_DISABLE: u64 = 1 << 4;
 /// PS: in a PDPTE or PDE, the entry maps a 1 GiB or 2 MiB page.
 pub(crate) const HUGE: u64 = 1 << 7;
 pub(crate) const NO_EXECUTE: u64 = 1 << 63;

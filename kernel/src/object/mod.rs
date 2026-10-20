@@ -46,6 +46,9 @@ mod target {
         Tty(Arc<Tty>),
         /// The master side of a terminal (`TtyRead`, `TtyWrite`).
         TtyMaster(Arc<Tty>),
+        /// The boot framebuffer (`MemoryMap` maps it write-combining;
+        /// `docs/display.md`).
+        Framebuffer(Arc<frame::console::FramebufferDevice>),
     }
 
     impl KernelObject {

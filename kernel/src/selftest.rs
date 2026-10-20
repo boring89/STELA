@@ -59,6 +59,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("file systems", file_systems),
         ("processes", processes),
         ("linux personality", linux_personality),
+        ("framebuffer object", framebuffer_object),
     ];
     // Let the service threads (console) reach their first wait, so that
     // their start-up allocations do not land in the middle of a test.
@@ -1278,4 +1279,46 @@ fn linux_personality(_: &'static BootInfo) {
     let (free, _) = pmm::stats();
     assert_eq!(run(), Some(3));
     assert_eq!(pmm::stats().0, free, "a musl program leaked memory");
+}
+
+fn framebuffer_object(_: &'static BootInfo) {
+    let Some(fb) = frame::console::framebuffer() else {
+        panic!("no framebuffer");
+    };
+    assert!(
+        fb.width >= 640 && fb.height >= 480,
+        "{}x{}",
+        fb.width,
+        fb.height
+    );
+    assert!(u64::from(fb.pitch) * u64::from(fb.height) <= fb.range.size());
+    // Mapped into a process write-combining (PAT entry 4), the pages are
+    // the framebuffer's and come back unmapped.
+    let process = task::process::create("fbmap").expect("no address space");
+    let at = 0x2000_0000_0000;
+    process
+        .space()
+        .map_device(at, &fb.range, true, true)
+        .expect("cannot map the framebuffer");
+    assert_eq!(process.space().translate(at), Some(fb.range.phys()));
+    assert!(
+        process.space().is_write_combining(at),
+        "not write-combining"
+    );
+    let last = at + fb.range.size() - 4096;
+    assert_eq!(
+        process.space().translate(last),
+        Some(fb.range.phys() + fb.range.size() - 4096)
+    );
+    let range = process.space().unmap_device(at).expect("not mapped");
+    assert_eq!(range, fb.range);
+    assert_eq!(process.space().translate(at), None);
+    kprintln!(
+        "selftest:   {}x{} pitch {} at {:#x}, {} pages, write-combining",
+        fb.width,
+        fb.height,
+        fb.pitch,
+        fb.range.phys(),
+        fb.range.pages()
+    );
 }

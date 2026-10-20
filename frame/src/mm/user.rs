@@ -31,8 +31,10 @@
 //! is an error, not a page fault in the kernel.
 
 use super::USER_END;
+use super::device::DeviceRange;
 use super::paging::{
-    self, ADDR_MASK, HUGE, MapError, NO_EXECUTE, PRESENT, USER, WRITABLE, index, table,
+    self, ADDR_MASK, CACHE_DISABLE, HUGE, MapError, NO_EXECUTE, PRESENT, USER, WRITABLE,
+    WRITE_THROUGH, index, table,
 };
 use super::pmm::{self, PhysFrame};
 use super::shared::SharedMemory;
@@ -66,6 +68,8 @@ pub struct AddressSpace {
     lock: SpinLock<()>,
     /// Shared-memory mappings: start address and the object.
     shared: SpinLock<Vec<(u64, SharedMemory)>>,
+    /// Device-memory mappings: start address and the range.
+    devices: SpinLock<Vec<(u64, DeviceRange)>>,
 }
 
 impl core::fmt::Debug for AddressSpace {
@@ -96,6 +100,7 @@ impl AddressSpace {
             root,
             lock: SpinLock::new(()),
             shared: SpinLock::new(Vec::new()),
+            devices: SpinLock::new(Vec::new()),
         })
     }
 
@@ -239,6 +244,74 @@ impl AddressSpace {
         }
         self.shared.lock().push((virt, memory.clone()));
         Ok(())
+    }
+
+    /// Maps the device memory `range` at `virt..virt + range.size()`, not
+    /// executable, writable with `writable`, write-combining with
+    /// `write_combining` when the PAT allows it (`arch::x86_64::pat`) and
+    /// uncached otherwise. The pages are borrowed (marked [`SHARED`]), so
+    /// they are never given to the PMM. Nothing stays mapped on failure.
+    pub fn map_device(
+        &self,
+        virt: u64,
+        range: &DeviceRange,
+        writable: bool,
+        write_combining: bool,
+    ) -> Result<(), MapError> {
+        let end = virt
+            .checked_add(range.size())
+            .ok_or(MapError::OutOfRegion)?;
+        if end > USER_END {
+            return Err(MapError::OutOfRegion);
+        }
+        let caching = if write_combining && crate::arch::x86_64::pat::wc_enabled() {
+            crate::arch::x86_64::pat::PTE_PAT
+        } else {
+            CACHE_DISABLE | WRITE_THROUGH
+        };
+        let flags = UserFlags {
+            writable,
+            executable: false,
+        };
+        let _guard = self.lock.lock();
+        for i in 0..range.pages() {
+            let phys = range.phys() + i as u64 * 4096;
+            let leaf = Self::leaf_bits(phys, flags) | SHARED | caching;
+            if let Err(e) = self.set_leaf(virt + i as u64 * 4096, leaf) {
+                for j in 0..i {
+                    let _ = self.clear_leaf(virt + j as u64 * 4096, true);
+                }
+                return Err(e);
+            }
+        }
+        self.devices.lock().push((virt, range.clone()));
+        Ok(())
+    }
+
+    /// Removes the device mapping that starts at `virt` (made by
+    /// [`AddressSpace::map_device`]) and returns its range.
+    pub fn unmap_device(&self, virt: u64) -> Result<DeviceRange, MapError> {
+        let range = {
+            let mut devices = self.devices.lock();
+            let at = devices
+                .iter()
+                .position(|(start, _)| *start == virt)
+                .ok_or(MapError::NotMapped)?;
+            devices.swap_remove(at).1
+        };
+        let _guard = self.lock.lock();
+        for i in 0..range.pages() {
+            let _ = self.clear_leaf(virt + i as u64 * 4096, true);
+        }
+        Ok(range)
+    }
+
+    /// Whether the user page at `virt` is mapped write-combining.
+    pub fn is_write_combining(&self, virt: u64) -> bool {
+        self.leaf(virt).is_some_and(|e| {
+            e & (crate::arch::x86_64::pat::PTE_PAT | CACHE_DISABLE | WRITE_THROUGH)
+                == crate::arch::x86_64::pat::PTE_PAT
+        })
     }
 
     /// Removes the shared-memory mapping that starts at `virt` and returns

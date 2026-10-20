@@ -50,6 +50,7 @@ pub mod trap;
 pub fn init(info: &'static bootinfo::BootInfo) {
     serial::init();
     arch::x86_64::init();
+    arch::x86_64::pat::init();
     mm::init(info);
     console::fb::init(info);
     acpi::init(info);

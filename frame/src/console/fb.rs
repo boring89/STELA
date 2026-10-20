@@ -4,15 +4,20 @@
 //! The firmware framebuffer as a [`Canvas`], the global framebuffer
 //! console, and the panic screen.
 //!
-//! The framebuffer is reached through the HHDM with ordinary write-back
-//! caching (no PAT write-combining yet). Pixels are 32 bits in the order
-//! the GOP reported (`Rgb32` or `Bgr32`).
+//! The kernel reaches the framebuffer through the HHDM with ordinary
+//! write-back caching; user space (the window server) maps it
+//! write-combining through [`device`]. Once it does, the console stops
+//! drawing ([`hand_over`]; the serial port goes on) and only the panic
+//! screen draws again. Pixels are 32 bits in the order the GOP reported
+//! (`Rgb32` or `Bgr32`).
 
 use super::font::{self, Font};
 use super::text::{Canvas, Rgb, TextConsole, draw_char};
+use crate::mm::device::DeviceRange;
 use crate::sync::SpinLock;
 use bootinfo::{BootInfo, Framebuffer, HHDM_BASE, PixelFormat};
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// The framebuffer's memory.
 pub(crate) struct FbCanvas {
@@ -138,9 +143,56 @@ pub(crate) fn init(info: &'static BootInfo) {
     *PANIC_INFO.lock() = Some(info);
 }
 
-/// Writes to the framebuffer console, if it exists and is not busy (a
-/// panic while printing must not deadlock).
+/// Set once user space owns the screen.
+static HANDED_OVER: AtomicBool = AtomicBool::new(false);
+
+/// The boot framebuffer as user space sees it.
+#[derive(Clone, Debug)]
+pub struct FramebufferDevice {
+    /// Its pages.
+    pub range: DeviceRange,
+    /// Visible width in pixels.
+    pub width: u32,
+    /// Visible height in pixels.
+    pub height: u32,
+    /// Bytes per row.
+    pub pitch: u32,
+    /// Byte 0 of a pixel is blue (else red).
+    pub bgr: bool,
+}
+
+/// The boot framebuffer, if there is a usable one (the checks of the
+/// console: inside the direct map, the rows fit).
+pub fn device() -> Option<FramebufferDevice> {
+    let info = (*PANIC_INFO.lock())?;
+    FbCanvas::new(info)?;
+    let fb = &info.framebuffer;
+    Some(FramebufferDevice {
+        range: DeviceRange::new(fb.phys_addr, u64::from(fb.pitch) * u64::from(fb.height)),
+        width: fb.width,
+        height: fb.height,
+        pitch: fb.pitch,
+        bgr: fb.format() == PixelFormat::Bgr32,
+    })
+}
+
+/// User space took the screen: the console stops drawing (it keeps going
+/// to the serial port). The panic screen still draws.
+pub fn hand_over() {
+    HANDED_OVER.store(true, Ordering::Release);
+}
+
+/// Whether [`hand_over`] happened.
+pub fn handed_over() -> bool {
+    HANDED_OVER.load(Ordering::Acquire)
+}
+
+/// Writes to the framebuffer console, if it exists, is not busy (a panic
+/// while printing must not deadlock) and still owns the screen.
 pub(crate) fn write_str(s: &str) {
+    if handed_over() {
+        return;
+    }
     if let Some(mut console) = CONSOLE.try_lock()
         && let Some(FbConsole { canvas, text }) = console.as_mut()
     {

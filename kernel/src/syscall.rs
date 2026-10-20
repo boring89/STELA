@@ -275,10 +275,14 @@ fn memory_map(handle: u64, flags: u64) -> Result<u64, Error> {
     }
     let writable = flags & abi::map::WRITE != 0;
     let process = caller()?;
-    let memory = {
+    let object = {
         let handles = process.handles().lock();
         let entry = handles.get(Handle::from_raw(handle))?;
-        let memory = entry.object.as_memory().ok_or(Error::WrongType)?;
+        let object = match &entry.object {
+            KernelObject::Memory(memory) => Mappable::Memory(memory.clone()),
+            KernelObject::Framebuffer(fb) => Mappable::Framebuffer(Arc::clone(fb)),
+            _ => return Err(Error::WrongType),
+        };
         let mut needed = Rights::MAP | Rights::READ;
         if writable {
             needed = needed | Rights::WRITE;
@@ -286,36 +290,60 @@ fn memory_map(handle: u64, flags: u64) -> Result<u64, Error> {
         if !entry.rights.contains(needed) {
             return Err(Error::AccessDenied);
         }
-        memory.clone()
+        object
+    };
+    let size = match &object {
+        Mappable::Memory(memory) => memory.size(),
+        Mappable::Framebuffer(fb) => fb.range.size(),
     };
     let addr = process
         .maps()
         .lock()
-        .alloc(memory.size())
+        .alloc(size)
         .ok_or(Error::AlreadyMapped)?;
     let flags = UserFlags {
         writable,
         executable: false,
     };
-    if let Err(e) = process.space().map_shared(addr, &memory, flags) {
+    let mapped = match &object {
+        Mappable::Memory(memory) => process.space().map_shared(addr, memory, flags),
+        Mappable::Framebuffer(fb) => process.space().map_device(addr, &fb.range, writable, true),
+    };
+    if let Err(e) = mapped {
         process.maps().lock().free(addr);
         return Err(match e {
             MapError::OutOfMemory => Error::OutOfMemory,
             _ => Error::AlreadyMapped,
         });
     }
+    if let Mappable::Framebuffer(_) = object {
+        // The screen is the mapper's now (the window server): the kernel
+        // console stops drawing, and only it may take the keyboard.
+        frame::console::hand_over();
+        crate::input::set_owner(process.id());
+    }
     Ok(addr)
 }
 
-/// `MemoryUnmap(address)`.
+/// What `MemoryMap` can map.
+enum Mappable {
+    Memory(SharedMemory),
+    Framebuffer(Arc<frame::console::FramebufferDevice>),
+}
+
+/// `MemoryUnmap(addr)`.
 fn memory_unmap(addr: u64) -> Result<u64, Error> {
     let process = caller()?;
-    let memory = process
-        .space()
-        .unmap_shared(addr)
-        .map_err(|_| Error::InvalidArgument)?;
+    match process.space().unmap_shared(addr) {
+        Ok(memory) => drop(memory),
+        Err(_) => {
+            process
+                .space()
+                .unmap_device(addr)
+                .map_err(|_| Error::InvalidArgument)?;
+        }
+    }
     process.maps().lock().free(addr);
-    drop(memory);
     Ok(0)
 }
 
@@ -334,6 +362,9 @@ fn input_attach(handle: u64) -> Result<u64, Error> {
             _ => return Err(Error::WrongType),
         }
     };
+    if !crate::input::may_attach(process.id()) {
+        return Err(Error::AccessDenied);
+    }
     crate::input::attach(target);
     Ok(0)
 }
@@ -432,6 +463,7 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::Process(_) => k::PROCESS,
         KernelObject::Tty(_) => k::TTY,
         KernelObject::TtyMaster(_) => k::TTY_MASTER,
+        KernelObject::Framebuffer(_) => k::FRAMEBUFFER,
     })
 }
 

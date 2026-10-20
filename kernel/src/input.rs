@@ -54,6 +54,23 @@ fn notify() {
     }
 }
 
+/// The process that owns the screen (mapped the framebuffer: the window
+/// server), 0 while nobody does.
+static OWNER: AtomicU64 = AtomicU64::new(0);
+
+/// The framebuffer was mapped by process `pid`: from now on only it may
+/// attach (it hands the events to its clients).
+pub fn set_owner(pid: crate::task::ProcessId) {
+    OWNER.store(pid, Ordering::Release);
+}
+
+/// Whether process `pid` may `InputAttach`: anyone while no process owns
+/// the screen (text mode) or after the owner ended; else only the owner.
+pub fn may_attach(pid: crate::task::ProcessId) -> bool {
+    let owner = OWNER.load(Ordering::Acquire);
+    owner == 0 || owner == pid || crate::task::process::exit_status(owner).is_some()
+}
+
 /// `InputAttach`: events go to `target` from now on.
 pub fn attach(target: Target) {
     *TARGET.lock() = Some(target);

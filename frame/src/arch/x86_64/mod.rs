@@ -14,6 +14,7 @@ pub(crate) mod interrupts;
 pub(crate) mod io;
 pub(crate) mod ioapic;
 pub(crate) mod msr;
+pub(crate) mod pat;
 pub(crate) mod pic;
 pub(crate) mod pit;
 pub(crate) mod syscall;

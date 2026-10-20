@@ -627,6 +627,8 @@ pub mod object_kind {
     pub const TTY: u64 = 6;
     /// A terminal's master side.
     pub const TTY_MASTER: u64 = 7;
+    /// The framebuffer (`docs/display.md`).
+    pub const FRAMEBUFFER: u64 = 8;
 }
 
 /// `SystemPower` kinds.
@@ -646,6 +648,69 @@ pub mod sysinfo {
     pub const MEMORY: u64 = 2;
     /// Time: `[uptime ns, timer ticks]` (16 bytes); returns 1.
     pub const UPTIME: u64 = 3;
+    /// The display: one `FramebufferInfo` (24 bytes); returns 1, or 0
+    /// when there is no framebuffer.
+    pub const FRAMEBUFFER: u64 = 4;
+
+    /// Size of the framebuffer record.
+    pub const FRAMEBUFFER_INFO_SIZE: usize = 24;
+
+    /// `FramebufferInfo::format`: byte 0 of a pixel is red.
+    pub const FORMAT_RGBX: u32 = 1;
+    /// `FramebufferInfo::format`: byte 0 of a pixel is blue.
+    pub const FORMAT_BGRX: u32 = 2;
+
+    /// The display (`docs/display.md`).
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct FramebufferInfo {
+        /// Visible width in pixels.
+        pub width: u32,
+        /// Visible height in pixels.
+        pub height: u32,
+        /// Bytes from one row to the next.
+        pub pitch: u32,
+        /// `FORMAT_RGBX` or `FORMAT_BGRX` (4 bytes per pixel).
+        pub format: u32,
+        /// Bytes of the framebuffer (what `MemoryMap` maps).
+        pub size: u32,
+        /// UI scale: 1 (2 is reserved for HiDPI; not used yet).
+        pub scale: u32,
+    }
+
+    impl FramebufferInfo {
+        /// The record as copied to user memory.
+        pub fn to_bytes(&self) -> [u8; FRAMEBUFFER_INFO_SIZE] {
+            let mut b = [0u8; FRAMEBUFFER_INFO_SIZE];
+            for (i, v) in [
+                self.width,
+                self.height,
+                self.pitch,
+                self.format,
+                self.size,
+                self.scale,
+            ]
+            .iter()
+            .enumerate()
+            {
+                b[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+            b
+        }
+
+        /// The inverse of [`FramebufferInfo::to_bytes`].
+        pub fn from_bytes(b: &[u8]) -> Option<FramebufferInfo> {
+            let b = b.get(..FRAMEBUFFER_INFO_SIZE)?;
+            let w = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+            Some(FramebufferInfo {
+                width: w(0),
+                height: w(4),
+                pitch: w(8),
+                format: w(12),
+                size: w(16),
+                scale: w(20),
+            })
+        }
+    }
 
     /// Size of a process record.
     pub const PROCESS_INFO_SIZE: usize = 48;
@@ -1096,6 +1161,21 @@ mod tests {
         assert_eq!(Syscall::HandleKind.raw(), 36);
         assert_eq!(tty::MASTER, 1);
         assert_eq!((object_kind::PORT, object_kind::TTY_MASTER), (1, 7));
+        assert_eq!(object_kind::FRAMEBUFFER, 8);
+        assert_eq!(sysinfo::FRAMEBUFFER, 4);
+        let fb = sysinfo::FramebufferInfo {
+            width: 2560,
+            height: 1600,
+            pitch: 10240,
+            format: sysinfo::FORMAT_BGRX,
+            size: 10240 * 1600,
+            scale: 1,
+        };
+        assert_eq!(
+            sysinfo::FramebufferInfo::from_bytes(&fb.to_bytes()),
+            Some(fb)
+        );
+        assert_eq!(&fb.to_bytes()[..4], &2560u32.to_le_bytes());
         assert_eq!(Syscall::from_raw(37), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }

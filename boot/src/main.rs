@@ -287,7 +287,38 @@ fn find_rsdp() -> u64 {
     })
 }
 
-/// The current GOP mode's framebuffer, without changing the mode.
+/// Switches the GOP to its largest landscape mode (by area; wider than
+/// high: OVMF also offers squares like 2048x2048) with a
+/// 32-bit RGB or BGR framebuffer (UEFI Specification 2.10, 12.9 "Graphics
+/// Output Protocol": QueryMode through the mode list, SetMode). Staying in
+/// the current mode is fine when it already is the largest or a switch
+/// fails.
+fn set_largest_mode(gop: &mut GraphicsOutput) {
+    let usable = |info: &gop::ModeInfo| {
+        let (w, h) = info.resolution();
+        w > h
+            && matches!(
+                info.pixel_format(),
+                gop::PixelFormat::Rgb | gop::PixelFormat::Bgr
+            )
+    };
+    let best = gop.modes().filter(|m| usable(m.info())).max_by_key(|m| {
+        let (w, h) = m.info().resolution();
+        w * h
+    });
+    let Some(best) = best else {
+        return;
+    };
+    if best.info().resolution() == gop.current_mode_info().resolution() {
+        return;
+    }
+    let (w, h) = best.info().resolution();
+    if gop.set_mode(&best).is_err() {
+        uefi::println!("boot: cannot switch the display to {w}x{h}; keeping the current mode");
+    }
+}
+
+/// The GOP framebuffer, after switching to the largest mode.
 fn framebuffer() -> Framebuffer {
     let Ok(handle) = uefi::boot::get_handle_for_protocol::<GraphicsOutput>() else {
         return Framebuffer::NONE;
@@ -295,6 +326,7 @@ fn framebuffer() -> Framebuffer {
     let Ok(mut gop) = uefi::boot::open_protocol_exclusive::<GraphicsOutput>(handle) else {
         return Framebuffer::NONE;
     };
+    set_largest_mode(&mut gop);
     let mode = gop.current_mode_info();
     let format = match mode.pixel_format() {
         gop::PixelFormat::Rgb => PixelFormat::Rgb32,

@@ -74,7 +74,8 @@ fn kernel_main(info: &'static BootInfo) -> ! {
 }
 
 /// The first kernel thread: starts the input router, then runs
-/// `Initrd:/init` (which starts the shell) and waits for it.
+/// `Initrd:/init` (which starts the window server, or the shell) and
+/// waits for it.
 #[cfg(not(feature = "selftest"))]
 fn init() {
     kernel::input::start();
@@ -86,9 +87,17 @@ fn init() {
 }
 
 /// Runs program `name` from the `Initrd` volume and waits for it to end.
+/// Its bootstrap handle `[2]` is the framebuffer, when there is one
+/// (`docs/display.md`).
 #[cfg(not(feature = "selftest"))]
 fn run(name: &str) {
-    match kernel::program::spawn_path("Initrd", name, None) {
+    use abi::Rights;
+    use kernel::object::{Entry, KernelObject};
+    let framebuffer = frame::console::framebuffer().map(|fb| Entry {
+        object: KernelObject::Framebuffer(alloc::sync::Arc::new(fb)),
+        rights: Rights::MAP | Rights::READ | Rights::WRITE | Rights::DUPLICATE | Rights::TRANSFER,
+    });
+    match kernel::program::spawn_path("Initrd", name, framebuffer) {
         Ok(process) => {
             let pid = process.id();
             drop(process);

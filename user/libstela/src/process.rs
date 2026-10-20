@@ -127,6 +127,20 @@ pub fn memory() -> Result<MemInfo, Error> {
     MemInfo::from_bytes(&b).ok_or(Error::InvalidArgument)
 }
 
+/// The display, if there is a framebuffer (`SysInfo(FRAMEBUFFER)`).
+pub fn framebuffer_info() -> Option<sysinfo::FramebufferInfo> {
+    let mut b = [0u8; sysinfo::FRAMEBUFFER_INFO_SIZE];
+    match syscall3(
+        Syscall::SysInfo,
+        sysinfo::FRAMEBUFFER,
+        b.as_mut_ptr() as u64,
+        b.len() as u64,
+    ) {
+        Ok(1) => sysinfo::FramebufferInfo::from_bytes(&b),
+        _ => None,
+    }
+}
+
 /// Flushes the volumes and turns the machine off (`SystemPower`). Returns
 /// only on failure (`NotSupported` when the machine has no ACPI soft off).
 pub fn shutdown() -> Error {

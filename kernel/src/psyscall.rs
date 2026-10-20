@@ -215,6 +215,25 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
             out.extend_from_slice(&frame::time::ticks().to_le_bytes());
             1
         }
+        abi::sysinfo::FRAMEBUFFER => match frame::console::framebuffer() {
+            Some(fb) => {
+                let info = abi::sysinfo::FramebufferInfo {
+                    width: fb.width,
+                    height: fb.height,
+                    pitch: fb.pitch,
+                    format: if fb.bgr {
+                        abi::sysinfo::FORMAT_BGRX
+                    } else {
+                        abi::sysinfo::FORMAT_RGBX
+                    },
+                    size: fb.range.size() as u32,
+                    scale: 1,
+                };
+                out.extend_from_slice(&info.to_bytes());
+                1
+            }
+            None => 0,
+        },
         _ => return Err(Error::InvalidArgument),
     };
     let n = out.len().min(len as usize);

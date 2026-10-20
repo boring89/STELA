@@ -14,6 +14,8 @@
 
 pub mod bitmap;
 #[cfg(target_os = "none")]
+pub mod device;
+#[cfg(target_os = "none")]
 pub mod dma;
 pub mod frames;
 #[cfg(target_os = "none")]

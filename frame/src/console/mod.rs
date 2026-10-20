@@ -10,6 +10,9 @@ pub mod font;
 pub mod text;
 
 #[cfg(target_os = "none")]
+pub use fb::{FramebufferDevice, device as framebuffer, hand_over, handed_over};
+
+#[cfg(target_os = "none")]
 use core::fmt;
 
 #[cfg(target_os = "none")]

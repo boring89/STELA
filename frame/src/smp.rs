@@ -29,7 +29,7 @@ use crate::sync::{Once, SpinLock};
 use crate::task::KernelStack;
 use bootinfo::HHDM_BASE;
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 global_asm!(
     r#"
@@ -365,30 +365,56 @@ fn reschedule_ipi(_: &crate::trap::TrapFrame) {
 
 static SHOOT_LOCK: SpinLock<()> = SpinLock::new(());
 static SHOOT_ADDR: AtomicU64 = AtomicU64::new(0);
-static SHOOT_PENDING: AtomicUsize = AtomicUsize::new(0);
+/// Generation of the latest shootdown request.
+static SHOOT_GEN: AtomicU64 = AtomicU64::new(0);
+/// The latest generation each processor has carried out.
+static SHOOT_ACKED: [AtomicU64; crate::cpu::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; crate::cpu::MAX_CPUS];
 static SHOOT_WARNED: AtomicBool = AtomicBool::new(false);
 
+/// Carries out the latest shootdown request, if this processor has not
+/// yet. Called by the IPI handler, and by processors that wait for a
+/// shootdown of their own (with interrupts off they cannot take the IPI).
+fn serve_shootdown() {
+    let me = crate::cpu::current().id() as usize;
+    let generation = SHOOT_GEN.load(Ordering::Acquire);
+    if SHOOT_ACKED[me].load(Ordering::Acquire) < generation {
+        paging::invlpg(SHOOT_ADDR.load(Ordering::Acquire));
+        SHOOT_ACKED[me].store(generation, Ordering::Release);
+    }
+}
+
 fn shootdown_ipi(_: &crate::trap::TrapFrame) {
-    paging::invlpg(SHOOT_ADDR.load(Ordering::Acquire));
-    SHOOT_PENDING.fetch_sub(1, Ordering::AcqRel);
+    serve_shootdown();
 }
 
 /// Makes every other processor forget its TLB entry for kernel address
-/// `virt` (after an unmap in the kernel half), waiting until they did,
-/// 50 ms at most (a processor spinning with interrupts off cannot answer;
-/// the wait gives up rather than deadlock, and says so once).
+/// `virt` (after an unmap in the kernel half), waiting until they did.
+/// Requests are serialised; a processor waiting for its turn (or for the
+/// answers) serves the current request itself, since it may be running
+/// with interrupts disabled. A processor that does not answer within
+/// about 50 million spins is given up on (said once) rather than waited
+/// for forever.
 pub(crate) fn shootdown(virt: u64) {
-    let others = crate::cpu::online().saturating_sub(1);
-    if others == 0 {
+    let online = crate::cpu::online();
+    if online <= 1 {
         return;
     }
-    let _guard = SHOOT_LOCK.lock();
+    let _guard = loop {
+        if let Some(guard) = SHOOT_LOCK.try_lock() {
+            break guard;
+        }
+        serve_shootdown();
+        core::hint::spin_loop();
+    };
+    let me = crate::cpu::current().id() as usize;
     SHOOT_ADDR.store(virt, Ordering::Release);
-    SHOOT_PENDING.store(others, Ordering::Release);
+    let generation = SHOOT_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+    SHOOT_ACKED[me].store(generation, Ordering::Release);
     apic::broadcast_ipi(SHOOTDOWN_VECTOR);
     // The clock may not advance with interrupts off: count spins instead.
     let mut spins: u64 = 0;
-    while SHOOT_PENDING.load(Ordering::Acquire) > 0 {
+    while (0..online).any(|c| SHOOT_ACKED[c].load(Ordering::Acquire) < generation) {
         core::hint::spin_loop();
         spins += 1;
         if spins > 50_000_000 {

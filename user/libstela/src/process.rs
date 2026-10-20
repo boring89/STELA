@@ -175,6 +175,31 @@ pub fn cpus() -> Vec<u64> {
         .collect()
 }
 
+/// The running processes and the processor each runs on
+/// (`SysInfo(PROCESS_CPUS)`).
+pub fn process_cpus() -> Vec<(u64, u64)> {
+    let mut b = vec![0u8; 16 * 256];
+    let n = syscall3(
+        Syscall::SysInfo,
+        sysinfo::PROCESS_CPUS,
+        b.as_mut_ptr() as u64,
+        b.len() as u64,
+    )
+    .unwrap_or(0) as usize;
+    b.as_chunks::<16>()
+        .0
+        .iter()
+        .take(n.min(256))
+        .map(|c| {
+            let mut pid = [0u8; 8];
+            let mut cpu = [0u8; 8];
+            pid.copy_from_slice(&c[..8]);
+            cpu.copy_from_slice(&c[8..]);
+            (u64::from_le_bytes(pid), u64::from_le_bytes(cpu))
+        })
+        .collect()
+}
+
 /// The wall clock: nanoseconds since 1970-01-01 00:00 UTC
 /// (`SysInfo(TIME)`).
 pub fn wall_clock_ns() -> Result<u64, Error> {

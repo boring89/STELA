@@ -271,6 +271,14 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
             }
             n as u64
         }
+        abi::sysinfo::PROCESS_CPUS => {
+            let list = task::process::cpus();
+            for (pid, cpu) in &list {
+                out.extend_from_slice(&pid.to_le_bytes());
+                out.extend_from_slice(&(*cpu as u64).to_le_bytes());
+            }
+            list.len() as u64
+        }
         abi::sysinfo::TIME => {
             out.extend_from_slice(&frame::time::wall_clock_ns().to_le_bytes());
             1

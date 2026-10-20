@@ -101,6 +101,11 @@ impl<T> SleepList<T> {
         }
     }
 
+    /// Whether some item satisfies `pred`.
+    pub fn any(&self, mut pred: impl FnMut(&T) -> bool) -> bool {
+        self.items.iter().any(|(_, item)| pred(item))
+    }
+
     /// The earliest wake-up time.
     pub fn next_wake(&self) -> Option<u64> {
         self.items.front().map(|(t, _)| *t)

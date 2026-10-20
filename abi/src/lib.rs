@@ -886,6 +886,10 @@ pub mod sysinfo {
     /// are (`docs/smp.md`).
     pub const CPUS: u64 = 7;
 
+    /// The running processes' processors: pairs of u64 (process id,
+    /// processor number); returns how many pairs there are.
+    pub const PROCESS_CPUS: u64 = 8;
+
     /// Most bytes `SysInfo(CMDLINE)` returns.
     pub const CMDLINE_SIZE: usize = 256;
 
@@ -1610,6 +1614,7 @@ mod tests {
         assert_eq!(sysinfo::CMDLINE, 5);
         assert_eq!(sysinfo::TIME, 6);
         assert_eq!(sysinfo::CPUS, 7);
+        assert_eq!(sysinfo::PROCESS_CPUS, 8);
     }
 
     #[test]

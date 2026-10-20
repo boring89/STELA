@@ -464,6 +464,17 @@ impl AddressSpace {
     }
 }
 
+/// Switches this processor to the kernel's own page tables (if a
+/// process's are loaded): kernel threads and idle run there, so that no
+/// processor keeps a process's tables after it ran its last thread
+/// (`docs/smp.md`).
+pub fn activate_kernel() {
+    if paging::root() != paging::kernel_root() {
+        // SAFETY: the kernel's PML4 maps everything the kernel uses.
+        unsafe { paging::load_root(paging::kernel_root()) };
+    }
+}
+
 /// Frees the user half of the table at `phys` (level 4..1) and below.
 ///
 /// # Safety

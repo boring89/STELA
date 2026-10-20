@@ -57,6 +57,9 @@ pub struct Process {
     /// The Linux personality's state (descriptors, working directory,
     /// memory); `None` for STELA programs.
     linux: Option<crate::linux::State>,
+    /// The processor all its threads run on (`docs/smp.md`: process
+    /// affinity, so its address space is only ever active there).
+    cpu: usize,
 }
 
 impl Process {
@@ -68,6 +71,11 @@ impl Process {
     /// The name it was started with.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The processor its threads run on.
+    pub fn cpu(&self) -> usize {
+        self.cpu
     }
 
     /// Its address space.
@@ -246,6 +254,7 @@ pub fn create_with(
         ports: SpinLock::new(Vec::new()),
         maps: SpinLock::new(Regions::new(MAP_BASE, MAP_END)),
         linux,
+        cpu: next_cpu(),
     });
     TABLE.lock().insert(
         id,
@@ -336,6 +345,26 @@ pub fn exit_status(id: ProcessId) -> Option<i64> {
 /// The process `id` while it exists.
 pub fn find(id: ProcessId) -> Option<Arc<Process>> {
     TABLE.lock().get(&id)?.process.upgrade()
+}
+
+/// The processor for the next process: round robin over the online ones.
+fn next_cpu() -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let online = frame::cpu::online().max(1);
+    NEXT.fetch_add(1, Ordering::Relaxed) % online
+}
+
+/// The running processes and their processors.
+pub fn cpus() -> Vec<(ProcessId, usize)> {
+    let alive: Vec<_> = TABLE
+        .lock()
+        .iter()
+        .map(|(&id, r)| (id, r.process.clone()))
+        .collect();
+    alive
+        .into_iter()
+        .filter_map(|(id, weak)| weak.upgrade().map(|p| (id, p.cpu())))
+        .collect()
 }
 
 /// One line of the process list: (id, name, live threads, exit code once

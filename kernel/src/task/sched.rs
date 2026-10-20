@@ -1,9 +1,18 @@
 // Copyright (C) 2026 YuanChi Hsieh
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The scheduler: one run queue per processor (only the boot processor
-//! runs for now), round-robin, plus the sleep list, the blocked threads and
-//! the zombies waiting to be freed.
+//! The scheduler: one run queue per processor, round-robin, plus the
+//! sleep list, the blocked threads and the zombies waiting to be freed.
+//!
+//! Threads never move between processors (`docs/smp.md`): a process's
+//! threads all run on its processor (`Process::cpu`), kernel threads on
+//! the one they were spawned for (the boot processor unless
+//! [`spawn_on`]). Another processor touches a thread only under the owning
+//! processor's lock ([`wake`], [`kill`], spawning) and then asks it to
+//! reschedule with an IPI (`frame::cpu::kick`). Because the owner is the
+//! only processor that ever runs its threads, the switch can still happen
+//! after the lock is released: a thread made ready meanwhile cannot be
+//! picked up by anyone else before its context is saved.
 //!
 //! ```text
 //!            spawn / wake / sleep over / preempted / yield
@@ -93,7 +102,7 @@ struct Scheduler {
 }
 
 /// Processors the scheduler has room for.
-const MAX_CPUS: usize = 16;
+const MAX_CPUS: usize = frame::cpu::MAX_CPUS;
 
 static CPUS: [SpinLock<Option<Scheduler>>; MAX_CPUS] = [const { SpinLock::new(None) }; MAX_CPUS];
 
@@ -105,6 +114,17 @@ fn new_id() -> ThreadId {
 
 fn this_cpu() -> &'static SpinLock<Option<Scheduler>> {
     &CPUS[frame::cpu::current().id() as usize]
+}
+
+/// Runs `f` on processor `cpu`'s scheduler; `None` if it has none.
+fn with_cpu<R>(cpu: usize, f: impl FnOnce(&mut Scheduler) -> R) -> Option<R> {
+    let mut guard = CPUS.get(cpu)?.lock();
+    guard.as_mut().map(f)
+}
+
+/// The calling processor's number.
+fn my_cpu() -> usize {
+    frame::cpu::current().id() as usize
 }
 
 /// Runs `f` on this processor's scheduler.
@@ -288,8 +308,19 @@ fn thread_entry(_: usize) -> ! {
     exit()
 }
 
-/// Creates a kernel thread running `f` and queues it. Returns its id.
+/// Creates a kernel thread running `f` on the boot processor and queues
+/// it. Returns its id.
 pub fn spawn(
+    name: &'static str,
+    f: impl FnOnce() + Send + 'static,
+) -> Result<ThreadId, OutOfMemory> {
+    spawn_on(0, name, f)
+}
+
+/// Creates a kernel thread running `f` on processor `cpu` (the boot
+/// processor if `cpu` is not online) and queues it. Returns its id.
+pub fn spawn_on(
+    cpu: usize,
     name: &'static str,
     f: impl FnOnce() + Send + 'static,
 ) -> Result<ThreadId, OutOfMemory> {
@@ -310,8 +341,18 @@ pub fn spawn(
         user_start: None,
         process: None,
     });
-    with(|s| s.ready.push(thread));
+    let cpu = if cpu < frame::cpu::online() { cpu } else { 0 };
+    push_on(cpu, thread);
     Ok(id)
+}
+
+/// Queues a new thread on processor `cpu` and lets it know.
+fn push_on(cpu: usize, thread: Box<Thread>) {
+    let pushed = with_cpu(cpu, |s| s.ready.push(thread));
+    assert!(pushed.is_some(), "task: processor {cpu} has no scheduler");
+    if cpu != my_cpu() {
+        frame::cpu::kick(cpu);
+    }
 }
 
 /// Why a user thread could not be created.
@@ -349,12 +390,26 @@ pub fn spawn_user(
         user_start: Some((entry, rsp, arg)),
         process: Some(Arc::clone(process)),
     });
-    let _irq = IrqGuard::new();
-    if process.exiting() {
-        return Err(SpawnError::Exiting);
+    // The exiting check and the queueing happen under the target
+    // scheduler's lock, which `kill` takes too: either the kill sees the
+    // new thread, or the new thread sees the kill.
+    let cpu = process.cpu();
+    let queued = with_cpu(cpu, |s| {
+        if process.exiting() {
+            return false;
+        }
+        process.thread_added();
+        s.ready.push(thread);
+        true
+    });
+    match queued {
+        Some(true) => {}
+        Some(false) => return Err(SpawnError::Exiting),
+        None => panic!("task: processor {cpu} has no scheduler"),
     }
-    process.thread_added();
-    with(|s| s.ready.push(thread));
+    if cpu != my_cpu() {
+        frame::cpu::kick(cpu);
+    }
     Ok(id)
 }
 
@@ -396,10 +451,12 @@ pub fn exit_process(code: i64) -> ! {
 pub fn kill(process: &Arc<Process>, code: i64) {
     process.set_exit_code(code);
     let pid = process.id();
+    let cpu = process.cpu();
+    let local = cpu == my_cpu();
     // The containers hold boxes, so the predicate takes `&Box<Thread>`.
     #[allow(clippy::borrowed_box)]
     let ours = |t: &Box<Thread>| belongs_to(t, pid);
-    with(|s| {
+    let running_there = with_cpu(cpu, |s| {
         let mut waiting = s.sleeping.take_where(ours);
         let (mut blocked, others): (Vec<_>, Vec<_>) =
             core::mem::take(&mut s.blocked).into_iter().partition(ours);
@@ -412,11 +469,28 @@ pub fn kill(process: &Arc<Process>, code: i64) {
         for t in s.ready.iter_mut().filter(|t| ours(t)) {
             t.killed = true;
         }
-        if let Some(t) = s.current.as_mut().filter(|t| ours(t)) {
-            t.killed = true;
-            t.state = State::Zombie;
+        match s.current.as_mut().filter(|t| ours(t)) {
+            Some(t) if local => {
+                t.killed = true;
+                t.state = State::Zombie;
+                false
+            }
+            Some(t) => {
+                // Running on its processor: it ends on its way back to user
+                // mode (the IPI below interrupts it). If it was about to
+                // block, it runs on instead and sees the kill.
+                t.killed = true;
+                if matches!(t.state, State::Blocked | State::Sleeping(_)) {
+                    t.state = State::Running;
+                }
+                true
+            }
+            None => false,
         }
     });
+    if !local && running_there.is_some() {
+        frame::cpu::kick(cpu);
+    }
 }
 
 /// Registered with frame: runs on every way back to ring 3 (end of a
@@ -545,7 +619,24 @@ pub fn current_killed() -> bool {
 /// is running or ready, its next [`block`] returns at once. Unknown ids
 /// are ignored.
 pub fn wake(id: ThreadId) {
-    with(|s| {
+    if id == 0 {
+        return;
+    }
+    let me = my_cpu();
+    if with(|s| wake_in(s, id)) {
+        return;
+    }
+    for cpu in (0..frame::cpu::online()).filter(|&c| c != me) {
+        if with_cpu(cpu, |s| wake_in(s, id)) == Some(true) {
+            frame::cpu::kick(cpu);
+            return;
+        }
+    }
+}
+
+/// [`wake`] on one processor's scheduler; whether the thread is there.
+fn wake_in(s: &mut Scheduler, id: ThreadId) -> bool {
+    {
         if let Some(t) = s.current.as_mut().filter(|t| t.id == id) {
             // Blocked but not switched away yet (between `block` deciding
             // and `schedule` running, with interrupts off): just run on.
@@ -554,25 +645,32 @@ pub fn wake(id: ThreadId) {
                 State::Sleeping(_) if t.wakeable => t.state = State::Running,
                 _ => t.wake_pending = true,
             }
-            return;
+            return true;
         }
         if let Some(i) = s.blocked.iter().position(|t| t.id == id) {
             let mut t = s.blocked.swap_remove(i);
             t.state = State::Ready;
             s.ready.push(t);
-            return;
+            return true;
         }
         let mut woken = s.sleeping.take_where(|t| t.id == id && t.wakeable);
         if let Some(mut t) = woken.pop() {
             t.state = State::Ready;
             s.ready.push(t);
-            return;
+            return true;
+        }
+        // A sleeper in `sleep_ns` is not woken (as before SMP): it is
+        // here, so the search ends.
+        if s.sleeping.any(|t| t.id == id) {
+            return true;
         }
         // Ready: remember the wake-up for its next `block`.
         if let Some(t) = s.ready.iter_mut().find(|t| t.id == id) {
             t.wake_pending = true;
+            return true;
         }
-    });
+        false
+    }
 }
 
 /// Picks the next thread and switches to it. The running thread goes where
@@ -604,9 +702,11 @@ pub fn schedule() {
         next.state = State::Running;
         next.slice = TIME_SLICE;
         // A user thread needs its process's address space; kernel threads
-        // run in whichever is active (the kernel half is the same).
-        if let Some(process) = &next.process {
-            process.space().activate();
+        // and idle run in the kernel's own, so that no processor keeps a
+        // finished process's tables loaded (`docs/smp.md`).
+        match &next.process {
+            Some(process) => process.space().activate(),
+            None => frame::mm::user::activate_kernel(),
         }
         let context = Arc::clone(&next.context);
         s.current = Some(next);

@@ -375,14 +375,18 @@ fn belongs_to(thread: &Thread, pid: super::ProcessId) -> bool {
 fn user_fault(frame: &frame::trap::TrapFrame, cr2: u64) -> ! {
     let process = current_process();
     let (pid, name) = process.as_ref().map_or((0, "?"), |p| (p.id(), p.name()));
+    // CR2 only means something for a page fault.
+    let mut fault_address = alloc::string::String::new();
+    if frame.vector == 14 {
+        let _ = core::fmt::Write::write_fmt(&mut fault_address, format_args!(" CR2={cr2:#x}"));
+    }
     frame::kprintln!(
-        "process {pid} ({name}): exception {} ({}), error code {:#x} at RIP={:#x} RSP={:#x} CR2={:#x}; killed",
+        "process {pid} ({name}): exception {} ({}), error code {:#x} at RIP={:#x} RSP={:#x}{fault_address}; killed",
         frame.vector,
         frame::trap::exception_name(frame.vector),
         frame.error_code,
         frame.rip,
         frame.rsp,
-        cr2
     );
     drop(process);
     exit_process(128 + frame.vector as i64)

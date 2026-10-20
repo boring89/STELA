@@ -32,6 +32,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("heap", heap),
         ("locks and interrupts", locks),
         ("mmio mapping", mmio_mapping),
+        ("acpi madt", acpi_madt),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -253,4 +254,47 @@ fn mmio_mapping(info: &'static BootInfo) {
         fb.phys_addr,
         a.virt()
     );
+}
+
+fn acpi_madt(_: &'static BootInfo) {
+    let madt = frame::acpi::madt();
+    assert_ne!(madt.local_apic_address, 0);
+    assert!(!madt.io_apics.is_empty(), "no I/O APIC");
+    // CPUID.01H:EBX[31:24] is the initial APIC id of the running processor
+    // (Intel SDM Vol. 2A "CPUID"), which must be an enabled MADT processor.
+    let bsp = (core::arch::x86_64::__cpuid(1).ebx >> 24) as u8;
+    assert!(
+        madt.processors
+            .iter()
+            .any(|p| p.enabled && p.apic_id == bsp),
+        "BSP APIC id {bsp} not in the MADT"
+    );
+    for p in &madt.processors {
+        kprintln!(
+            "selftest:   cpu uid {} apic id {}{}",
+            p.processor_id,
+            p.apic_id,
+            if p.enabled { "" } else { " (disabled)" }
+        );
+    }
+    for a in &madt.io_apics {
+        kprintln!(
+            "selftest:   I/O APIC {} at {:#x}, GSI base {}",
+            a.id,
+            a.address,
+            a.gsi_base
+        );
+    }
+    for o in &madt.overrides {
+        kprintln!(
+            "selftest:   IRQ {} -> GSI {} ({:?}, {:?})",
+            o.source,
+            o.gsi,
+            o.polarity(),
+            o.trigger()
+        );
+    }
+    // QEMU wires the PIT (IRQ 0) to I/O APIC input 2.
+    let (gsi, _, _) = madt.isa_irq(0);
+    kprintln!("selftest:   ISA IRQ 0 arrives at GSI {gsi}");
 }

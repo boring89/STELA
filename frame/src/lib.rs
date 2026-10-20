@@ -11,6 +11,9 @@
 
 #![cfg_attr(not(test), no_std)]
 
+extern crate alloc;
+
+pub mod acpi;
 #[cfg(target_os = "none")]
 pub mod arch;
 pub mod console;
@@ -23,14 +26,16 @@ pub mod sync;
 pub mod trap;
 
 /// Brings up what the kernel relies on: serial console, GDT, TSS and IDT
-/// (exceptions), the frame allocator, the page tables and the heap. Call
-/// once, first thing in the kernel.
+/// (exceptions), the frame allocator, the page tables, the heap, the
+/// framebuffer console and the ACPI MADT. Call once, first thing in the
+/// kernel.
 #[cfg(target_os = "none")]
 pub fn init(info: &'static bootinfo::BootInfo) {
     serial::init();
     arch::x86_64::init();
     mm::init(info);
     console::fb::init(info);
+    acpi::init(info);
 }
 
 /// Executes `int3`. The breakpoint handler counts it and returns, so this

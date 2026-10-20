@@ -30,22 +30,28 @@ pub fn bitmap_placement(regions: &[MemoryRegion], bytes: u64) -> Option<u64> {
     (start + bytes <= largest.phys_end()).then_some(start)
 }
 
+/// Whether any byte of `start..end` lies in a region of one of `kinds`.
+pub fn overlaps(regions: &[MemoryRegion], start: u64, end: u64, kinds: &[MemoryKind]) -> bool {
+    regions.iter().any(|r| {
+        r.kind().is_some_and(|k| kinds.contains(&k)) && r.phys_start < end && start < r.phys_end()
+    })
+}
+
 /// Whether any byte of `start..end` is RAM according to the memory map
 /// (usable, kernel/boot, ACPI tables or ACPI NVS). Device mappings must not
 /// alias RAM: writes through them would bypass Rust's ownership of it.
 pub fn overlaps_ram(regions: &[MemoryRegion], start: u64, end: u64) -> bool {
-    regions.iter().any(|r| {
-        matches!(
-            r.kind(),
-            Some(
-                MemoryKind::Usable
-                    | MemoryKind::KernelAndBoot
-                    | MemoryKind::AcpiReclaimable
-                    | MemoryKind::AcpiNvs
-            )
-        ) && r.phys_start < end
-            && start < r.phys_end()
-    })
+    overlaps(
+        regions,
+        start,
+        end,
+        &[
+            MemoryKind::Usable,
+            MemoryKind::KernelAndBoot,
+            MemoryKind::AcpiReclaimable,
+            MemoryKind::AcpiNvs,
+        ],
+    )
 }
 
 /// Hands out 4 KiB physical frames.

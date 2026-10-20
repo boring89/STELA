@@ -11,13 +11,17 @@ whose experience it reuses and whose code it does not.
 
 ## Status
 
-Early (phase P1 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+Early (phase P2 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
 kernel ELF, builds its page tables (higher-half kernel and a direct map of physical memory) and
 hands over a boot information block. The kernel sets up its GDT/TSS and exception handlers, a
 bitmap physical frame allocator, its page tables and a heap, and prints to the serial port and
-to a framebuffer text console (Spleen font); a kernel panic shows a panic screen. There are no
-interrupts, timers, processes or drivers yet. See [docs/boot.md](docs/boot.md) and
-[docs/frame.md](docs/frame.md).
+to a framebuffer text console (Spleen font); a kernel panic shows a panic screen. It reads the
+ACPI MADT, masks the legacy 8259s and runs on the local and I/O APICs, with a per-CPU area, a
+1000 Hz APIC timer calibrated against the PIT, a monotonic clock (TSC when invariant) and a PS/2
+keyboard feeding an input event queue; `make run` echoes what you type and prints the uptime on
+Enter. Only the boot processor runs; there are no processes or user programs yet. See
+[docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
+[docs/time.md](docs/time.md) and [docs/keyboard.md](docs/keyboard.md).
 
 ## Building
 
@@ -27,7 +31,7 @@ Requirements: `rustup` (the pinned toolchain and targets are installed automatic
 ```bash
 make        # build the loader and the kernel into build/esp/
 make run    # boot it in QEMU with OVMF, serial on stdio
-make test   # host unit tests + QEMU self tests + a screen check
+make test   # host unit tests + QEMU self tests (keys typed via QMP) + a screen check
 ```
 
 ## License

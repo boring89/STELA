@@ -1,6 +1,6 @@
 # frame：kernel 與硬體之間的那一層
 
-> P1 由自動排程一次做完，使用者已於 2026-10-20 審核。
+> P1 由自動排程一次做完，使用者已於 2026-10-20 審核。P2 加入的部分（中斷、APIC、per-CPU、MMIO、計時器、鍵盤）**使用者尚未審核**，細節在 `docs/irq.md`、`docs/time.md`、`docs/keyboard.md`。
 
 `frame/` 是 STELA 唯一可以寫 `unsafe` 的 kernel crate（framekernel 架構）。kernel 與之後的驅動都是 `#![forbid(unsafe_code)]`，只能透過 frame 提供的 safe API 碰硬體。
 
@@ -12,21 +12,34 @@ kernel 像住戶，frame 像大樓的配電盤：危險的高壓線（直接寫�
 
 ```
 frame/src/
-  lib.rs              init()、halt()、breakpoint()、report_panic()、entry_point!
+  lib.rs              init()、halt()、halt_until_interrupt()、breakpoint()、report_panic()、entry_point!
   arch/x86_64/        只在 target_os = "none" 編譯
     io.rs             in/out 指令（crate 私有）
+    msr.rs            rdmsr/wrmsr（crate 私有）
+    interrupts.rs     RFLAGS.IF、cli、sti
     gdt.rs            GDT 與 TSS
-    idt.rs            IDT
-    exceptions.rs     32 個例外的組語 stub 與 Rust 分派
+    idt.rs            IDT（256 個 gate）
+    exceptions.rs     256 個向量的組語 stub 與 Rust 分派（≥ 32 交給 irq）
+    pic.rs            8259 remap + 全遮蔽（docs/irq.md）
+    apic.rs           local APIC（xAPIC）
+    ioapic.rs         I/O APIC
+    pit.rs            8254 PIT channel 2（校準用，docs/time.md）
+    i8042.rs          PS/2 控制器（docs/keyboard.md）
+  acpi/               RSDP/XSDT/MADT（tables.rs 純邏輯，host 測試）
+  irq.rs              向量配置、register、dispatch、EOI
+  cpu.rs              per-CPU 區（GS_BASE）
+  time/               APIC timer 1000 Hz、now_ns、sleep_ms（calc.rs 純邏輯）
+  input/              鍵盤解碼、KeyCode、事件佇列（keyboard.rs、queue.rs 純邏輯）
   serial.rs           COM1
   qemu.rs             isa-debug-exit
   trap.rs             TrapFrame 與例外報告格式（純邏輯，host 測試）
-  sync.rs             SpinLock（host 測試）、RacyCell
+  sync.rs             SpinLock（持鎖關中斷）、IrqGuard、Once（host 測試）、RacyCell
   mm/
     bitmap.rs         位元圖（純邏輯，host 測試）
     frames.rs         頁框配置邏輯（純邏輯，host 測試）
     pmm.rs            全域 PMM、PhysFrame
     paging.rs         kernel 端的 map/unmap/translate
+    mmio.rs           裝置暫存器的不快取映射、MmioRegion（docs/irq.md §7）
     heap.rs           #[global_allocator]
   console/
     font.rs           Spleen 字型（純邏輯，host 測試）
@@ -43,6 +56,7 @@ kernel 啟動時只要：
 frame::entry_point!(kernel_main);      // 產生 #[unsafe(no_mangle)] _start
 fn kernel_main(info: &'static BootInfo) -> ! {
     frame::init(info);                 // serial → GDT/TSS/IDT → PMM → 分頁 → heap → 畫面
+                                       // → ACPI → APIC → per-CPU → 鍵盤 → 計時器 → sti
     kprintln!("STELA kernel {}", ...);
     ...
 }
@@ -88,7 +102,7 @@ TSS 是 104 bytes（Figure 7-11）：`rsp[0..3]`（之後有 user mode 時用 RS
 
 256 個 16-byte gate。每個 gate：handler 位址（拆三段）、selector 0x08、IST 索引、屬性 `0x8E`（存在、DPL0、64 位元 interrupt gate——進入時自動關中斷）。
 
-P1 只填 0–31（CPU 例外）；32–255 不存在，意外的中斷會變成 #GP → panic。向量 8（double fault）用 IST1。
+P1 只填 0–31（CPU 例外）；P2 起 32–255 也全部存在，指向共用的中斷 stub（`docs/irq.md` §9）。向量 8（double fault）用 IST1。
 
 ### 5.2 Stub 與 TrapFrame
 
@@ -160,8 +174,9 @@ bitmap   1 1 0 0 0 1 0 0 1 1 …
 loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。kernel 透過 HHDM 讀寫分頁表（實體位址 `p` 的表在 `HHDM_BASE + p`）。
 
 - `paging::init`：清掉 PML4[0..256]（loader 的 identity map），重寫 CR3 讓 TLB 失效（Vol. 3A §4.10.4.1）。
-- `map(virt, PhysFrame, Flags)`：只允許在**動態區** `0xFFFF_FF00_0000_0000..+512 GiB`（PML4[510]），所以 safe code 動不到 kernel 映像與 HHDM。缺的中間表從 PMM 配置清零的頁框。映射吃掉 `PhysFrame`。
-- `unmap(virt) -> PhysFrame`：清掉項目、`invlpg`，把頁框的憑證還回來。
+- `map(virt, PhysFrame, Flags)`：只允許在**動態區**的下半部 `0xFFFF_FF00_0000_0000..+256 GiB`（PML4[510] 的前半），所以 safe code 動不到 kernel 映像、HHDM 與 MMIO。缺的中間表從 PMM 配置清零的頁框。映射吃掉 `PhysFrame`。
+- `unmap(virt) -> PhysFrame`：清掉項目、`invlpg`，把頁框的憑證還回來（同樣只限下半部）。
+- 動態區的上半部 `0xFFFF_FF40_0000_0000..+256 GiB` 是 **MMIO 視窗**，只有 `mm::mmio::map` 能映射（PCD+PWT、NX），見 `docs/irq.md` §7。
 - `translate(virt)`：任何位址，會處理 2 MiB／1 GiB 大頁。
 - NX：只有 loader 開了 `EFER.NXE`（`BootInfo::nx_enabled`）才設 bit 63。
 
@@ -169,6 +184,7 @@ loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。k
 虛擬位址                       內容
 0xFFFF_8000_0000_0000 ...      HHDM
 0xFFFF_FF00_0000_0000 ...      動態區：heap（4 MiB），之後是其他映射
+0xFFFF_FF40_0000_0000 ...      動態區上半：MMIO 視窗（不快取）
 0xFFFF_FFFF_8000_0000 ...      kernel 映像
 ```
 
@@ -178,7 +194,7 @@ loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。k
 
 ## 9. 鎖
 
-`frame::sync::SpinLock<T>`：一個 `AtomicBool`，`lock()` 用 compare-exchange 搶，搶不到就 `spin_loop`；回傳的 guard 在 drop 時解鎖。P1 只有一顆 CPU、沒有中斷，所以其實不會搶；之後中斷處理程式也要拿鎖時（P2），必須在持鎖期間關中斷，否則同一顆 CPU 會自己卡死。
+`frame::sync::SpinLock<T>`：一個 `AtomicBool`，`lock()` 先記下 IF 並 `cli`，再用 compare-exchange 搶，搶不到就 `spin_loop`；回傳的 guard 在 drop 時先解鎖、再把中斷恢復成原本的狀態。持鎖期間關中斷，是因為中斷處理程式也會拿鎖（輸入佇列、heap），否則同一顆 CPU 會自己卡死（P2 起，詳見 `docs/irq.md` §11）。`IrqGuard` 只做關中斷那一半；`Once<T>` 給開機時設一次之後只讀的值。host 上關中斷是 no-op。
 
 `RacyCell<T>`：只在開機單執行緒階段寫入、再交給硬體的 static（GDT、TSS、IDT），每次存取都是 `unsafe` 並說明理由。
 
@@ -221,19 +237,19 @@ kprintln!  ──►  serial（無鎖）
 
 | 測試 | 內容 |
 |---|---|
-| host（`cargo test -p frame`） | bitmap、FrameAllocator（含 double free）、SpinLock（多執行緒）、TrapFrame 位移與報告格式、字型、TextConsole 換行／捲動／tab |
-| selftest（`make test-qemu`） | BootInfo 合理、`int3` 兩次被接到並返回、例外報告格式、頁框配置／釋放／連續配置、map/translate/unmap、identity map 已移除、Vec/String/Box 與 heap 統計 |
-| `make test-qemu-min` | 同上，`-cpu Conroe,-nx -m 256M`（硬體基準、無 NX） |
-| `make test-fb` | 一般 kernel 開機後 QEMU `screendump`，`tools/fb_check.py` 檢查畫面不是全黑、有至少 3 行字 |
+| host（`cargo test -p frame`） | bitmap、FrameAllocator（含 double free）、SpinLock（多執行緒）、IrqGuard、Once、`overlaps_ram`、TrapFrame 位移與報告格式、字型、TextConsole 換行／捲動／tab；P2 的 ACPI、時間換算、鍵盤解碼、事件佇列（見各文件） |
+| selftest（`make test-qemu`） | BootInfo 合理、`int3` 兩次被接到並返回、例外報告格式、頁框配置／釋放／連續配置、map/translate/unmap、identity map 已移除、Vec/String/Box 與 heap 統計；P2：鎖與 IF、MMIO、MADT、中斷控制器、中斷分派、tick、sleep、鍵盤（QMP 打字） |
+| `make test-qemu-min` | 同上，`-cpu Conroe,-nx -m 256M`（硬體基準、無 NX、無 invariant TSC） |
+| `make test-fb` | 一般 kernel 開機、QMP 打 `h i ret`、看到 `uptime:` 後 QEMU `screendump`，`tools/fb_check.py` 檢查畫面不是全黑、有至少 3 行字 |
 
 selftest 結束時寫 `0x10` 到 `isa-debug-exit`（port `0xF4`），QEMU 以 `(0x10 << 1) | 1 = 33` 結束；panic 時寫 `0x11`（35）。
 
 ## 12. 已知限制與待辦
 
-- 單核、沒有中斷、沒有計時器（P2）。
+- 只有 BSP（AP 不啟動，P10）；中斷、計時器、鍵盤的限制見 `docs/irq.md` §13、`docs/time.md` §7、`docs/keyboard.md` §9。
 - 沒有設定 PAT，framebuffer 是 write-back 快取而不是 write-combining；捲動要讀 framebuffer，在實機上會慢。之後可以加 PAT／影子緩衝區。
 - 畫字逐像素、沒有最佳化（`fill` 已改成逐列連續寫入）。
-- 分頁：空掉的中間表不回收；只支援 4 KiB 映射；沒有 MMIO 映射 API（需要時加，型別要與 `PhysFrame` 分開）。
+- 分頁：空掉的中間表不回收；只支援 4 KiB 映射。MMIO 映射（`mm::mmio`）的虛擬位址只增不減、不回收。
 - heap 固定 4 MiB、不會成長。
 - `alloc_contiguous` 是線性 first-fit。
 - 例外處理一律 panic（除了 breakpoint）；沒有 page fault 的需求分頁。

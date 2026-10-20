@@ -31,7 +31,8 @@ make clean
 - 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）。
 - cargo 的輸出在 `build/target/`（`.cargo/config.toml`）。
 - CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `cargo fmt --check`、`make clippy` 與 `make test`。
-- `make test` 的組成：`test-host`（`HOST_CRATES` = bootinfo、elfload、frame 的 `cargo test`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，檢查 `selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`）、`test-fb`（一般 kernel 開機後 screendump，`tools/fb_check.py` 檢查畫面有字）。`make run` 永遠跑沒有 selftest 的 kernel。
+- `make test` 的組成：`test-host`（`HOST_CRATES` = bootinfo、elfload、frame 的 `cargo test`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter，檢查 `input: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC）、`test-fb`（一般 kernel 開機、QMP 打 `h i ret`、看到 `uptime:` 後 screendump，`tools/fb_check.py` 檢查畫面有字）。`make run` 永遠跑沒有 selftest 的 kernel（打字會 echo，Enter 印 uptime）。
+- QEMU 的 TCG 不支援 invariant TSC，`make test` 只測得到 tick 退路；TSC 路徑要在本機用 `-enable-kvm -cpu host,+invtsc` 手動驗證（`docs/time.md` §5.3）。
 
 ### 測試
 
@@ -46,8 +47,13 @@ boot/          UEFI loader（x86_64-unknown-uefi）：讀 kernel.elf、建分頁
 bootinfo/      loader 與 kernel 共用的 BootInfo 結構（no_std，host 測試）
 elfload/       最小 ELF64 解析（只處理 PT_LOAD，host 測試）
 frame/         框架 crate：所有 unsafe 的家，對外只提供 safe API（docs/frame.md）
-  src/arch/x86_64/  架構相關：port I/O、GDT/TSS、IDT、例外 stub
-  src/mm/           頁框配置（bitmap）、kernel 分頁、heap
+  src/arch/x86_64/  架構相關：port I/O、MSR、GDT/TSS、IDT、256 個向量的 stub、8259、local/I/O APIC、PIT、i8042
+  src/acpi/         RSDP/XSDT/MADT 解析（tables.rs 純邏輯，host 測試）（docs/irq.md）
+  src/irq.rs        向量配置、irq::register、分派與 EOI（docs/irq.md）
+  src/cpu.rs        per-CPU 區（GS_BASE）
+  src/time/         APIC timer 1000 Hz、now_ns、sleep_ms（docs/time.md）
+  src/input/        鍵盤解碼、KeyCode、輸入事件佇列（docs/keyboard.md）
+  src/mm/           頁框配置（bitmap）、kernel 分頁、MMIO 映射、heap
   src/console/      字型、文字主控台、framebuffer、panic 畫面
 kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）：之後的記憶體、行程、排程、VFS、syscall
 drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）（尚未建立）
@@ -116,10 +122,14 @@ Claude 依照上方工作規則直接實作。
 
 協作模式的元件（之後新增的加入此清單）：
 - P1（自動排程一次做完，使用者已審核（2026-10-20））：開機載入器（`docs/boot.md`）、frame 的 GDT/IDT/分頁/記憶體/主控台（`docs/frame.md`）
+- P2（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：ACPI MADT、APIC 與中斷、per-CPU、鎖（`docs/irq.md`）、計時器與時鐘（`docs/time.md`）、PS/2 鍵盤與輸入事件（`docs/keyboard.md`）
 
 ## 已知問題（尚未修正）
 
-- 單核、沒有中斷與計時器（P2 再做）；`SpinLock` 不關中斷，P2 讓中斷處理程式拿鎖之前要改。
+- 只有 BSP，沒有啟動 AP（P10）；只支援 xAPIC，沒有 8259 退路（沒有 APIC 或 MADT 就 panic）；LINT1（NMI）遮蔽。
+- MMIO 映射的虛擬位址只增不減、不回收；中斷處理程式表用一把 SpinLock（SMP 時可改 atomic）。
+- 計時器只有週期模式 1000 Hz；依賴 8254 PIT 校準；沒有 invariant TSC 時 `now_ns()` 只有 1 ms 解析度，且長時間關中斷（例如主控台捲動）會少算 tick。
+- 鍵盤：只有 PS/2（i8042）、US 配置；沒有數字鍵台、LED、按住重複、滑鼠；新電腦可能沒有 i8042（要等 P8 的 USB HID）。
 - 沒有設定 PAT：framebuffer 是 write-back 而不是 write-combining，捲動要讀 framebuffer，實機上會慢。
 - loader 不切換 GOP 模式（OVMF 預設 1280x800）；不支援 Bitmask 像素格式。
 - 記憶體表合併後最多 256 個區段（`regions_truncated`）；`KernelAndBoot`（含 loader 自己）與 identity map 用過的分頁表不回收。

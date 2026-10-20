@@ -23,5 +23,6 @@ jobs:
         run: make clippy
       - name: Test
         # Host unit tests, QEMU self tests (default and minimal CPU without
-        # NX), and a framebuffer screendump check. No KVM needed.
+        # NX; keystrokes injected through QMP send-key), and a framebuffer
+        # screendump check after typing into the echo loop. No KVM needed.
         run: make test

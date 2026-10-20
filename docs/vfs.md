@@ -106,7 +106,10 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Archive (eHFS, rw,
 - QEMU 的 `fat:rw:` ESP 沒有 GPT（vvfat 是 MBR）→ 不掛載；`make run` 與一般的 `make test-qemu` 沒有卷宗（`vfs: no volumes`），程式照常從 initrd 啟動。
 - 關機：selftest 結束前 `vfs::unmount_all()`（eHFS 標成 clean 並 flush）。P6.5 起一般 kernel 的 `SystemPower`（shell 的 `shutdown`／`reboot`）也先 `unmount_all()`（`docs/acpi.md`）；直接關掉 QEMU 不會壞（有日誌），只是 fsck 會說「沒有正常卸載」。
 
-### 6.1 `Initrd`（P6）
+### 6.1 `Initrd`（P6）與 `Tmp`（P7）
+
+P7 起 `InitrdFs` 是一棵資料夾樹（`initrd::Tree`：成員路徑 `linux/hello` → 資料夾 `linux` 裡的 `hello`），`Tmp` 卷宗是 kernel 記憶體裡的檔案系統（`vfs/tmpfs.rs`，≤ 16 MiB，關機就沒了；Linux 程式的 `/tmp`），見 `docs/linux.md` §7.1、§10。
+
 
 initrd 也是一個卷宗：`InitrdFs`，唯讀，ustar 的檔案都在根目錄（id = 2 + 成員序號）；`mount_all` 最後掛上。程式（包括 kernel 自己啟動的 init）一律從檔案載入（`docs/userland.md` §2.1）。
 

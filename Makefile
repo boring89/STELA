@@ -13,6 +13,23 @@ USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest ini
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 
+# musl (MIT license), only to build the Linux test programs; never part of
+# the repository. Not downloaded here: the tarball is copied from where it
+# already is (68k_HAL's downloads, or MUSL_TARBALL=...), checked against
+# the SHA-256 musl publishes for the release, and built in build/musl.
+MUSL_VERSION := 1.2.5
+MUSL_SHA256 := a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
+MUSL_TARBALL ?= $(HOME)/文件/68k_HAL/third_party/downloads/musl/musl-$(MUSL_VERSION).tar.gz
+MUSL_DOWNLOAD := $(BUILD)/downloads/musl-$(MUSL_VERSION).tar.gz
+MUSL_DIR    := $(BUILD)/musl
+MUSL_GCC    := $(MUSL_DIR)/install/bin/musl-gcc
+# Linux test programs (linux/tests/<name>.c), static, packed into the
+# initrd's linux/ folder.
+LINUX_TESTS := hello files memory time tty nosys
+LINUX_DIR   := $(USER_DIR)/linux
+LINUX_CFLAGS := -static -O2 -no-pie -fno-pie -Wall -Wextra -Werror \
+               -Wl,-z,max-page-size=4096 -Wl,--build-id=none
+
 OVMF_CODE   := /usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS   := /usr/share/OVMF/OVMF_VARS_4M.fd
 QEMU        := qemu-system-x86_64
@@ -37,8 +54,8 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 # User-space crates (same target).
 USER_CRATES := libstela $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd esp esp-test run test test-host test-qemu test-qemu-min test-fb \
-	host-images test-images test-storage test-shell test-shutdown ehfs-tools test-ehfs-compat clippy fmt clean
+.PHONY: all boot kernel user initrd musl linux-tests esp esp-test run test test-host test-qemu test-qemu-min test-fb \
+	host-images test-images test-storage test-shell test-shutdown test-linux ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -53,11 +70,34 @@ user:
 	mkdir -p $(USER_DIR)
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(USER_PROGRAMS)) $(USER_DIR)/
 
-# The initial RAM disk: the user programs in a ustar archive, with fixed
-# owners and times so that the same programs give the same bytes.
-initrd: user
-	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 \
-		-cf $(INITRD) -C $(USER_DIR) $(USER_PROGRAMS)
+# The initial RAM disk: the user programs in a ustar archive (the Linux
+# test programs in its linux/ folder), with fixed owners and times so that
+# the same programs give the same bytes.
+initrd: user linux-tests
+	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
+		-cf $(INITRD) -C $(USER_DIR) $(USER_PROGRAMS) linux
+
+musl: $(MUSL_GCC)
+
+$(MUSL_DOWNLOAD):
+	mkdir -p $(BUILD)/downloads
+	cp $(MUSL_TARBALL) $@
+
+$(MUSL_GCC): $(MUSL_DOWNLOAD)
+	echo "$(MUSL_SHA256)  $(MUSL_DOWNLOAD)" | sha256sum -c -
+	rm -rf $(MUSL_DIR)
+	mkdir -p $(MUSL_DIR)/src
+	tar -xzf $(MUSL_DOWNLOAD) -C $(MUSL_DIR)/src --strip-components=1
+	cd $(MUSL_DIR)/src && ./configure --prefix=$(abspath $(MUSL_DIR))/install \
+		--target=x86_64 --disable-shared CC=gcc AR=ar RANLIB=ranlib > ../configure.log
+	$(MAKE) -C $(MUSL_DIR)/src -j$$(nproc) > $(MUSL_DIR)/make.log
+	$(MAKE) -C $(MUSL_DIR)/src install > $(MUSL_DIR)/install.log
+
+linux-tests: $(addprefix $(LINUX_DIR)/,$(LINUX_TESTS))
+
+$(LINUX_DIR)/%: linux/tests/%.c $(MUSL_GCC)
+	mkdir -p $(LINUX_DIR)
+	$(MUSL_GCC) $(LINUX_CFLAGS) -o $@ $<
 
 # The EFI System Partition as a directory; QEMU serves it as a virtual FAT disk.
 esp: boot kernel initrd
@@ -82,7 +122,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-fb test-storage test-shell test-shutdown
+test: test-host test-qemu test-qemu-min test-fb test-storage test-shell test-shutdown test-linux
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -173,6 +213,30 @@ test-shutdown: esp test-images $(BUILD)/OVMF_VARS.fd
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-power.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-power.img | grep -q "unmounted cleanly"
+
+# The Linux personality: the shell runs the static musl test programs
+# from Initrd:/linux on the normal kernel (with the AHCI test disk, so the
+# working directory is Data:/), and a line is typed for linux/tty.
+test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-linux.img
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-linux.log \
+		--type "STELA shell" "run linux/hello a b\n" \
+		--type "hello exited with code" "run linux/files\n" \
+		--type "files exited with code" "run linux/memory\n" \
+		--type "memory exited with code" "run linux/time\n" \
+		--type "time exited with code" "run linux/nosys\n" \
+		--type "nosys exited with code" "run linux/tty\n" \
+		--type "tty: type a line" "stela rocks\n" \
+		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
+		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
+		--expect "files: OK" --expect "files exited with code 0" \
+		--expect "memory: OK" --expect "memory exited with code 0" \
+		--expect "time: OK" --expect "time exited with code 0" \
+		--expect "nosys: OK" --expect "nosys exited with code 0" \
+		--expect "tty: you typed: stela rocks" --expect "tty exited with code 0" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-linux.img \
+		-device ide-hd,drive=sata1,bus=ide.1
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.
 EHFS_TOOLS  := $(BUILD)/host/ehfs

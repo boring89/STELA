@@ -12,7 +12,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install packages
         # mtools and gdisk (sgdisk) make the FAT and GPT test images.
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3 mtools gdisk
+        # gcc builds musl and the Linux test programs.
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3 mtools gdisk gcc
+      - name: musl tarball
+        # The Linux test programs are built with musl (MIT). Locally the
+        # tarball is copied from where it already is; here it is fetched
+        # once and cached, and the Makefile checks its SHA-256.
+        uses: actions/cache@v4
+        with:
+          path: build-cache/musl-1.2.5.tar.gz
+          key: musl-a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
+      - name: Fetch musl
+        run: |
+          mkdir -p build-cache
+          test -f build-cache/musl-1.2.5.tar.gz || curl -fsSL -o build-cache/musl-1.2.5.tar.gz https://musl.libc.org/releases/musl-1.2.5.tar.gz
+          echo "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4  build-cache/musl-1.2.5.tar.gz" | sha256sum -c -
+          echo "MUSL_TARBALL=$PWD/build-cache/musl-1.2.5.tar.gz" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         # Any cargo call makes rustup install the toolchain, targets and
         # components pinned by rust-toolchain.toml (`rustup show` stopped
@@ -27,8 +42,10 @@ jobs:
         # NX; keystrokes injected through QMP send-key; threads, user mode,
         # system calls, the initrd programs, ports and the IPC test
         # programs, PCI, AHCI and NVMe disks, GPT, FAT and eHFS volumes over
-        # two boots, processes), a framebuffer screendump check after a
-        # command was typed into the shell, and a scripted shell session.
+        # two boots, processes, the Linux personality), a framebuffer
+        # screendump check after a command was typed into the shell, a
+        # scripted shell session, shutdown and reboot, and the static musl
+        # test programs run from the shell.
         # Builds the user programs and packs the initrd with
         # the runner's GNU tar. No KVM needed.
         run: make test

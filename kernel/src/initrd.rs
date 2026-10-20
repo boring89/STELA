@@ -206,6 +206,126 @@ pub fn find<'a>(archive: &'a [u8], path: &str) -> Option<&'a [u8]> {
         .map(|e| e.data)
 }
 
+/// The archive as a folder tree: every member path (`a/b/c`) becomes
+/// folders `a`, `a/b` and the file `c`, whether or not the archive has
+/// directory members. Node ids: 1 is the root, the others are 2, 3, ...
+/// in the order the members appear.
+#[derive(Debug)]
+pub struct Tree<'a> {
+    nodes: alloc::vec::Vec<TreeNode<'a>>,
+}
+
+/// One file or folder of a [`Tree`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeNode<'a> {
+    /// Its id.
+    pub id: u64,
+    /// The folder it is in (the root is its own parent).
+    pub parent: u64,
+    /// The last component of its path.
+    pub name: alloc::string::String,
+    /// A folder.
+    pub is_dir: bool,
+    /// A file's bytes (empty for folders).
+    pub data: &'a [u8],
+}
+
+/// The root folder's id.
+pub const TREE_ROOT: u64 = 1;
+
+impl<'a> Tree<'a> {
+    /// Builds the tree of `archive`; stops at the first malformed header.
+    /// A later member with the same path replaces an earlier file.
+    pub fn new(archive: &'a [u8]) -> Tree<'a> {
+        let mut tree = Tree {
+            nodes: alloc::vec![TreeNode {
+                id: TREE_ROOT,
+                parent: TREE_ROOT,
+                name: alloc::string::String::new(),
+                is_dir: true,
+                data: &[],
+            }],
+        };
+        for e in entries(archive).map_while(Result::ok) {
+            if e.kind == Kind::Other {
+                continue;
+            }
+            let parts: alloc::vec::Vec<&str> = e
+                .prefix
+                .split('/')
+                .chain(e.name.split('/'))
+                .filter(|p| !p.is_empty() && *p != ".")
+                .collect();
+            let Some((last, folders)) = parts.split_last() else {
+                continue;
+            };
+            let mut dir = TREE_ROOT;
+            for folder in folders {
+                dir = tree.folder(dir, folder);
+            }
+            if e.kind == Kind::Directory {
+                tree.folder(dir, last);
+            } else {
+                tree.nodes
+                    .retain(|n| !(n.parent == dir && n.name == *last && !n.is_dir));
+                let id = tree.next_id();
+                tree.nodes.push(TreeNode {
+                    id,
+                    parent: dir,
+                    name: (*last).into(),
+                    is_dir: false,
+                    data: e.data,
+                });
+            }
+        }
+        tree
+    }
+
+    fn next_id(&self) -> u64 {
+        self.nodes.iter().map(|n| n.id).max().unwrap_or(TREE_ROOT) + 1
+    }
+
+    /// The folder `name` in `dir`, made if missing.
+    fn folder(&mut self, dir: u64, name: &str) -> u64 {
+        if let Some(n) = self
+            .nodes
+            .iter()
+            .find(|n| n.parent == dir && n.is_dir && n.name == name && n.id != TREE_ROOT)
+        {
+            return n.id;
+        }
+        let id = self.next_id();
+        self.nodes.push(TreeNode {
+            id,
+            parent: dir,
+            name: name.into(),
+            is_dir: true,
+            data: &[],
+        });
+        id
+    }
+
+    /// The node with id `id`.
+    pub fn get(&self, id: u64) -> Option<&TreeNode<'a>> {
+        self.nodes.iter().find(|n| n.id == id)
+    }
+
+    /// The item `name` in folder `dir` (ASCII case ignored).
+    pub fn lookup(&self, dir: u64, name: &str) -> Option<&TreeNode<'a>> {
+        self.children(dir).find(|n| n.name == name).or_else(|| {
+            self.children(dir)
+                .find(|n| n.name.eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// The items of folder `dir`, in archive order.
+    pub fn children(&self, dir: u64) -> impl Iterator<Item = &TreeNode<'a>> {
+        self.nodes
+            .iter()
+            .filter(move |n| n.parent == dir && n.id != TREE_ROOT)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +422,32 @@ mod tests {
         let mut it = entries(&bad);
         assert!(it.next().is_some());
         assert_eq!(it.next(), None);
+    }
+
+    #[test]
+    fn tree_of_paths() {
+        let tar = archive(&[
+            member("hello", "", b'0', b"hi"),
+            member("linux/hello", "", b'0', b"elf"),
+            member("apps/", "", b'5', b""),
+            member("exec", "apps/Viewer.app", b'0', b"v"),
+            member("hello", "", b'0', b"again"),
+        ]);
+        let t = Tree::new(&tar);
+        let root: Vec<_> = t.children(TREE_ROOT).map(|n| n.name.as_str()).collect();
+        assert_eq!(root, ["linux", "apps", "hello"]);
+        let hello = t.lookup(TREE_ROOT, "HELLO").unwrap();
+        assert_eq!(hello.data, b"again");
+        let linux = t.lookup(TREE_ROOT, "linux").unwrap();
+        assert!(linux.is_dir);
+        assert_eq!(t.lookup(linux.id, "hello").unwrap().data, b"elf");
+        let apps = t.lookup(TREE_ROOT, "apps").unwrap();
+        let viewer = t.lookup(apps.id, "Viewer.app").unwrap();
+        assert!(viewer.is_dir);
+        let exec = t.lookup(viewer.id, "exec").unwrap();
+        assert_eq!(t.get(exec.id).unwrap().parent, viewer.id);
+        assert!(t.lookup(TREE_ROOT, "exec").is_none());
+        assert!(t.get(TREE_ROOT).unwrap().is_dir);
     }
 
     #[test]

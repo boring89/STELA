@@ -11,7 +11,7 @@ whose experience it reuses and whose code it does not.
 
 ## Status
 
-Early (phase P6.5 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+Early (phase P7 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -34,19 +34,22 @@ boots into `init`, which starts the shell: `help` lists its commands (`ls`, `cat
 `mkdir`, `rm`, `cd`, `pwd`, `run`, `ps`, `mem`, `uptime`, `vols`, `shutdown`, `reboot`); a
 faulting program is killed and the system goes on. The date comes from the CMOS real-time
 clock; `shutdown` unmounts the volumes and turns the machine off through ACPI (FADT and the
-DSDT's `\_S5`). Only the boot processor runs. See
+DSDT's `\_S5`). Static x86-64 Linux programs (musl) run with a Linux personality: Linux
+system calls are translated onto STELA's objects (descriptors, a synthetic root over the volumes
+with `/tmp` and `/dev`, ttys with a line discipline, brk and anonymous mmap, TLS). Only the boot processor runs. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
 [docs/ipc.md](docs/ipc.md), [docs/pci.md](docs/pci.md), [docs/storage.md](docs/storage.md),
-[docs/ehfs.md](docs/ehfs.md), [docs/vfs.md](docs/vfs.md), [docs/userland.md](docs/userland.md) and
-[docs/acpi.md](docs/acpi.md).
+[docs/ehfs.md](docs/ehfs.md), [docs/vfs.md](docs/vfs.md), [docs/userland.md](docs/userland.md),
+[docs/acpi.md](docs/acpi.md) and [docs/linux.md](docs/linux.md).
 
 ## Building
 
 Requirements: `rustup` (the pinned toolchain and targets are installed automatically from
 `rust-toolchain.toml`), `qemu-system-x86`, `ovmf`, `python3`, `make`, GNU `tar`, `mtools`,
-`gdisk` (the last two make test disk images).
+`gdisk` (the last two make test disk images), `gcc` (builds musl, MIT, for the Linux test
+programs; the musl tarball is copied, not downloaded: see [third_party/README.md](third_party/README.md)).
 
 ```bash
 make        # build the loader, the kernel, the user programs and the initrd into build/esp/
@@ -59,7 +62,8 @@ make ehfs-tools  # mkfs.ehfs, fsck.ehfs, ehfs-cp, ehfs-ls for image files, in bu
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
 
-The Spleen font in `third_party/spleen/` is by Frederic Cambus and is under the BSD 2-Clause
+musl is not part of the repository; the Linux test programs in the initrd are linked with it
+(MIT). The Spleen font in `third_party/spleen/` is by Frederic Cambus and is under the BSD 2-Clause
 license (see [third_party/spleen/LICENSE](third_party/spleen/LICENSE)).
 
 `ehfs/src/unicode_data.rs` is generated from the Unicode Character Database 15.0.0 and carries

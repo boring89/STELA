@@ -1263,4 +1263,19 @@ fn linux_personality(_: &'static BootInfo) {
     // calls (1 = ThreadExit), so it ends with code 0 without printing.
     let pid = program::spawn_with("forced", &raw, Some(Personality::Stela)).expect("spawn failed");
     assert_eq!(task::wait_process(pid), Some(0));
+    // A musl program from Initrd:/linux: stdio, uname, TLS, exit code 3;
+    // its memory comes back.
+    let run = || match program::spawn_path("Initrd", "linux/hello", None) {
+        Ok(p) => {
+            assert_eq!(p.personality(), Personality::Linux);
+            let pid = p.id();
+            drop(p);
+            task::wait_process(pid)
+        }
+        Err(e) => panic!("cannot start linux/hello: {e:?}"),
+    };
+    assert_eq!(run(), Some(3));
+    let (free, _) = pmm::stats();
+    assert_eq!(run(), Some(3));
+    assert_eq!(pmm::stats().0, free, "a musl program leaked memory");
 }

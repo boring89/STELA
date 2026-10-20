@@ -452,98 +452,77 @@ impl FileSystem for FatFs {
 // ---- The initrd ----
 
 /// The initial RAM disk as a read-only volume (`Initrd`): the ustar
-/// archive the loader brought (`frame::mm::initrd`). Its files are in the
-/// root folder (paths inside the archive keep their `/`, so `a/b` is
-/// reached as folder `a`, file `b`); ids are 2 + the member's index.
+/// archive the loader brought (`frame::mm::initrd`), as a folder tree
+/// (`crate::initrd::Tree`: `linux/hello` is file `hello` in folder
+/// `linux`).
 pub struct InitrdFs {
     archive: &'static [u8],
+    tree: crate::initrd::Tree<'static>,
 }
-
-const INITRD_ROOT: u64 = 1;
 
 impl InitrdFs {
     /// The volume over `archive`.
     pub fn new(archive: &'static [u8]) -> InitrdFs {
-        InitrdFs { archive }
+        InitrdFs {
+            archive,
+            tree: crate::initrd::Tree::new(archive),
+        }
     }
 
-    fn members(&self) -> impl Iterator<Item = (u64, crate::initrd::Entry<'static>)> {
-        crate::initrd::entries(self.archive)
-            .map_while(Result::ok)
-            .enumerate()
-            .filter(|(_, e)| e.kind == crate::initrd::Kind::File)
-            .map(|(i, e)| (i as u64 + 2, e))
-    }
-
-    fn info(id: u64, e: &crate::initrd::Entry<'_>) -> NodeInfo {
-        let full = if e.prefix.is_empty() {
-            String::from(e.name)
-        } else {
-            alloc::format!("{}/{}", e.prefix, e.name)
-        };
-        let name = full.rsplit('/').next().unwrap_or("").into();
+    fn info(n: &crate::initrd::TreeNode<'_>) -> NodeInfo {
         NodeInfo {
-            id,
-            is_dir: false,
-            size: e.data.len() as u64,
+            id: n.id,
+            is_dir: n.is_dir,
+            size: n.data.len() as u64,
             ctime: 0,
             mtime: 0,
-            name,
+            name: n.name.clone(),
+        }
+    }
+
+    fn folder(&self, dir: u64) -> Result<(), Error> {
+        match self.tree.get(dir) {
+            Some(n) if n.is_dir => Ok(()),
+            Some(_) => Err(Error::NotDir),
+            None => Err(Error::NotFound),
         }
     }
 }
 
 impl FileSystem for InitrdFs {
     fn root(&self) -> u64 {
-        INITRD_ROOT
+        crate::initrd::TREE_ROOT
     }
 
     fn lookup(&self, dir: u64, name: &str) -> Result<NodeInfo, Error> {
-        if dir != INITRD_ROOT {
-            return Err(Error::NotDir);
-        }
-        self.members()
-            .find(|(_, e)| e.is(name) || e.name.eq_ignore_ascii_case(name))
-            .map(|(id, e)| Self::info(id, &e))
+        self.folder(dir)?;
+        self.tree
+            .lookup(dir, name)
+            .map(Self::info)
             .ok_or(Error::NotFound)
     }
 
     fn get(&self, id: u64) -> Result<NodeInfo, Error> {
-        if id == INITRD_ROOT {
-            return Ok(NodeInfo {
-                id,
-                is_dir: true,
-                size: 0,
-                ctime: 0,
-                mtime: 0,
-                name: String::new(),
-            });
-        }
-        self.members()
-            .find(|(i, _)| *i == id)
-            .map(|(i, e)| Self::info(i, &e))
-            .ok_or(Error::NotFound)
+        self.tree.get(id).map(Self::info).ok_or(Error::NotFound)
     }
 
     fn list(&self, dir: u64) -> Result<Vec<NodeInfo>, Error> {
-        if dir != INITRD_ROOT {
-            return Err(Error::NotDir);
-        }
-        Ok(self.members().map(|(id, e)| Self::info(id, &e)).collect())
+        self.folder(dir)?;
+        Ok(self.tree.children(dir).map(Self::info).collect())
     }
 
     fn read(&self, id: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {
-        let (_, e) = self
-            .members()
-            .find(|(i, _)| *i == id)
-            .ok_or(Error::NotFound)?;
-        let data = e.data;
+        let n = self.tree.get(id).ok_or(Error::NotFound)?;
+        if n.is_dir {
+            return Err(Error::IsDir);
+        }
+        let data = n.data;
         if offset >= data.len() as u64 {
             return Ok(0);
         }
-        let n = (data.len() - offset as usize).min(buf.len());
-        buf[..n].copy_from_slice(&data[offset as usize..offset as usize + n]);
-        Ok(n)
+        let len = (data.len() - offset as usize).min(buf.len());
+        buf[..len].copy_from_slice(&data[offset as usize..offset as usize + len]);
+        Ok(len)
     }
 
     fn write(&self, _: u64, _: u64, _: &[u8]) -> Result<(), Error> {

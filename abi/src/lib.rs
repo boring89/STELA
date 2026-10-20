@@ -958,6 +958,8 @@ pub mod volume_kind {
     pub const FAT: u32 = 2;
     /// The initial RAM disk (read only).
     pub const INITRD: u32 = 3;
+    /// The kernel's memory file system (`Tmp`).
+    pub const TMP: u32 = 4;
 }
 
 /// `MemoryMap` flags.

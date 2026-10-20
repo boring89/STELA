@@ -25,6 +25,7 @@ pub const IOCTL: u64 = 16;
 pub const READV: u64 = 19;
 pub const WRITEV: u64 = 20;
 pub const ACCESS: u64 = 21;
+pub const PIPE: u64 = 22;
 pub const DUP: u64 = 32;
 pub const DUP2: u64 = 33;
 pub const NANOSLEEP: u64 = 35;

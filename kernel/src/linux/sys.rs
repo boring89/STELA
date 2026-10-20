@@ -128,7 +128,9 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         }
         nr::FUTEX => futex(p, a0, a1, a2, a3),
         nr::GETRANDOM => getrandom(p, a0, a1),
-        nr::PIPE2 | nr::CLONE | nr::CLONE3 | nr::FORK | nr::VFORK | nr::EXECVE => Err(ENOSYS),
+        nr::PIPE | nr::PIPE2 | nr::CLONE | nr::CLONE3 | nr::FORK | nr::VFORK | nr::EXECVE => {
+            Err(ENOSYS)
+        }
         _ => unknown(p, number),
     };
     drop(process);

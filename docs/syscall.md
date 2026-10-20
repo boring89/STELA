@@ -56,6 +56,9 @@
 | 16–26 | `DirOpen`…`VolumeOpenById` | | | 檔案與卷宗，見 `docs/vfs.md` §4（P5，使用者已於 2026-10-20 審核） |
 | 27–31 | `ProcessSpawn`、`ProcessWait`、`ProcessKill`、`ProcessSelf`、`SysInfo` | | | 行程，見 `docs/userland.md` §2（P6，使用者已於 2026-10-20 審核） |
 | 32 | `SystemPower` | kind | —（成功不返回） | 卸載卷宗後關機（0）或重新開機（1），見 `docs/acpi.md`（P6.5，**使用者尚未審核**） |
+| 33–36 | `TtyCreate`、`TtyRead`、`TtyWrite`、`HandleKind` | | | 終端機與 handle 種類，見 `docs/linux.md` §5（P7，**使用者尚未審核**） |
+
+P7 起沒有 STELA ELF note 的程式用 **Linux 人格**：同一個進入點，號碼與回傳慣例是 Linux 的（`docs/linux.md`）。
 
 編號就是 ABI：`abi` 的 host 測試把每個值鎖住。未知編號 → `InvalidSyscall`。
 

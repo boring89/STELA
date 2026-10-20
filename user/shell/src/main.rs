@@ -233,9 +233,11 @@ impl Shell {
         {
             return Ok(h);
         }
-        if !name.contains(['/', ':']) {
+        if !name.contains(':') && !name.starts_with('/') {
             let initrd = Owned(fs::volume_open("Initrd").map_err(|e| String::from(describe(e)))?);
-            if let Ok(h) = fs::open(initrd.0, name, open::READ) {
+            if let Ok(h) = fs::open(initrd.0, name, open::READ)
+                && fs::stat(h).is_ok_and(|s| s.kind == kind::FILE)
+            {
                 return Ok(Owned(h));
             }
         }
@@ -359,6 +361,7 @@ fn vols() -> Result<(), String> {
             libstela::abi::volume_kind::EHFS => "eHFS",
             libstela::abi::volume_kind::FAT => "FAT",
             libstela::abi::volume_kind::INITRD => "initrd",
+            libstela::abi::volume_kind::TMP => "memory",
             _ => "?",
         };
         println!(

@@ -20,6 +20,7 @@
 #[cfg(target_os = "none")]
 pub mod mount;
 pub mod path;
+pub mod tmpfs;
 
 #[cfg(target_os = "none")]
 mod target;

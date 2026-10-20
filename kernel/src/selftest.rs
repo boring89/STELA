@@ -1213,8 +1213,17 @@ fn ports(_: &'static BootInfo) {
     assert_eq!(port.send(msg(6)).err(), Some(Error::PeerClosed));
     assert_eq!(port.receive(None, 0).ok().map(|m| m.msg.tag), Some(5));
     assert_eq!(port.receive(None, 0).err(), Some(Error::PeerClosed));
-    task::sleep_ms(1);
-    assert_eq!(task::stats().blocked, blocked);
+    // No receiver is left blocked. The console service may be busy (not
+    // blocked) at either moment: with SMP, programs on other processors
+    // keep it printing (docs/smp.md).
+    let settled = (0..200).any(|_| {
+        if task::stats().blocked <= blocked.max(1) {
+            return true;
+        }
+        task::sleep_ms(1);
+        false
+    });
+    assert!(settled, "a receiver is still blocked");
 }
 
 /// Runs ipc_server and ipc_client (bootstrap: SEND to the server's main

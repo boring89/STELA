@@ -68,7 +68,7 @@ fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
 }
 
 /// The window server and the program it starts first.
-const DESKTOP: &[&str] = &["windowserver", "Terminal.app"];
+const DESKTOP: &[&str] = &["windowserver", "mouseion"];
 
 /// Runs the window server for as long as it keeps running; returns if it
 /// cannot be started at all.

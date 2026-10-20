@@ -28,8 +28,10 @@ given, when its trigger appears after the previous one fired.
 --mouse TRIGGER DX DY BUTTON moves the mouse by (DX, DY) and clicks BUTTON
 (left, right, middle or none) through QMP input-send-event when TRIGGER
 appears; --qmp TRIGGER COMMAND JSON runs any QMP command (device_add,
-device_del, input-send-event with a device...). The order of firing is
---send-keys, --type, --mouse, --qmp, each in the order given.
+device_del, input-send-event with a device...); --click TRIGGER X Y COUNT
+moves the pointer to screen position (X, Y) (by way of the top-left
+corner) and clicks the left button COUNT times. The order of firing is
+--send-keys, --type, --mouse, --qmp, --click, each in the order given.
 """
 import argparse
 import json
@@ -156,20 +158,51 @@ def send_keys(path, keys, deadline):
         qmp.close()
 
 
+def move(qmp, dx, dy):
+    """Moves the mouse by (dx, dy) in steps of at most 100: QEMU's PS/2
+    mouse sends only a few packets (127 each at most) per event."""
+    while dx or dy:
+        sx = max(-100, min(100, dx))
+        sy = max(-100, min(100, dy))
+        qmp.execute("input-send-event", {"events": [
+            {"type": "rel", "data": {"axis": "x", "value": sx}},
+            {"type": "rel", "data": {"axis": "y", "value": sy}}]})
+        dx -= sx
+        dy -= sy
+        time.sleep(0.03)
+
+
+def press(qmp, button, count):
+    """Clicks `button` `count` times (2: a double click)."""
+    for _ in range(count):
+        for down in (True, False):
+            qmp.execute("input-send-event", {"events": [
+                {"type": "btn", "data": {"down": down, "button": button}}]})
+            time.sleep(0.05)
+
+
 def mouse(path, dx, dy, button, deadline):
     """Moves the mouse by (dx, dy) and clicks `button` ("left", "right",
     "middle" or "none") with QMP input-send-event."""
     qmp = Qmp(path, deadline)
     try:
-        qmp.execute("input-send-event", {"events": [
-            {"type": "rel", "data": {"axis": "x", "value": dx}},
-            {"type": "rel", "data": {"axis": "y", "value": dy}}]})
+        move(qmp, dx, dy)
         time.sleep(0.1)
         if button != "none":
-            for down in (True, False):
-                qmp.execute("input-send-event", {"events": [
-                    {"type": "btn", "data": {"down": down, "button": button}}]})
-                time.sleep(0.1)
+            press(qmp, button, 1)
+    finally:
+        qmp.close()
+
+
+def click(path, x, y, count, deadline):
+    """Moves the pointer to (x, y) on the screen (first to the top-left
+    corner, where it stops) and clicks the left button `count` times."""
+    qmp = Qmp(path, deadline)
+    try:
+        move(qmp, -4000, -4000)
+        move(qmp, x, y)
+        time.sleep(0.2)
+        press(qmp, "left", count)
     finally:
         qmp.close()
 
@@ -196,6 +229,8 @@ def main():
                     metavar=("TRIGGER", "DX", "DY", "BUTTON"))
     ap.add_argument("--qmp", nargs=3, action="append", default=[],
                     metavar=("TRIGGER", "COMMAND", "JSON"))
+    ap.add_argument("--click", nargs=4, action="append", default=[],
+                    metavar=("TRIGGER", "X", "Y", "COUNT"))
     ap.add_argument("--expect", action="append", required=True)
     ap.add_argument("--log", help="also write the serial output to this file")
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
@@ -220,6 +255,8 @@ def main():
     typing += [(t, ("mouse", int(dx), int(dy), b)) for t, dx, dy, b in args.mouse]
     # So are raw QMP commands: ("qmp", command, arguments).
     typing += [(t, ("qmp", c, json.loads(j))) for t, c, j in args.qmp]
+    # And clicks at screen positions: ("click", x, y, count).
+    typing += [(t, ("click", int(x), int(y), int(n))) for t, x, y, n in args.click]
     if typing:
         qmp = os.path.abspath(os.path.join("build", f"qmp-{os.getpid()}.sock"))
         if os.path.exists(qmp):
@@ -240,6 +277,8 @@ def main():
                 action = typing.pop(0)[1]
                 if isinstance(action, tuple) and action[0] == "qmp":
                     command(qmp, action[1], action[2], deadline)
+                elif isinstance(action, tuple) and action[0] == "click":
+                    click(qmp, action[1], action[2], action[3], deadline)
                 elif isinstance(action, tuple):
                     mouse(qmp, action[1], action[2], action[3], deadline)
                 else:

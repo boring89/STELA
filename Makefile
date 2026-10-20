@@ -10,13 +10,13 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
 # program at Name.app/exec with Name.app/info.txt; the rest sit in the
 # initrd's root.
-BUNDLES     := terminal:Terminal echo_win:Echo
+BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer
 BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
 INITRD_ROOT := $(BUILD)/initrd-root
 
@@ -55,14 +55,14 @@ QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 # Crates that run on the host and have unit tests.
 HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela toolbox
 # Crates with a bare-metal binary whose library part has host unit tests.
-HOST_LIB_CRATES := kernel windowserver terminal
+HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 # User-space crates (same target).
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-window \
-	host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic ehfs-tools test-ehfs-compat clippy fmt clean
+	host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -169,7 +169,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux test-usb test-panic
+test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -321,6 +321,28 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 		-- $(QEMU) $(subst -machine q35,-machine q35$(comma)i8042=off,$(QEMU_FLAGS)) \
 		-display none -serial stdio $(USB_FLAGS)
 
+# Mouseion (2560x1600, 16x32 font, 64-pixel icons in 160x112 cells; the
+# desktop's volume icons on the right: Boot, Data, Initrd, Tmp): double
+# click Data, then welcome.txt in Data's window (the viewer opens it),
+# then Initrd, then Terminal.app in Initrd's window (a second terminal
+# starts). The screen shows the volume icons and the new terminal active.
+MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
+	--expect-rect 300,192,100,10,\#c8763c
+test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-mouseion.img
+	python3 tools/qemu_test.py --timeout 120 --screendump $(BUILD)/mouseion.ppm --log $(BUILD)/test-mouseion.log \
+		--click "mouseion: started Terminal" 2464 204 2 \
+		--click "mouseion: opened Data:/" 256 232 2 \
+		--click "viewer: Data:/welcome.txt" 2464 316 2 \
+		--click "mouseion: opened Initrd:/" 456 272 2 \
+		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
+		--expect "viewer: Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
+		--expect "mouseion: started Terminal" --expect "STELA shell" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	python3 tools/fb_check.py $(BUILD)/mouseion.ppm $(MOUSEION_CHECKS)
+
 # The eHFS host tools (tools/ehfs), installed under their usual names.
 EHFS_TOOLS  := $(BUILD)/host/ehfs
 HOST_TARGET_DIR := $(BUILD)/target/release
@@ -350,6 +372,7 @@ STORAGE_FLAGS = -drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci.img \
 
 test-images: ehfs-tools
 	python3 tools/make_test_images.py storage $(IMAGES) $(EHFS_TOOLS)
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-pristine.img
 
 # Boots the self-test kernel twice with the test disks: the second boot
 # must find what the first one wrote (raw blocks and eHFS files); then the

@@ -45,6 +45,9 @@ const LVT_PERF: usize = 0x340;
 const LVT_LINT0: usize = 0x350;
 const LVT_LINT1: usize = 0x360;
 const LVT_ERROR: usize = 0x370;
+pub(crate) const TIMER_INITIAL: usize = 0x380;
+pub(crate) const TIMER_CURRENT: usize = 0x390;
+pub(crate) const TIMER_DIVIDE: usize = 0x3E0;
 
 /// LVT bit 16: masked.
 pub(crate) const LVT_MASKED: u32 = 1 << 16;

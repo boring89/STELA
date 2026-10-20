@@ -48,6 +48,11 @@ impl PerCpu {
     pub fn ticks(&self) -> u64 {
         self.ticks.load(Ordering::Relaxed)
     }
+
+    /// Counts one timer interrupt.
+    pub(crate) fn tick(&self) {
+        self.ticks.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Set once the boot processor has its area.

@@ -18,7 +18,7 @@ use frame::mm::paging::{self, Flags};
 use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, MMIO_BASE, heap, mmio, pmm};
 use frame::sync::{IrqGuard, SpinLock, interrupts_enabled};
 use frame::trap::{Report, TrapFrame};
-use frame::{cpu, irq, kprintln};
+use frame::{cpu, irq, kprintln, time};
 
 /// A named test; it panics on failure.
 type Test = (&'static str, fn(&'static BootInfo));
@@ -37,6 +37,8 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("acpi madt", acpi_madt),
         ("interrupt controllers", interrupt_controllers),
         ("interrupt dispatch", interrupt_dispatch),
+        ("timer tick", timer_tick),
+        ("clock and sleep", clock_and_sleep),
         ("keyboard", keyboard),
     ];
     for (name, test) in tests {
@@ -381,8 +383,13 @@ fn keyboard(_: &'static BootInfo) {
     while input::pop().is_some() {}
     kprintln!("input: waiting");
     let mut text = alloc::string::String::new();
+    let deadline = time::ticks() + 5 * time::TICK_HZ;
     while text.chars().count() < TYPED.chars().count() {
         let Some(InputEvent::Key(event)) = input::pop() else {
+            assert!(
+                time::ticks() < deadline,
+                "no keys within 5 s (typed so far: {text:?})"
+            );
             frame::halt_until_interrupt();
             continue;
         };
@@ -394,4 +401,42 @@ fn keyboard(_: &'static BootInfo) {
     assert_eq!(text, TYPED);
     assert_eq!(input::dropped(), 0);
     kprintln!("input: OK");
+}
+
+fn timer_tick(_: &'static BootInfo) {
+    let start = time::ticks();
+    // At 1000 Hz, 10 ticks take 10 ms; each `hlt` ends at the next
+    // interrupt, so 1000 halts are plenty unless the timer is dead.
+    for _ in 0..1000 {
+        if time::ticks() >= start + 10 {
+            break;
+        }
+        frame::halt_until_interrupt();
+    }
+    assert!(time::ticks() >= start + 10, "the timer does not tick");
+    assert!(cpu::current().ticks() >= 10);
+    assert!(irq::count(irq::TIMER_VECTOR) >= 10);
+}
+
+fn clock_and_sleep(_: &'static BootInfo) {
+    let a = time::now_ns();
+    let b = time::now_ns();
+    assert!(b >= a, "clock went backwards");
+    let start_ticks = time::ticks();
+    let start = time::now_ns();
+    time::sleep_ms(50);
+    let elapsed_ticks = time::ticks() - start_ticks;
+    let elapsed_ns = time::now_ns() - start;
+    assert!(elapsed_ticks >= 50, "slept only {elapsed_ticks} ticks");
+    if time::tsc_invariant() {
+        kprintln!("tsc: {} MHz", time::tsc_hz() / 1_000_000);
+        // The tick (APIC timer) and the TSC were calibrated against the
+        // same PIT window, so they must agree within 20%.
+        let ms = elapsed_ns / 1_000_000;
+        kprintln!("selftest:   sleep_ms(50) took {ms} ms by the TSC");
+        assert!((40..=60).contains(&ms), "sleep_ms(50) took {ms} ms");
+    } else {
+        kprintln!("tsc: not invariant");
+        assert!(elapsed_ns >= 50_000_000);
+    }
 }

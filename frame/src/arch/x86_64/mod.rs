@@ -13,6 +13,7 @@ pub(crate) mod io;
 pub(crate) mod ioapic;
 pub(crate) mod msr;
 pub(crate) mod pic;
+pub(crate) mod pit;
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};

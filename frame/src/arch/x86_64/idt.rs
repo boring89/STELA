@@ -88,3 +88,14 @@ pub(crate) unsafe fn init(stubs: &[u64; 256]) {
     // valid handlers (caller's guarantee).
     unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)) };
 }
+
+/// Loads the (already filled) IDT on an application processor.
+pub(crate) fn load() {
+    let pointer = DescriptorTablePointer {
+        limit: (size_of::<Idt>() - 1) as u16,
+        base: IDT.get() as u64,
+    };
+    // SAFETY: the IDT was filled by the boot processor's `init` and is
+    // never changed afterwards; it lives forever.
+    unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)) };
+}

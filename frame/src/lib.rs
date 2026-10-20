@@ -31,6 +31,8 @@ pub mod power;
 pub mod qemu;
 #[cfg(target_os = "none")]
 pub mod serial;
+#[cfg(target_os = "none")]
+pub mod smp;
 pub mod sync;
 #[cfg(target_os = "none")]
 pub mod syscall;

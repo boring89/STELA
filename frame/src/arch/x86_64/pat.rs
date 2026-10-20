@@ -49,6 +49,19 @@ pub(crate) fn init() {
     ENABLED.store(true, Ordering::Release);
 }
 
+/// Gives an application processor the same PAT as the boot processor
+/// (the PAT must be the same on every processor, Vol. 3A 11.12.4).
+pub(crate) fn init_ap() {
+    if !wc_enabled() {
+        return;
+    }
+    // SAFETY: as in `init`; this processor has mapped nothing with entry 4.
+    unsafe {
+        let pat = msr::read(IA32_PAT);
+        msr::write(IA32_PAT, (pat & !(0xFF << 32)) | (WC << 32));
+    }
+}
+
 /// Whether PAT entry 4 is write-combining.
 pub(crate) fn wc_enabled() -> bool {
     ENABLED.load(Ordering::Acquire)

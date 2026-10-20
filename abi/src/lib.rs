@@ -881,6 +881,11 @@ pub mod sysinfo {
     /// §5.5); returns 1.
     pub const TIME: u64 = 6;
 
+    /// The processors: one u64 per online processor (logical number
+    /// order), the timer ticks it has handled; returns how many there
+    /// are (`docs/smp.md`).
+    pub const CPUS: u64 = 7;
+
     /// Most bytes `SysInfo(CMDLINE)` returns.
     pub const CMDLINE_SIZE: usize = 256;
 
@@ -1604,6 +1609,7 @@ mod tests {
         assert_eq!(cmdline_option(b"", "text"), None);
         assert_eq!(sysinfo::CMDLINE, 5);
         assert_eq!(sysinfo::TIME, 6);
+        assert_eq!(sysinfo::CPUS, 7);
     }
 
     #[test]

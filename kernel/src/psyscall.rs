@@ -264,6 +264,13 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
             }
             None => 0,
         },
+        abi::sysinfo::CPUS => {
+            let n = frame::cpu::online();
+            for id in 0..n {
+                out.extend_from_slice(&kernel_ticks_of(id).to_le_bytes());
+            }
+            n as u64
+        }
         abi::sysinfo::TIME => {
             out.extend_from_slice(&frame::time::wall_clock_ns().to_le_bytes());
             1
@@ -282,6 +289,11 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
         .write(ptr, &out[..n])
         .map_err(|_| Error::BadAddress)?;
     Ok(count)
+}
+
+/// Timer ticks processor `id` has handled.
+fn kernel_ticks_of(id: usize) -> u64 {
+    frame::cpu::ticks_of(id)
 }
 
 /// `SystemPower(kind)`: flushes and unmounts the volumes, then turns the

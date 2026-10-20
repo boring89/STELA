@@ -164,6 +164,58 @@ const ICR_ASSERT: u32 = 1 << 14;
 /// ICR bits 18-19 = 01: destination shorthand "self".
 const ICR_SELF: u32 = 1 << 18;
 
+/// Sends ICR value `low` to the processor with local APIC id `apic_id`
+/// (physical destination, Vol. 3A 11.6.1 "Interrupt Command Register"),
+/// waiting for the previous IPI to be accepted first.
+pub(crate) fn send_icr(apic_id: u32, low: u32) {
+    while read(ICR_LOW) & ICR_PENDING != 0 {
+        core::hint::spin_loop();
+    }
+    write(ICR_HIGH, apic_id << 24);
+    write(ICR_LOW, low);
+    while read(ICR_LOW) & ICR_PENDING != 0 {
+        core::hint::spin_loop();
+    }
+}
+
+/// Sends interrupt `vector` (fixed delivery) to the processor with local
+/// APIC id `apic_id`.
+pub(crate) fn send_ipi(apic_id: u32, vector: u8) {
+    send_icr(apic_id, ICR_ASSERT | u32::from(vector));
+}
+
+/// Sends interrupt `vector` to every processor but this one (destination
+/// shorthand 11, "all excluding self").
+pub(crate) fn broadcast_ipi(vector: u8) {
+    send_icr(0, 3 << 18 | ICR_ASSERT | u32::from(vector));
+}
+
+/// Turns on an application processor's local APIC (the registers are
+/// mapped already, by the boot processor's [`init`]). Returns its id.
+pub(crate) fn init_ap(spurious: u8) -> u32 {
+    // SAFETY: as in `init`: every x86-64 processor STELA runs on has the
+    // MSR; this only sets the global enable bit (and leaves x2APIC).
+    unsafe {
+        let base = msr::read(msr::IA32_APIC_BASE);
+        if base & BASE_X2APIC != 0 {
+            msr::write(msr::IA32_APIC_BASE, base & !(BASE_ENABLE | BASE_X2APIC));
+            msr::write(msr::IA32_APIC_BASE, (base & !BASE_X2APIC) | BASE_ENABLE);
+        } else if base & BASE_ENABLE == 0 {
+            msr::write(msr::IA32_APIC_BASE, base | BASE_ENABLE);
+        }
+    }
+    write(SVR, SVR_ENABLE | u32::from(spurious));
+    write(LVT_TIMER, LVT_MASKED);
+    write(LVT_LINT0, LVT_MASKED);
+    write(LVT_LINT1, LVT_MASKED);
+    write(LVT_ERROR, LVT_MASKED);
+    write(ESR, 0);
+    write(ESR, 0);
+    write(TPR, 0);
+    eoi();
+    id()
+}
+
 /// Sends interrupt `vector` (fixed delivery) to this processor.
 pub(crate) fn self_ipi(vector: u8) {
     while read(ICR_LOW) & ICR_PENDING != 0 {

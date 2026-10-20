@@ -142,7 +142,7 @@ pub(crate) fn dispatch(frame: &TrapFrame) {
 pub(crate) fn init(madt: &crate::acpi::tables::Madt) {
     pic::disable(IRQ_BASE);
     let apic_id = apic::init(madt, SPURIOUS_VECTOR);
-    crate::cpu::init_this_cpu(0, apic_id);
+    crate::cpu::init_this_cpu(0, apic_id, crate::arch::x86_64::gdt::boot_tss());
     ioapic::init(madt);
 }
 

@@ -32,6 +32,7 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     // mode, for a moment); boot messages go on to the serial port.
     frame::console::boot_screen();
     kernel::task::init();
+    frame::smp::start_aps();
     kernel::syscall::init();
     kernel::console::start();
     drivers::pci::system::init();

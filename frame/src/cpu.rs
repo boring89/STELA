@@ -12,9 +12,9 @@
 //!                          `mov rax, gs:[0]` yields a normal pointer
 //! ```
 //!
-//! Only the boot processor exists for now (application processors come
-//! with SMP start-up, P10), but nothing here assumes a single processor:
-//! each one calls [`init_this_cpu`] for itself.
+//! The boot processor sets up its area in `irq::init`; each application
+//! processor calls [`init_this_cpu`] for itself when it starts
+//! (`crate::smp`).
 //!
 //! The assembly entry paths (system calls) read some fields at fixed
 //! offsets from GS; those offsets are the `OFFSET_*` constants, checked at
@@ -27,7 +27,7 @@ use alloc::sync::Arc;
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// The data of one processor. `self_ptr` must stay the first field.
 #[repr(C)]
@@ -52,6 +52,8 @@ pub struct PerCpu {
     /// The context that switched to the running one, kept alive until the
     /// switch is over (its stack was in use until then).
     pub(crate) previous_task: UnsafeCell<Option<Arc<TaskContext>>>,
+    /// Address of this processor's TSS.
+    tss: u64,
 }
 
 /// Offset of `kernel_rsp`, used by the system-call entry stub.
@@ -70,6 +72,11 @@ impl PerCpu {
     /// The processor's local APIC id.
     pub fn apic_id(&self) -> u32 {
         self.apic_id
+    }
+
+    /// Address of this processor's TSS.
+    pub(crate) fn tss(&self) -> u64 {
+        self.tss
     }
 
     /// Timer interrupts this processor has handled.
@@ -105,7 +112,7 @@ static ONLINE: AtomicUsize = AtomicUsize::new(0);
 
 /// Creates the calling processor's area and points GS_BASE at it. Each
 /// processor calls this once, with interrupts disabled.
-pub(crate) fn init_this_cpu(id: u32, apic_id: u32) {
+pub(crate) fn init_this_cpu(id: u32, apic_id: u32, tss: u64) {
     let area = Box::leak(Box::new(PerCpu {
         self_ptr: 0,
         id,
@@ -116,6 +123,7 @@ pub(crate) fn init_this_cpu(id: u32, apic_id: u32) {
         need_resched: AtomicBool::new(false),
         current_task: UnsafeCell::new(None),
         previous_task: UnsafeCell::new(None),
+        tss,
     }));
     let address = area as *mut PerCpu as u64;
     area.self_ptr = address;
@@ -123,8 +131,59 @@ pub(crate) fn init_this_cpu(id: u32, apic_id: u32) {
     // kernel uses GS for anything else, and the area is leaked, so it lives
     // as long as the pointer is in use.
     unsafe { msr::write(msr::IA32_GS_BASE, address) };
-    ONLINE.fetch_add(1, Ordering::Relaxed);
+    if let Some(slot) = APIC_IDS.get(id as usize) {
+        slot.store(apic_id, Ordering::Release);
+    }
+    if let Some(slot) = AREAS.get(id as usize) {
+        slot.store(address, Ordering::Release);
+    }
+    ONLINE.fetch_add(1, Ordering::AcqRel);
     READY.store(true, Ordering::Release);
+}
+
+/// Processors the per-CPU tables have room for.
+pub const MAX_CPUS: usize = 16;
+
+/// The local APIC id of each online processor, by logical number
+/// (`u32::MAX`: not online).
+static APIC_IDS: [AtomicU32; MAX_CPUS] = [const { AtomicU32::new(u32::MAX) }; MAX_CPUS];
+
+/// The local APIC id of processor `id`, if it is online.
+pub fn apic_id_of(id: usize) -> Option<u32> {
+    APIC_IDS
+        .get(id)
+        .map(|a| a.load(Ordering::Acquire))
+        .filter(|&a| a != u32::MAX)
+}
+
+/// The per-CPU areas by logical number, for other processors to read
+/// (the tick counters).
+static AREAS: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
+
+/// Timer ticks processor `id` has handled (0 if it is not online).
+pub fn ticks_of(id: usize) -> u64 {
+    let Some(address) = AREAS.get(id).map(|a| a.load(Ordering::Acquire)) else {
+        return 0;
+    };
+    if address == 0 {
+        return 0;
+    }
+    // SAFETY: a non-zero entry is a leaked PerCpu (set in
+    // `init_this_cpu`); only its atomic tick counter is read.
+    unsafe { (*(address as *const PerCpu)).ticks() }
+}
+
+/// Asks processor `id` to reschedule: an IPI on `irq::IPI_VECTOR`, whose
+/// handler sets its `need_resched` (and wakes it from `hlt`). Asking the
+/// calling processor just sets the flag.
+pub fn kick(id: usize) {
+    if id == current().id() as usize {
+        current().set_need_resched();
+        return;
+    }
+    if let Some(apic) = apic_id_of(id) {
+        crate::arch::x86_64::apic::send_ipi(apic, crate::irq::IPI_VECTOR);
+    }
 }
 
 /// The calling processor's area. Panics before `frame::init`.

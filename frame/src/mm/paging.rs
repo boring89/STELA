@@ -260,6 +260,10 @@ pub fn unmap(virt: u64) -> Result<PhysFrame, MapError> {
     let frame = PhysFrame::from_addr(*entry & ADDR_MASK);
     *entry = 0;
     invlpg(virt);
+    drop(_guard);
+    // Other processors may hold the old translation (they ran code that
+    // touched it): they must drop it before the frame is reused.
+    crate::smp::shootdown(virt);
     Ok(frame)
 }
 

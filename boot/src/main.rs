@@ -299,16 +299,17 @@ fn read_config() -> alloc::vec::Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Reserves one page below 640 KiB for the application processors'
-/// real-mode start-up code: the Startup IPI's vector is the number of a
-/// 4 KiB page below 1 MiB (Intel SDM Vol. 3A 10.4.4.1 / 11.4.4.1 "Typical
-/// BSP Initialization Sequence"). Type `LOADER_DATA`, so the kernel sees it
-/// in use. Returns 0 when the firmware has no such page free.
+/// Reserves four pages below 640 KiB for the application processors'
+/// start-up (`docs/smp.md`): the real-mode code (the Startup IPI's vector
+/// is the number of a 4 KiB page below 1 MiB, Intel SDM Vol. 3A 9.4.4
+/// "MP Initialization Example") and three pages of temporary page tables
+/// the 32-bit stage can reach. Type `LOADER_DATA`, so the kernel sees them
+/// in use. Returns 0 when the firmware has no such run free.
 fn reserve_trampoline() -> u64 {
     uefi::boot::allocate_pages(
         uefi::boot::AllocateType::MaxAddress(0x9_FFFF),
         MemoryType::LOADER_DATA,
-        1,
+        4,
     )
     .map_or(0, |page| page.as_ptr() as u64)
 }

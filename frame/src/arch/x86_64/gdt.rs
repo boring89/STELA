@@ -122,12 +122,20 @@ const fn tss_descriptor(base: u64, limit: u64) -> (u64, u64) {
     (low, base >> 32)
 }
 
-/// Sets the TSS's RSP0, the stack the processor switches to when an
-/// interrupt or exception arrives in ring 3 (Vol. 3A 6.14.4 "Stack Switching
-/// in IA-32e Mode"). Called on every context switch.
+/// The boot processor's TSS (application processors get their own,
+/// [`init_ap`]).
+pub(crate) fn boot_tss() -> u64 {
+    TSS.get() as u64
+}
+
+/// Sets the running processor's TSS RSP0, the stack the processor
+/// switches to when an interrupt or exception arrives in ring 3 (Vol. 3A
+/// 6.14.4 "Stack Switching in IA-32e Mode"). Called on every context
+/// switch.
 pub(crate) fn set_kernel_stack(top: u64) {
-    let tss = TSS.get();
-    // SAFETY: the TSS is a static; RSP0 is only read by the processor on a
+    let tss = crate::cpu::current().tss() as *mut Tss;
+    // SAFETY: the address is this processor's TSS (the static one or a
+    // leaked one of `init_ap`); RSP0 is only read by the processor on a
     // privilege change, which cannot happen on this processor while it runs
     // this kernel code. The packed field is written unaligned, without
     // creating a reference.
@@ -145,12 +153,60 @@ pub(crate) fn set_kernel_stack(top: u64) {
 /// Must be called once, on the boot processor, before interrupts are
 /// enabled and before anything else uses `GDT` or `TSS`.
 pub(crate) unsafe fn init() {
-    let tss = TSS.get();
-    let gdt = GDT.get();
     let stack_top = DOUBLE_FAULT_STACK.get() as u64 + DOUBLE_FAULT_STACK_SIZE as u64;
-    // SAFETY: the caller guarantees single-threaded first use, so these are
-    // the only accesses to TSS and GDT. Fields of the packed TSS are written
-    // whole (no references to unaligned fields are created).
+    // SAFETY: the caller's guarantee: the static GDT and TSS are used by
+    // nothing else yet.
+    unsafe { load(GDT.get(), TSS.get(), stack_top) }
+}
+
+/// Gives the calling application processor a GDT, a TSS and a
+/// double-fault stack of its own (each processor's TSS descriptor becomes
+/// busy when loaded, so they cannot share one) and loads them. Returns the
+/// TSS's address, for the per-CPU area.
+///
+/// # Safety
+///
+/// Once per application processor, with interrupts disabled, before its
+/// per-CPU area exists (loading GS clears the GS base).
+pub(crate) unsafe fn init_ap() -> u64 {
+    let gdt = alloc::boxed::Box::leak(alloc::boxed::Box::new(Gdt([
+        0,
+        CODE_DESCRIPTOR,
+        DATA_DESCRIPTOR,
+        USER_DATA_DESCRIPTOR,
+        USER_CODE_DESCRIPTOR,
+        0,
+        0,
+    ])));
+    let tss = alloc::boxed::Box::leak(alloc::boxed::Box::new(Tss {
+        reserved0: 0,
+        rsp: [0; 3],
+        reserved1: 0,
+        ist: [0; 7],
+        reserved2: 0,
+        reserved3: 0,
+        iomap_base: size_of::<Tss>() as u16,
+    }));
+    let stack = alloc::vec![0u8; DOUBLE_FAULT_STACK_SIZE].leak();
+    let stack_top = (stack.as_ptr() as u64 + DOUBLE_FAULT_STACK_SIZE as u64) & !15;
+    let tss_ptr = tss as *mut Tss;
+    // SAFETY: freshly leaked tables, used by this processor alone from now
+    // on (caller's guarantee).
+    unsafe { load(gdt, tss_ptr, stack_top) };
+    tss_ptr as u64
+}
+
+/// Fills the TSS's IST and descriptor, loads the GDT, reloads every
+/// segment register and the task register.
+///
+/// # Safety
+///
+/// `gdt` and `tss` must live forever and be used by the calling processor
+/// alone; interrupts disabled.
+unsafe fn load(gdt: *mut Gdt, tss: *mut Tss, stack_top: u64) {
+    // SAFETY: the caller guarantees exclusive use, so these are the only
+    // accesses. Fields of the packed TSS are written whole (no references
+    // to unaligned fields are created).
     unsafe {
         let mut ist = [0; 7];
         ist[usize::from(DOUBLE_FAULT_IST) - 1] = stack_top;

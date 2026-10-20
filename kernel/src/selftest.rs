@@ -387,7 +387,18 @@ fn interrupt_controllers(_: &'static BootInfo) {
     assert_eq!(irq::legacy_pic_masks(), 0xFFFF, "8259 not fully masked");
     let cpu = cpu::current();
     assert_eq!(cpu.id(), 0);
-    assert_eq!(cpu::online(), 1);
+    // Every enabled processor of the MADT is started (docs/smp.md).
+    let enabled = frame::acpi::madt()
+        .processors
+        .iter()
+        .filter(|p| p.enabled)
+        .count();
+    let expected = if frame::boot_flag("nosmp") {
+        1
+    } else {
+        enabled.min(cpu::MAX_CPUS)
+    };
+    assert_eq!(cpu::online(), expected);
     // CPUID.01H:EBX[31:24]: initial APIC id of this processor.
     let initial = core::arch::x86_64::__cpuid(1).ebx >> 24;
     assert_eq!(cpu.apic_id(), initial);

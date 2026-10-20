@@ -230,9 +230,10 @@ pub struct BootInfo {
     pub initrd_phys: u64,
     /// Size of the initial RAM disk in bytes; 0 if there is none.
     pub initrd_size: u64,
-    /// Physical address of one page below 1 MiB that the loader reserved
-    /// for the application processors' start-up code (a SIPI vector names
-    /// a 4 KiB page below 1 MiB); 0 if none could be had.
+    /// Physical address of four pages below 640 KiB that the loader
+    /// reserved for the application processors' start-up code and its
+    /// temporary page tables (a SIPI vector names a 4 KiB page below
+    /// 1 MiB); 0 if none could be had.
     pub ap_trampoline_phys: u64,
     /// Number of valid bytes at the start of [`BootInfo::cmdline`].
     pub cmdline_len: u32,

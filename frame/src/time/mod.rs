@@ -35,7 +35,7 @@ pub use target::{
 };
 
 #[cfg(target_os = "none")]
-pub(crate) use target::init;
+pub(crate) use target::{init, init_ap};
 
 /// Timer interrupts per second.
 pub const TICK_HZ: u64 = 1000;
@@ -128,8 +128,13 @@ mod target {
     }
 
     fn timer_interrupt(_: &TrapFrame) {
-        TICKS.fetch_add(1, Ordering::Relaxed);
-        crate::cpu::current().tick();
+        let cpu = crate::cpu::current();
+        // Every processor has its timer; the clock counts the boot
+        // processor's.
+        if cpu.id() == 0 {
+            TICKS.fetch_add(1, Ordering::Relaxed);
+        }
+        cpu.tick();
         if let Some(hook) = TICK_HOOK.get() {
             hook();
         }
@@ -166,6 +171,7 @@ mod target {
         if let Err(e) = irq::register(irq::TIMER_VECTOR, timer_interrupt) {
             panic!("time: cannot register the timer vector: {e:?}");
         }
+        INITIAL.store(initial, Ordering::Relaxed);
         apic::write(apic::TIMER_DIVIDE, DIVIDE_BY_16);
         apic::write(apic::LVT_TIMER, PERIODIC | u32::from(irq::TIMER_VECTOR));
         apic::write(apic::TIMER_INITIAL, initial as u32);
@@ -183,6 +189,18 @@ mod target {
                 "not invariant"
             }
         );
+    }
+
+    /// The APIC timer's initial count for 1000 Hz (the boot processor's
+    /// calibration; every processor's timer runs at the same bus clock).
+    static INITIAL: AtomicU64 = AtomicU64::new(0);
+
+    /// Starts an application processor's 1000 Hz tick with the boot
+    /// processor's calibration.
+    pub(crate) fn init_ap() {
+        apic::write(apic::TIMER_DIVIDE, DIVIDE_BY_16);
+        apic::write(apic::LVT_TIMER, PERIODIC | u32::from(irq::TIMER_VECTOR));
+        apic::write(apic::TIMER_INITIAL, INITIAL.load(Ordering::Relaxed) as u32);
     }
 
     /// Reads the RTC once and sets the wall clock's base. The century

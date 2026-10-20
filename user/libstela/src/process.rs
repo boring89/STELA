@@ -157,6 +157,24 @@ pub fn cmdline() -> Vec<u8> {
     b
 }
 
+/// The processors: each one's timer ticks (`SysInfo(CPUS)`).
+pub fn cpus() -> Vec<u64> {
+    let mut b = vec![0u8; 8 * 64];
+    let n = syscall3(
+        Syscall::SysInfo,
+        sysinfo::CPUS,
+        b.as_mut_ptr() as u64,
+        b.len() as u64,
+    )
+    .unwrap_or(0) as usize;
+    b.as_chunks::<8>()
+        .0
+        .iter()
+        .take(n.min(64))
+        .map(|c| u64::from_le_bytes(*c))
+        .collect()
+}
+
 /// The wall clock: nanoseconds since 1970-01-01 00:00 UTC
 /// (`SysInfo(TIME)`).
 pub fn wall_clock_ns() -> Result<u64, Error> {

@@ -123,12 +123,12 @@ fn current_mut(s: &mut Scheduler) -> &mut Thread {
     }
 }
 
-/// Turns the code running now into the thread "main" and creates this
-/// processor's idle thread. Call once, after `frame::init`.
-pub fn init() {
+/// Makes this processor's scheduler: the code running now becomes the
+/// thread `name`, and an idle thread is created.
+fn new_scheduler(name: &'static str) {
     let main = Box::new(Thread {
         id: new_id(),
-        name: "main",
+        name,
         state: State::Running,
         priority: 0,
         slice: TIME_SLICE,
@@ -161,7 +161,7 @@ pub fn init() {
         Err(OutOfMemory) => panic!("task: no memory for the idle thread"),
     };
     let mut cpu = this_cpu().lock();
-    assert!(cpu.is_none(), "task: init() twice");
+    assert!(cpu.is_none(), "task: scheduler made twice on one processor");
     *cpu = Some(Scheduler {
         current: Some(main),
         ready: RunQueue::new(),
@@ -171,11 +171,26 @@ pub fn init() {
         idle_id,
         zombies: Vec::new(),
     });
-    drop(cpu);
+}
+
+/// Turns the code running now into the thread "main" and creates this
+/// processor's idle thread. Call once, after `frame::init`.
+pub fn init() {
+    new_scheduler("main");
     frame::time::set_tick_hook(tick);
     frame::task::set_scheduler(preempt);
     frame::task::set_user_fault_handler(user_fault);
     frame::task::set_user_return_hook(user_return);
+    frame::smp::set_ap_entry(ap_main);
+}
+
+/// Where an application processor arrives once frame has set it up
+/// (interrupts disabled): it gets its scheduler, and its first thread
+/// ends, leaving the processor to its idle thread (which enables
+/// interrupts) until work comes.
+fn ap_main() -> ! {
+    new_scheduler("ap-main");
+    exit()
 }
 
 /// Runs on every timer tick (1 ms), inside the interrupt: wakes the

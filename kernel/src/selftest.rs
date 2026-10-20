@@ -41,6 +41,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("interrupt dispatch", interrupt_dispatch),
         ("timer tick", timer_tick),
         ("clock and sleep", clock_and_sleep),
+        ("real-time clock", real_time_clock),
         ("keyboard", keyboard),
         ("kernel threads", kernel_threads),
         ("thread reaping", thread_reaping),
@@ -459,6 +460,34 @@ fn clock_and_sleep(_: &'static BootInfo) {
         kprintln!("tsc: not invariant");
         assert!(elapsed_ns >= 50_000_000);
     }
+}
+
+fn real_time_clock(_: &'static BootInfo) {
+    // QEMU's RTC follows the host's clock (-rtc base=utc).
+    let Some(t) = time::boot_time() else {
+        panic!("the RTC could not be read");
+    };
+    assert!(
+        (2024..=2100).contains(&t.year),
+        "the RTC says year {}",
+        t.year
+    );
+    let a = time::wall_clock_ns();
+    time::sleep_ms(2);
+    let b = time::wall_clock_ns();
+    assert!(b >= a + 2_000_000, "the wall clock does not advance");
+    assert!(kernel::fs::now() / 1_000_000_000 >= t.unix_seconds());
+    let fadt = frame::acpi::fadt();
+    kprintln!(
+        "selftest:   {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC, century register {:#x}",
+        t.year,
+        t.month,
+        t.day,
+        t.hour,
+        t.minute,
+        t.second,
+        fadt.map_or(0, |f| f.century)
+    );
 }
 
 /// Whose turn it is in the ping-pong test (0 or 1), and the shared count.

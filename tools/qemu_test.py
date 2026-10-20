@@ -4,7 +4,7 @@
 """Boot STELA in QEMU and check its serial output.
 
 Usage: qemu_test.py [--timeout S] [--exit-code N] [--screendump FILE]
-                    [--send-keys TRIGGER KEYS]
+                    [--send-keys TRIGGER KEYS] [--log FILE]
                     --expect TEXT [--expect TEXT ...] -- <qemu command>
 
 The expected strings must appear on the serial console in the given order.
@@ -159,6 +159,7 @@ def main():
     ap.add_argument("--type", nargs=2, action="append", default=[],
                     metavar=("TRIGGER", "TEXT"))
     ap.add_argument("--expect", action="append", required=True)
+    ap.add_argument("--log", help="also write the serial output to this file")
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
     args = ap.parse_args()
     cmd = args.qemu[1:] if args.qemu and args.qemu[0] == "--" else args.qemu
@@ -216,6 +217,9 @@ def main():
             proc.kill()
             proc.wait()
 
+    if args.log:
+        with open(args.log, "w", encoding="utf-8") as f:
+            f.write("\n".join(log) + "\n")
     if pending:
         print("\n".join(log))
         print(f"qemu_test: missing expected output: {pending[0]!r}", file=sys.stderr)

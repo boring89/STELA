@@ -35,21 +35,21 @@ pub fn checksum(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0u8, |sum, &b| sum.wrapping_add(b))
 }
 
-fn u8_at(bytes: &[u8], offset: usize) -> Result<u8, AcpiError> {
+pub(super) fn u8_at(bytes: &[u8], offset: usize) -> Result<u8, AcpiError> {
     bytes.get(offset).copied().ok_or(AcpiError::BadLength)
 }
 
-fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, AcpiError> {
+pub(super) fn u16_at(bytes: &[u8], offset: usize) -> Result<u16, AcpiError> {
     let b = bytes.get(offset..offset + 2).ok_or(AcpiError::BadLength)?;
     Ok(u16::from_le_bytes([b[0], b[1]]))
 }
 
-fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, AcpiError> {
+pub(super) fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, AcpiError> {
     let b = bytes.get(offset..offset + 4).ok_or(AcpiError::BadLength)?;
     Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
-fn u64_at(bytes: &[u8], offset: usize) -> Result<u64, AcpiError> {
+pub(super) fn u64_at(bytes: &[u8], offset: usize) -> Result<u64, AcpiError> {
     let b = bytes.get(offset..offset + 8).ok_or(AcpiError::BadLength)?;
     let mut word = [0; 8];
     word.copy_from_slice(b);

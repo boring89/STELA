@@ -16,7 +16,7 @@ INITRD      := $(BUILD)/initrd.tar
 OVMF_CODE   := /usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS   := /usr/share/OVMF/OVMF_VARS_4M.fd
 QEMU        := qemu-system-x86_64
-QEMU_BASE   := -machine q35 -m 512M -no-reboot \
+QEMU_BASE   := -machine q35 -m 512M -no-reboot -rtc base=utc \
                -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
                -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd
 QEMU_FLAGS  := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP)
@@ -97,7 +97,8 @@ test-host: initrd host-images
 SEND_KEYS := --send-keys "input: waiting" "s t e l a ret"
 
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --expect "STELA boot loader" \
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --log $(BUILD)/test-qemu.log \
+		--expect "STELA boot loader" --expect "time: RTC " \
 		--expect "STELA kernel" --expect "input: OK" \
 		--expect "user: hello from built-in user code" --expect "hello from user mode" \
 		--expect "hello from a second thread" --expect "fault: reading address 0" \

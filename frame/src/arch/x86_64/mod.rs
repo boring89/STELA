@@ -4,6 +4,7 @@
 //! x86-64 support.
 
 pub(crate) mod apic;
+pub(crate) mod cmos;
 pub(crate) mod context;
 pub(crate) mod exceptions;
 pub(crate) mod gdt;

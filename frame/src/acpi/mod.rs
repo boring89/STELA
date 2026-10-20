@@ -13,16 +13,20 @@
 //! ```
 //!
 //! The tables are read through the HHDM (they are in ACPI reclaimable or
-//! NVS memory, which it covers). The MADT and the MCFG (PCI ECAM windows)
-//! are parsed; the logic is in [`tables`] and tested on the host.
+//! NVS memory, which it covers). The MADT, the MCFG (PCI ECAM windows) and
+//! the FADT (power management, reset, century; it also points to the DSDT)
+//! are parsed; the logic is in [`tables`] and [`fadt`] and tested on the
+//! host.
 
+pub mod fadt;
 pub mod tables;
 
 #[cfg(target_os = "none")]
-pub use target::{init, madt, mcfg};
+pub use target::{dsdt, fadt, init, madt, mcfg};
 
 #[cfg(target_os = "none")]
 mod target {
+    use super::fadt::{self as fadt_table, Fadt};
     use super::tables::{self, AcpiError, Madt, McfgEntry};
     use crate::mm::frames::overlaps;
     use crate::sync::SpinLock;
@@ -35,6 +39,8 @@ mod target {
 
     static MADT: SpinLock<Option<&'static Madt>> = SpinLock::new(None);
     static MCFG: SpinLock<Option<&'static [McfgEntry]>> = SpinLock::new(None);
+    static FADT: SpinLock<Option<&'static Fadt>> = SpinLock::new(None);
+    static DSDT: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
     /// `len` bytes of physical memory at `phys`, read through the HHDM.
     /// Refuses ranges outside the HHDM and memory that Rust code may own
@@ -101,6 +107,49 @@ mod target {
         tables::parse_madt(madt).map_err(|_| "bad MADT entry")
     }
 
+    /// Finds and parses the FADT and checks the DSDT it points to. Both are
+    /// optional: without them there is no century register and no ACPI
+    /// power off.
+    fn find_fadt(info: &BootInfo, roots: &[u64]) {
+        let Some(facp) = find(info, roots, b"FACP") else {
+            crate::kprintln!("acpi: no FADT");
+            return;
+        };
+        let parsed = match fadt_table::parse_fadt(facp) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                crate::kprintln!("acpi: ignoring a bad FADT ({e:?})");
+                return;
+            }
+        };
+        if parsed.dsdt != 0 {
+            match table(info, parsed.dsdt, b"DSDT") {
+                Ok(dsdt) => *DSDT.lock() = Some(dsdt),
+                Err(e) => crate::kprintln!("acpi: ignoring a bad DSDT ({e:?})"),
+            }
+        }
+        crate::kprintln!(
+            "acpi: FADT PM1a {:#x}, century {:#x}, reset {}, 8042 {}",
+            parsed.pm1a_control,
+            parsed.century,
+            if parsed.reset.is_some() { "yes" } else { "no" },
+            if parsed.has_8042 { "yes" } else { "no" }
+        );
+        *FADT.lock() = Some(Box::leak(Box::new(parsed)));
+    }
+
+    /// The parsed FADT, if the firmware has a valid one (`None` before
+    /// `frame::init`).
+    pub fn fadt() -> Option<&'static Fadt> {
+        *FADT.lock()
+    }
+
+    /// The DSDT's bytes (header included), if the FADT points to a valid
+    /// one.
+    pub fn dsdt() -> Option<&'static [u8]> {
+        *DSDT.lock()
+    }
+
     /// Finds the MADT. STELA needs the APIC, so a missing or broken MADT is
     /// fatal. Called by `frame::init`.
     pub fn init(info: &'static BootInfo) {
@@ -112,6 +161,7 @@ mod target {
                     Err(e) => crate::kprintln!("acpi: ignoring a bad MCFG ({e:?})"),
                 }
             }
+            find_fadt(info, &roots);
             Ok(madt)
         }) {
             Ok(madt) => madt,

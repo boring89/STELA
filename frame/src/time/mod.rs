@@ -21,11 +21,18 @@
 //! An invariant TSC (CPUID.80000007H:EDX[8]) runs at a constant rate in
 //! every power state, so it is a fine-grained clock; without it the TSC may
 //! change speed and only the tick count is trusted.
+//!
+//! The wall clock (date and time) comes from the CMOS RTC, read once at
+//! boot: `wall_clock_ns()` = the RTC's time (taken as UTC) + the monotonic
+//! time since that read.
 
 pub mod calc;
+pub mod rtc;
 
 #[cfg(target_os = "none")]
-pub use target::{now_ns, set_tick_hook, sleep_ms, ticks, tsc_hz, tsc_invariant};
+pub use target::{
+    boot_time, now_ns, set_tick_hook, sleep_ms, ticks, tsc_hz, tsc_invariant, wall_clock_ns,
+};
 
 #[cfg(target_os = "none")]
 pub(crate) use target::init;
@@ -37,7 +44,8 @@ pub const TICK_HZ: u64 = 1000;
 mod target {
     use super::TICK_HZ;
     use super::calc::{self, Clock};
-    use crate::arch::x86_64::{apic, pit};
+    use super::rtc::{self, DateTime};
+    use crate::arch::x86_64::{apic, cmos, pit};
     use crate::irq;
     use crate::sync::Once;
     use crate::trap::TrapFrame;
@@ -58,6 +66,13 @@ mod target {
     static TSC_CLOCK: Once<Clock> = Once::new();
     static TSC_HZ: AtomicU64 = AtomicU64::new(0);
     static TSC_INVARIANT: AtomicBool = AtomicBool::new(false);
+    /// Wall-clock nanoseconds since 1970 at `now_ns() == 0`.
+    static WALL_BASE: AtomicU64 = AtomicU64::new(0);
+    /// The RTC's date and time at boot, if it could be read.
+    static BOOT_TIME: Once<DateTime> = Once::new();
+
+    /// Used when the RTC cannot be read: 2026-01-01 00:00 UTC.
+    const FALLBACK_EPOCH_NS: u64 = 1_767_225_600 * 1_000_000_000;
 
     fn rdtsc() -> u64 {
         let (low, high): (u32, u32);
@@ -154,6 +169,7 @@ mod target {
         apic::write(apic::TIMER_DIVIDE, DIVIDE_BY_16);
         apic::write(apic::LVT_TIMER, PERIODIC | u32::from(irq::TIMER_VECTOR));
         apic::write(apic::TIMER_INITIAL, initial as u32);
+        read_rtc();
         crate::kprintln!(
             "time: APIC timer {}.{:03} MHz (/16), {} Hz; TSC {} MHz ({}, {})",
             apic_hz / 1_000_000,
@@ -167,6 +183,46 @@ mod target {
                 "not invariant"
             }
         );
+    }
+
+    /// Reads the RTC once and sets the wall clock's base. The century
+    /// register comes from the FADT (`acpi::init` runs first).
+    fn read_rtc() {
+        let century = crate::acpi::fadt().map_or(0, |f| f.century);
+        let decoded = cmos::read_registers(century).and_then(|regs| rtc::decode(&regs));
+        let now = now_ns();
+        match decoded {
+            Some(t) => {
+                let wall = t.unix_seconds() * 1_000_000_000;
+                WALL_BASE.store(wall.saturating_sub(now), Ordering::Relaxed);
+                let _ = BOOT_TIME.set(t);
+                crate::kprintln!(
+                    "time: RTC {:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                    t.year,
+                    t.month,
+                    t.day,
+                    t.hour,
+                    t.minute,
+                    t.second
+                );
+            }
+            None => {
+                WALL_BASE.store(FALLBACK_EPOCH_NS.saturating_sub(now), Ordering::Relaxed);
+                crate::kprintln!("time: cannot read the RTC; the date starts at 2026-01-01");
+            }
+        }
+    }
+
+    /// Nanoseconds since 1970-01-01 00:00 UTC: the RTC's time at boot plus
+    /// the monotonic time since. Never goes backwards (nothing sets it).
+    pub fn wall_clock_ns() -> u64 {
+        WALL_BASE.load(Ordering::Relaxed) + now_ns()
+    }
+
+    /// The date and time the RTC showed at boot (`None` if it could not be
+    /// read or before `frame::init`).
+    pub fn boot_time() -> Option<DateTime> {
+        BOOT_TIME.get().copied()
     }
 
     /// Timer ticks since the timer started (1 ms each).

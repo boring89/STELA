@@ -55,6 +55,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ehfs-tools"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "ehfs",
+]
+
+[[package]]
 name = "elfload"
 version = "0.1.0"
 

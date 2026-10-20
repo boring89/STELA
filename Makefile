@@ -29,7 +29,7 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi block bootinfo drivers ehfs elfload frame
+HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel
 # Crates built for the bare-metal kernel target.
@@ -38,7 +38,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 USER_CRATES := libstela $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd esp esp-test run test test-host test-qemu test-qemu-min test-fb \
-	host-images test-images test-storage clippy fmt clean
+	host-images test-images test-storage ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -118,6 +118,24 @@ test-fb: esp $(BUILD)/OVMF_VARS.fd
 		--expect "uptime:" -- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm
 
+# The eHFS host tools (tools/ehfs), installed under their usual names.
+EHFS_TOOLS  := $(BUILD)/host/ehfs
+HOST_TARGET_DIR := $(BUILD)/target/release
+
+ehfs-tools:
+	cargo build --release -p ehfs-tools
+	mkdir -p $(EHFS_TOOLS)
+	cp $(HOST_TARGET_DIR)/mkfs-ehfs $(EHFS_TOOLS)/mkfs.ehfs
+	cp $(HOST_TARGET_DIR)/fsck-ehfs $(EHFS_TOOLS)/fsck.ehfs
+	cp $(HOST_TARGET_DIR)/ehfs-cp $(HOST_TARGET_DIR)/ehfs-ls $(EHFS_TOOLS)/
+
+# Local only (not in make test or CI): cross-checks with 68k_HAL's eHFS
+# tools, when they are built: its fsck on a STELA image, and STELA's fsck
+# and ehfs-ls on a 68k_HAL image. Only images under build/ are used.
+HAL_EHFS    := $(HOME)/文件/68k_HAL/build/host/ehfs
+test-ehfs-compat: ehfs-tools
+	python3 tools/ehfs_compat.py $(EHFS_TOOLS) $(HAL_EHFS) $(BUILD)/images/compat
+
 # Disk images for the storage test, made fresh for every run (the test
 # writes them): an AHCI disk (512-byte sectors) and an NVMe namespace
 # (4096-byte blocks), 64 MiB each, starting with the test-disk magic.
@@ -148,6 +166,7 @@ clippy:
 	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) --features kernel/selftest -- -D warnings
 	cargo clippy --release $(addprefix -p ,$(USER_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
 	cargo clippy --tests $(addprefix -p ,$(HOST_CRATES)) -- -D warnings
+	cargo clippy --bins -p ehfs-tools -- -D warnings
 	cargo clippy --lib --tests $(addprefix -p ,$(HOST_LIB_CRATES)) -- -D warnings
 
 fmt:

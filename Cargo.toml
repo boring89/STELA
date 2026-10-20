@@ -17,6 +17,7 @@ members = [
     "user/ipc_server",
     "user/ipc_client",
     "user/echo",
+    "tools/ehfs",
 ]
 
 [workspace.package]

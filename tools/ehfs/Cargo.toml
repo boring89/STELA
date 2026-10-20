@@ -1,0 +1,46 @@
+[package]
+name = "ehfs-tools"
+description = "Host tools for eHFS images: mkfs.ehfs, fsck.ehfs, ehfs-cp, ehfs-ls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+bench = false
+doctest = false
+
+# Cargo binary names cannot contain a dot: `make ehfs-tools` installs
+# these as mkfs.ehfs and fsck.ehfs in build/host/ehfs/.
+[[bin]]
+name = "mkfs-ehfs"
+path = "src/bin/mkfs.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fsck-ehfs"
+path = "src/bin/fsck.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "ehfs-cp"
+path = "src/bin/cp.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "ehfs-ls"
+path = "src/bin/ls.rs"
+test = false
+bench = false
+
+[dependencies]
+block = { path = "../../block" }
+ehfs = { path = "../../ehfs" }
+
+[lints]
+workspace = true

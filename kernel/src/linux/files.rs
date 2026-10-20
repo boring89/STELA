@@ -150,7 +150,7 @@ fn parent_of(parts: &[String]) -> Result<(Node, String), i64> {
     }
 }
 
-fn add_fd(p: &Process, file: OpenFile, cloexec: bool) -> LinuxResult {
+pub(super) fn add_fd(p: &Process, file: OpenFile, cloexec: bool) -> LinuxResult {
     let linux = p.linux().ok_or(EBADF)?;
     let fd = linux
         .fds
@@ -315,6 +315,7 @@ fn read_file(file: &OpenFile, len: usize) -> Result<Vec<u8>, i64> {
         OpenFile::Null => Ok(Vec::new()),
         OpenFile::Zero => Ok(vec![0u8; len]),
         OpenFile::Dir { .. } => Err(EISDIR),
+        OpenFile::Socket(socket) => super::socket::read(socket, len),
         OpenFile::File { node, state } => {
             let mut s = state.lock();
             if !s.readable {
@@ -342,6 +343,7 @@ fn write_file(file: &OpenFile, data: &[u8]) -> Result<usize, i64> {
         }
         OpenFile::Null | OpenFile::Zero => Ok(data.len()),
         OpenFile::Dir { .. } => Err(EISDIR),
+        OpenFile::Socket(socket) => super::socket::write(socket, data),
         OpenFile::File { node, state } => {
             let mut s = state.lock();
             if !s.writable {
@@ -462,6 +464,7 @@ pub fn lseek(p: &Process, fd: u64, offset: i64, whence: u64) -> LinuxResult {
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFCHR: u32 = 0o020000;
+const S_IFSOCK: u32 = 0o140000;
 
 /// The kernel's `struct stat` on x86-64 (144 bytes).
 fn stat_bytes(dev: u64, ino: u64, mode: u32, size: u64, ctime: u64, mtime: u64) -> [u8; 144] {
@@ -518,6 +521,7 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
         OpenFile::Tty(_) => stat_bytes(0, 6, S_IFCHR | 0o620, 0, 0, 0),
         OpenFile::Null => stat_bytes(0, 3, S_IFCHR | 0o666, 0, 0, 0),
         OpenFile::Zero => stat_bytes(0, 4, S_IFCHR | 0o666, 0, 0, 0),
+        OpenFile::Socket(_) => stat_bytes(0, 7, S_IFSOCK | 0o777, 0, 0, 0),
         OpenFile::File { node, .. }
         | OpenFile::Dir {
             node: Some(node), ..

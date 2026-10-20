@@ -988,6 +988,26 @@ impl Stack {
         }
     }
 
+    /// TCP: the application will send no more (FIN after the queued
+    /// data) but keeps reading.
+    pub fn shutdown(&mut self, id: SocketId, now: u64) -> Result<(), NetError> {
+        match self.sock(id)? {
+            Sock::Conn(c, _) => c.close(now),
+            _ => return Err(NetError::InvalidState),
+        }
+        self.flush_tcp(id);
+        Ok(())
+    }
+
+    /// The connected peer (TCP connections, connected UDP sockets).
+    pub fn peer(&mut self, id: SocketId) -> Option<(Ip, u16)> {
+        match self.sock(id).ok()? {
+            Sock::Conn(c, _) => Some((c.remote_ip, c.remote_port)),
+            Sock::Udp { peer, .. } => *peer,
+            _ => None,
+        }
+    }
+
     /// Number of sockets in use (for tests and diagnostics).
     pub fn socket_count(&self) -> usize {
         self.sockets.iter().flatten().count()

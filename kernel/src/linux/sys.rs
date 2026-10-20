@@ -8,7 +8,7 @@
 use super::errno::{self, EAGAIN, EBADF, EFAULT, EINVAL, ENOSYS, ENOTTY};
 use super::stack::{self, at};
 use super::state::OpenFile;
-use super::{files, memory, nr};
+use super::{files, memory, nr, socket};
 use crate::task::{self, Process};
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
@@ -128,6 +128,19 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         }
         nr::FUTEX => futex(p, a0, a1, a2, a3),
         nr::GETRANDOM => getrandom(p, a0, a1),
+        nr::SOCKET => socket::socket(p, a0, a1, a2),
+        nr::CONNECT => socket::connect(p, a0, a1, a2),
+        nr::BIND => socket::bind(p, a0, a1, a2),
+        nr::LISTEN => socket::listen(p, a0, a1),
+        nr::ACCEPT => socket::accept(p, a0, a1, a2, 0),
+        nr::ACCEPT4 => socket::accept(p, a0, a1, a2, a3),
+        nr::SENDTO => socket::sendto(p, a0, a1, a2, a4, a5),
+        nr::RECVFROM => socket::recvfrom(p, a0, a1, a2, a4, a5),
+        nr::SHUTDOWN => socket::shutdown(p, a0, a1),
+        nr::GETSOCKNAME => socket::name(p, a0, a1, a2, false),
+        nr::GETPEERNAME => socket::name(p, a0, a1, a2, true),
+        nr::SETSOCKOPT => socket::setsockopt(p, a0),
+        nr::GETSOCKOPT => socket::getsockopt(p, a0, a3, a4),
         nr::PIPE | nr::PIPE2 | nr::CLONE | nr::CLONE3 | nr::FORK | nr::VFORK | nr::EXECVE => {
             Err(ENOSYS)
         }

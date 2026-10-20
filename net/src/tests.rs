@@ -273,3 +273,24 @@ fn dhcp_gets_an_address() {
     assert!(a.take_events());
     assert_eq!(a.config(), config(A_IP));
 }
+
+#[test]
+fn tcp_shutdown_keeps_reading() {
+    let (mut a, mut b) = pair();
+    let l = b.socket(Kind::Tcp).expect("socket");
+    b.bind(l, 80).expect("bind");
+    b.listen(l, 1).expect("listen");
+    let c = a.socket(Kind::Tcp).expect("socket");
+    a.connect(c, B_IP, 80, 0).expect("connect");
+    exchange(&mut a, &mut b, 0);
+    let s = b.accept(l).expect("accept").expect("conn");
+    a.send(c, b"request", None, 1).expect("send");
+    a.shutdown(c, 1).expect("shutdown");
+    exchange(&mut a, &mut b, 1);
+    let mut buf = [0u8; 16];
+    assert_eq!(b.recv(s, &mut buf).expect("recv").map(|r| r.0), Some(7));
+    assert_eq!(b.recv(s, &mut buf).expect("recv").map(|r| r.0), Some(0));
+    b.send(s, b"answer", None, 2).expect("send");
+    exchange(&mut a, &mut b, 2);
+    assert_eq!(a.recv(c, &mut buf).expect("recv").map(|r| r.0), Some(6));
+}

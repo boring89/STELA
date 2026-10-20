@@ -39,6 +39,8 @@ pub enum OpenFile {
         /// How many entries `getdents64` has returned.
         cursor: SpinLock<u64>,
     },
+    /// An `AF_INET` socket (`docs/net.md`).
+    Socket(Arc<super::socket::LinuxSocket>),
 }
 
 /// The changing part of an open file.

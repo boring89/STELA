@@ -1,6 +1,6 @@
 # frame：kernel 與硬體之間的那一層
 
-> P1 與 P2 由自動排程一次做完，使用者已於 2026-10-20 審核。P2 加入的部分（中斷、APIC、per-CPU、MMIO、計時器、鍵盤）的細節在 `docs/irq.md`、`docs/time.md`、`docs/keyboard.md`。
+> P1 與 P2 由自動排程一次做完，使用者已於 2026-10-20 審核。P2 加入的部分（中斷、APIC、per-CPU、MMIO、計時器、鍵盤）的細節在 `docs/irq.md`、`docs/time.md`、`docs/keyboard.md`。P3 加入的部分（context 切換、kernel 堆疊、user 段、`swapgs`、位址空間、syscall 進入點、initrd）**使用者尚未審核**，細節在 `docs/process.md`、`docs/syscall.md`。
 
 `frame/` 是 STELA 唯一可以寫 `unsafe` 的 kernel crate（framekernel 架構）。kernel 與之後的驅動都是 `#![forbid(unsafe_code)]`，只能透過 frame 提供的 safe API 碰硬體。
 
@@ -17,9 +17,11 @@ frame/src/
     io.rs             in/out 指令（crate 私有）
     msr.rs            rdmsr/wrmsr（crate 私有）
     interrupts.rs     RFLAGS.IF、cli、sti
-    gdt.rs            GDT 與 TSS
+    gdt.rs            GDT（含 user 段）與 TSS（RSP0）
     idt.rs            IDT（256 個 gate）
-    exceptions.rs     256 個向量的組語 stub 與 Rust 分派（≥ 32 交給 irq）
+    exceptions.rs     256 個向量的組語 stub 與 Rust 分派（≥ 32 交給 irq；來自 ring 3 時 swapgs、交給 task::user_fault）
+    context.rs        context 切換、新執行緒的 trampoline、FXSAVE/FXRSTOR、enter_user（P3，docs/process.md）
+    syscall.rs        syscall 的 MSR 與進入點（P3，docs/syscall.md）
     pic.rs            8259 remap + 全遮蔽（docs/irq.md）
     apic.rs           local APIC（xAPIC）
     ioapic.rs         I/O APIC
@@ -27,7 +29,9 @@ frame/src/
     i8042.rs          PS/2 控制器（docs/keyboard.md）
   acpi/               RSDP/XSDT/MADT（tables.rs 純邏輯，host 測試）
   irq.rs              向量配置、register、dispatch、EOI
-  cpu.rs              per-CPU 區（GS_BASE）
+  cpu.rs              per-CPU 區（GS_BASE；P3 加 kernel_rsp、need_resched、目前的 context）
+  task/               TaskContext、switch_to、kernel 堆疊、enter_user、搶佔與使用者例外的回呼（P3）
+  syscall.rs          SyscallFrame、set_handler（P3）
   time/               APIC timer 1000 Hz、now_ns、sleep_ms（calc.rs 純邏輯）
   input/              鍵盤解碼、KeyCode、事件佇列（keyboard.rs、queue.rs 純邏輯）
   serial.rs           COM1
@@ -38,9 +42,11 @@ frame/src/
     bitmap.rs         位元圖（純邏輯，host 測試）
     frames.rs         頁框配置邏輯（純邏輯，host 測試）
     pmm.rs            全域 PMM、PhysFrame
-    paging.rs         kernel 端的 map/unmap/translate
+    paging.rs         kernel 端的 map/unmap/translate（一律走 kernel 的 PML4）
+    user.rs           AddressSpace：每個行程的 PML4、copy from/to user（P3）
     mmio.rs           裝置暫存器的不快取映射、MmioRegion（docs/irq.md §7）
     heap.rs           #[global_allocator]
+    mod.rs            initrd()（P3）
   console/
     font.rs           Spleen 字型（純邏輯，host 測試）
     text.rs           文字格線與捲動（純邏輯，host 測試）
@@ -56,7 +62,8 @@ kernel 啟動時只要：
 frame::entry_point!(kernel_main);      // 產生 #[unsafe(no_mangle)] _start
 fn kernel_main(info: &'static BootInfo) -> ! {
     frame::init(info);                 // serial → GDT/TSS/IDT → PMM → 分頁 → heap → 畫面
-                                       // → ACPI → APIC → per-CPU → 鍵盤 → 計時器 → sti
+                                       // → ACPI → APIC → per-CPU → boot context → syscall MSR → SMEP
+                                       // → 鍵盤 → 計時器 → sti
     kprintln!("STELA kernel {}", ...);
     ...
 }
@@ -89,12 +96,16 @@ UEFI 的 GDT 在 boot services 記憶體裡，`ExitBootServices` 之後可能被
 0     0x00      null
 1     0x08      kernel code：P、DPL0、type A、L、G   0x00AF_9A00_0000_FFFF
 2     0x10      kernel data：P、DPL0、type 2、D/B、G 0x00CF_9200_0000_FFFF
-3-4   0x18      64 位元 TSS（16 bytes，type 9）      執行時填入 TSS 位址
+3     0x18      user data：同上但 DPL3（→ 0x1B）    0x00CF_F200_0000_FFFF    （P3）
+4     0x20      user code：同上但 DPL3（→ 0x23）    0x00AF_FA00_0000_FFFF    （P3）
+5-6   0x28      64 位元 TSS（16 bytes，type 9）      執行時填入 TSS 位址
 ```
 
-TSS 是 104 bytes（Figure 7-11）：`rsp[0..3]`（之後有 user mode 時用 RSP0）、`ist[1..8]`、I/O bitmap 位移（設成 104 = 沒有 bitmap）。IST1 指向 16 KiB 的靜態堆疊，給 double fault 用：如果 kernel 堆疊溢位，page fault 推不進堆疊會變成 double fault，這時一定要換堆疊才能印出訊息。
+user data 必須在 user code 前面：這是 `sysret` 算選擇子的方式（`docs/syscall.md` §4.2）。
 
-載入：`lgdt` → 用 far return（`push 0x08; push 標籤; retfq`）重新載入 CS（CS 不能用 `mov` 寫）→ `mov` DS/ES/FS/GS/SS = 0x10 → `ltr 0x18`。
+TSS 是 104 bytes（Figure 7-11）：`rsp[0..3]`（RSP0 = ring 3 被中斷時的 kernel 堆疊，每次 context 切換時由 `gdt::set_kernel_stack` 改成新執行緒的堆疊頂）、`ist[1..8]`、I/O bitmap 位移（設成 104 = 沒有 bitmap）。IST1 指向 16 KiB 的靜態堆疊，給 double fault 用：如果 kernel 堆疊溢位，page fault 推不進堆疊會變成 double fault，這時一定要換堆疊才能印出訊息。
+
+載入：`lgdt` → 用 far return（`push 0x08; push 標籤; retfq`）重新載入 CS（CS 不能用 `mov` 寫）→ `mov` DS/ES/FS/GS/SS = 0x10 → `ltr 0x28`。
 
 ## 5. IDT 與例外
 
@@ -126,8 +137,9 @@ rsp → r15 r14 r13 r12 r11 r10 r9 r8 rbp rdi rsi rdx rcx rbx rax
 
 ### 5.3 處理
 
+- 來自 ring 3（推入的 CS 的低兩位 = 3）：stub 先 `swapgs`，`trap_dispatch` 把它交給 kernel 註冊的 `user_fault`，印報告並殺掉那個行程（exit code 128 + 向量），不 panic（P3，`docs/process.md` §10）。
 - 向量 3（`int3`，breakpoint）：計數後返回，`iretq` 回到 `int3` 的下一條指令。`frame::breakpoint()` 用它測試整條路徑。
-- 其他：讀 CR2（page fault 的位址），`panic!` 印出：
+- 其他 ring 0 的例外：讀 CR2（page fault 的位址），`panic!` 印出：
 
 ```
 exception 6 (#UD invalid opcode), error code 0x0
@@ -173,7 +185,8 @@ bitmap   1 1 0 0 0 1 0 0 1 1 …
 
 loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。kernel 透過 HHDM 讀寫分頁表（實體位址 `p` 的表在 `HHDM_BASE + p`）。
 
-- `paging::init`：清掉 PML4[0..256]（loader 的 identity map），重寫 CR3 讓 TLB 失效（Vol. 3A §4.10.4.1）。
+- `paging::init`：記下 loader 的 PML4（`KERNEL_ROOT`），清掉 PML4[0..256]（loader 的 identity map），重寫 CR3 讓 TLB 失效（Vol. 3A §4.10.4.1）。
+- P3 起每個行程有自己的 PML4，上半部（256–511）從 kernel 的複製、共用下層表（`mm::user::AddressSpace`，`docs/process.md` §7）。所以 `map`／`unmap` 一律走 `KERNEL_ROOT`，不管 CR3 現在是哪個行程的；`translate` 走目前的 CR3。
 - `map(virt, PhysFrame, Flags)`：只允許在**動態區**的下半部 `0xFFFF_FF00_0000_0000..+256 GiB`（PML4[510] 的前半），所以 safe code 動不到 kernel 映像、HHDM 與 MMIO。缺的中間表從 PMM 配置清零的頁框。映射吃掉 `PhysFrame`。
 - `unmap(virt) -> PhysFrame`：清掉項目、`invlpg`，把頁框的憑證還回來（同樣只限下半部）。
 - 動態區的上半部 `0xFFFF_FF40_0000_0000..+256 GiB` 是 **MMIO 視窗**，只有 `mm::mmio::map` 能映射（PCD+PWT、NX），見 `docs/irq.md` §7。
@@ -183,7 +196,9 @@ loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。k
 ```
 虛擬位址                       內容
 0xFFFF_8000_0000_0000 ...      HHDM
+0x0000_0000_0000_0000 ...      使用者半部：每個行程自己的（P3）
 0xFFFF_FF00_0000_0000 ...      動態區：heap（4 MiB），之後是其他映射
+0xFFFF_FF10_0000_0000 ...      動態區 + 64 GiB：kernel 堆疊的 slot（每個 64 KiB = 32 KiB guard + 32 KiB 堆疊，P3）
 0xFFFF_FF40_0000_0000 ...      動態區上半：MMIO 視窗（不快取）
 0xFFFF_FFFF_8000_0000 ...      kernel 映像
 ```
@@ -238,7 +253,7 @@ kprintln!  ──►  serial（無鎖）
 | 測試 | 內容 |
 |---|---|
 | host（`cargo test -p frame`） | bitmap、FrameAllocator（含 double free）、SpinLock（多執行緒）、IrqGuard、Once、`overlaps_ram`、TrapFrame 位移與報告格式、字型、TextConsole 換行／捲動／tab；P2 的 ACPI、時間換算、鍵盤解碼、事件佇列（見各文件） |
-| selftest（`make test-qemu`） | BootInfo 合理、`int3` 兩次被接到並返回、例外報告格式、頁框配置／釋放／連續配置、map/translate/unmap、identity map 已移除、Vec/String/Box 與 heap 統計；P2：鎖與 IF、MMIO、MADT、中斷控制器、中斷分派、tick、sleep、鍵盤（QMP 打字） |
+| selftest（`make test-qemu`） | BootInfo 合理、`int3` 兩次被接到並返回、例外報告格式、頁框配置／釋放／連續配置、map/translate/unmap、identity map 已移除、Vec/String/Box 與 heap 統計；P2：鎖與 IF、MMIO、MADT、中斷控制器、中斷分派、tick、sleep、鍵盤（QMP 打字）；P3：執行緒、搶佔、睡眠、ring 3 例外、syscall、ELF 載入、initrd 程式（`docs/process.md` §13） |
 | `make test-qemu-min` | 同上，`-cpu Conroe,-nx -m 256M`（硬體基準、無 NX、無 invariant TSC） |
 | `make test-fb` | 一般 kernel 開機、QMP 打 `h i ret`、看到 `uptime:` 後 QEMU `screendump`，`tools/fb_check.py` 檢查畫面不是全黑、有至少 3 行字 |
 
@@ -252,4 +267,5 @@ selftest 結束時寫 `0x10` 到 `isa-debug-exit`（port `0xF4`），QEMU 以 `(
 - 分頁：空掉的中間表不回收；只支援 4 KiB 映射。MMIO 映射（`mm::mmio`）的虛擬位址只增不減、不回收。
 - heap 固定 4 MiB、不會成長。
 - `alloc_contiguous` 是線性 first-fit。
-- 例外處理一律 panic（除了 breakpoint）；沒有 page fault 的需求分頁。
+- ring 0 的例外一律 panic（除了 breakpoint）；ring 3 的例外殺行程；沒有 page fault 的需求分頁。
+- P3 的限制（排程、位址空間、NMI 與 `swapgs`）見 `docs/process.md` §14、`docs/syscall.md` §7。

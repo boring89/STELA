@@ -74,7 +74,7 @@ TSC       ：約 3696 MHz（主機 CPU 3.7 GHz）
 
 週期模式：數到 0 就送中斷，並自動從 initial count 重來。所以每 62,513 格（= 1 ms）一個中斷。
 
-向量 48 的 handler（`timer_interrupt`）：全域 `TICKS += 1`、`cpu::current().tick()`（每顆 CPU 自己的計數）。EOI 由 `irq::dispatch` 代做。
+向量 48 的 handler（`timer_interrupt`）：全域 `TICKS += 1`、`cpu::current().tick()`（每顆 CPU 自己的計數），再呼叫 kernel 用 `time::set_tick_hook` 註冊的函式（P3：排程器的時間片與睡眠清單，`docs/process.md` §6.2）。EOI 由 `irq::dispatch` 代做。
 
 ## 5. TSC 與 `now_ns()`
 

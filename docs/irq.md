@@ -238,7 +238,7 @@ irq::register(irq::isa_vector(1), on_key)?;       // 32–254；例外或 0xFF �
 irq::enable_isa(1)?;                              // I/O APIC 路由並解除遮蔽
 ```
 
-`dispatch(frame)`：計數 → 0xFF 就返回 → 從表（`SpinLock<[Option<fn(&TrapFrame)>; 256]>`）複製出 handler、放鎖 → 呼叫 → **EOI**。沒有 handler 的向量印一次 `irq: vector N has no handler (reported once)` 後照樣 EOI，不 panic。
+`dispatch(frame)`：計數 → 0xFF 就返回 → 從表（`SpinLock<[Option<fn(&TrapFrame)>; 256]>`）複製出 handler、放鎖 → 呼叫 → **EOI** →（P3）per-CPU 的 `need_resched` 被設了就呼叫 kernel 的排程器（搶佔點，`docs/process.md` §6.2）。沒有 handler 的向量印一次 `irq: vector N has no handler (reported once)` 後照樣 EOI，不 panic。
 
 `irq::self_ipi(vector)`：用 local APIC 的 ICR 送中斷給自己（destination shorthand = self、fixed、assert）。selftest 用它測整條路：handler 被叫到、`frame.vector` 正確、handler 內 IF=0、EOI 後下一個能進來。
 
@@ -258,7 +258,7 @@ frame::cpu::current()：mov rax, gs:[0]  → &'static PerCpu
 
 - 一條 `mov rax, gs:[0]` 就拿到一般指標，不用每次 `rdmsr`（慢）。
 - 現在只有 BSP 一份（heap 配置後 leak）；`init_this_cpu(id, apic_id)` 是每顆 CPU 自己呼叫的設計，P10 啟動 AP 時各建一份。
-- P3 有使用者模式時要加 `swapgs` 與 `IA32_KERNEL_GS_BASE`（使用者程式也能設 GS）。
+- P3 起有使用者模式：每條進出 kernel 的路都 `swapgs`（使用者模式時 GS_BASE = 0、per-CPU 在 `IA32_KERNEL_GS_BASE`），PerCpu 也多了 `kernel_rsp`、`need_resched` 與目前的 context（`docs/process.md` §9.4）。
 - selftest：`current().apic_id()` 等於 `CPUID.01H:EBX[31:24]`（CPU 自己回報的初始 APIC id），`id() == 0`、`online() == 1`。
 
 ## 11. 鎖與中斷

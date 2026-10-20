@@ -140,12 +140,12 @@ N = 4，push 1 2 3 4 5：
 loop {
     match input::pop() {
         Some(Key(e)) => echo(key_to_char(&e)),   // 字元照印；控制字元印成 ^X（Backspace = ^H）
-        None => frame::halt_until_interrupt(),   // sti; hlt，等下一個中斷
+        None => kernel::task::sleep_ms(4),       // P3 起：讓出 CPU，4 ms 後再看
     }
 }
 ```
 
-Enter 換行後印 `uptime: 0.307 s, 307 ticks`。輸出經 `kprint!` 同時到畫面與 serial。如果事件剛好在 `pop()` 回傳 None 之後、`hlt` 之前進來，要等下一個中斷（最多 1 ms 的 tick）才處理。
+Enter 換行後印 `uptime: 0.307 s, 307 ticks`。輸出經 `kprint!` 同時到畫面與 serial。P2 時沒有事件就 `sti; hlt`；P3 起它是 kernel 執行緒 `init`（先跑完 initrd 的 `hello`，`docs/process.md` §12.5），沒有事件就睡 4 ms 讓別的執行緒用 CPU，所以按鍵最多延遲約 5 ms 才印出。
 
 ## 8. 測試
 

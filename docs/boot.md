@@ -1,6 +1,6 @@
 # 開機：UEFI loader 與 bootinfo
 
-> P1 由自動排程一次做完，使用者已於 2026-10-20 審核。
+> P1 由自動排程一次做完，使用者已於 2026-10-20 審核。P3 加入的 initrd 與 BootInfo 版本 2（§3、§9）**使用者尚未審核**，細節在 `docs/process.md` §12。
 
 這份文件說明 STELA 從按下電源到 kernel 第一行程式碼之間發生的事：`boot/`（loader）、`elfload/`（ELF 解析）、`bootinfo/`（loader 交給 kernel 的資料）。
 
@@ -35,6 +35,7 @@ OVMF（韌體）
   └─ 載入 \EFI\BOOT\BOOTX64.EFI（stela-boot）
        │ 1. 讀 \STELA\kernel.elf（uefi::fs）
        │ 2. elfload 驗證 → 配置一整塊頁面、複製 PT_LOAD、.bss 已是 0
+       │    讀 \STELA\initrd.tar（有的話）→ 複製到新的頁面（P3）
        │ 3. 配置 64 KiB 堆疊、BootInfo
        │ 4. 記下 GOP framebuffer、RSDP
        │ 5. 建分頁表：HHDM、identity map、kernel 映射
@@ -48,7 +49,8 @@ QEMU 實際輸出（512 MiB、OVMF）：
 
 ```
 STELA boot loader 0.1.0
-boot: kernel at 0x1de6b000 (56 KiB), entry 0xffffffff80002560
+boot: kernel at 0x1de43000 (132 KiB), entry 0xffffffff80004ae8
+boot: initrd at 0x1de2f000 (81920 bytes)
 boot: framebuffer 1280x800, RSDP 0x1f77e014, direct map 4096 MiB, 14 page tables, NX on
 boot: starting the kernel
 STELA kernel 0.1.0
@@ -202,14 +204,14 @@ jmp r10                   ; kernel 的 e_entry；RDI = BootInfo 的 HHDM 位址
 
 NX 支援由 `CPUID.80000001H:EDX[20]` 偵測（Vol. 2A "CPUID"）；沒有 NX 時不設 NXE，也不在任何項目設 bit 63（否則那是保留位元，會 page fault）。`BootInfo::nx_enabled` 告訴 kernel。`make test-qemu-min` 用 `-cpu Conroe,-nx` 驗證這條路。
 
-## 9. `BootInfo` 格式（版本 1）
+## 9. `BootInfo` 格式（版本 2）
 
 `#[repr(C)]`，所有位址都是**實體位址**（kernel 加上 `hhdm_base` 讀取）。列舉欄位存成 `u32` 原值，用 `kind()`／`format()` 解碼，壞值不會造成 UB。
 
 | 位移 | 欄位 | 說明 |
 |---|---|---|
 | 0 | `magic: u64` | `"STELABI\0"` |
-| 8 | `version: u32` | 1 |
+| 8 | `version: u32` | 2（P3 起；版本 1 沒有 initrd 欄位） |
 | 12 | `region_count: u32` | `regions` 的有效項目數 |
 | 16 | `hhdm_base: u64` | `0xFFFF_8000_0000_0000` |
 | 24 | `hhdm_size: u64` | HHDM 涵蓋的位元組數 |
@@ -223,15 +225,17 @@ NX 支援由 `CPUID.80000001H:EDX[20]` 偵測（Vol. 2A "CPUID"）；沒有 NX �
 | 88 | `regions_truncated: u32` | 記憶體表超過 256 項 |
 | 92 | `nx_enabled: u32` | |
 | 96 | `framebuffer` | `phys_addr`、`size`、`width`、`height`、`pitch`、`format`（32 bytes） |
-| 128 | `regions[256]` | 每項 24 bytes：`kind: u32`、`reserved: u32`、`phys_start: u64`、`page_count: u64` |
+| 128 | `initrd_phys: u64` | initrd（`\STELA\initrd.tar`，ustar）的實體位址，頁對齊；0 = 沒有 |
+| 136 | `initrd_size: u64` | initrd 的位元組數；0 = 沒有 |
+| 144 | `regions[256]` | 每項 24 bytes：`kind: u32`、`reserved: u32`、`phys_start: u64`、`page_count: u64` |
 
-總大小 6,272 bytes。`bootinfo` 的 host 測試鎖住這些位移；改格式時要一起改 `VERSION`。
+總大小 6,288 bytes。initrd 的頁面是 `LOADER_DATA`（kernel 看到 `KernelAndBoot`，PMM 不會拿去用）；kernel 用 `frame::mm::initrd()` 讀取，它先檢查範圍落在某個 KernelAndBoot 區段與 HHDM 內。`bootinfo` 的 host 測試鎖住這些位移；改格式時要一起改 `VERSION`。
 
 framebuffer：loader **不切換模式**，用 GOP 目前的模式（OVMF 預設 1280x800）。只接受 32 位元的 RGB／BGR；Bitmask 與 BltOnly 模式回報為「沒有 framebuffer」。
 
 ## 10. 測試
 
-- `cargo test -p bootinfo -p elfload`：結構位移、列舉、區段合併；ELF 的各種錯誤輸入，以及（若已建置）真的 `kernel.elf`。
+- `cargo test -p bootinfo -p elfload`：結構位移（版本 2、initrd 欄位）、列舉、區段合併；ELF 的各種錯誤輸入，以及（若已建置）真的 `kernel.elf`。
 - `make test-qemu`：loader banner → `STELA kernel` → `selftest: OK`、QEMU exit code 33。
 - `make test-qemu-min`：同上，`-cpu Conroe,-nx -m 256M`。
 

@@ -12,6 +12,7 @@
 //! - [`menu`] (Menu Manager): menu bars.
 //! - [`control`] (Control Manager): buttons, text fields, scroll bars,
 //!   lists.
+//! - [`icons`]: STELA's icons (drafts) from `assets/`.
 //!
 //! The drawing, event, menu and control code is pure logic and is tested
 //! on the host; [`window`] makes the system calls.
@@ -24,6 +25,7 @@ extern crate alloc;
 pub mod control;
 pub mod draw;
 pub mod event;
+pub mod icons;
 pub mod menu;
 #[cfg(not(test))]
 pub mod window;

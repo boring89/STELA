@@ -55,7 +55,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 # User-space crates (same target).
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd musl linux-tests esp esp-test run test test-host test-qemu test-qemu-min test-window \
+.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-window \
 	host-images test-images test-storage test-shell test-shutdown test-linux test-usb ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
@@ -77,6 +77,16 @@ user:
 initrd: user linux-tests
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
 		-cf $(INITRD) -C $(USER_DIR) $(USER_PROGRAMS) linux
+
+# The icons (assets/README.md): assets/*.ppm and *.pbm to Rust data in
+# assets/generated/. draft-assets redraws the DRAFT images (it overwrites
+# assets/: not after the real artwork is in).
+assets:
+	python3 tools/img_to_rs.py assets assets/generated
+
+draft-assets:
+	python3 tools/make_draft_assets.py assets
+	python3 tools/img_to_rs.py assets assets/generated
 
 musl: $(MUSL_GCC)
 
@@ -130,6 +140,8 @@ host-images:
 	python3 tools/make_test_images.py host $(BUILD)/images
 
 test-host: initrd host-images
+	python3 tools/img_to_rs.py assets $(BUILD)/assets-check > /dev/null
+	diff -r $(BUILD)/assets-check assets/generated
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 	cargo test --lib $(addprefix -p ,$(HOST_LIB_CRATES))
 

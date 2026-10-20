@@ -71,6 +71,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("file systems", file_systems),
         ("processes", processes),
         ("linux personality", linux_personality),
+        ("smp", smp),
         ("framebuffer object", framebuffer_object),
     ];
     // Let the service threads (console) reach their first wait, so that
@@ -118,6 +119,113 @@ fn boot_information(info: &'static BootInfo) {
         core::str::from_utf8(frame::cmdline()).unwrap_or("?"),
         trampoline
     );
+}
+
+/// The free frame count once it reaches `expected`, or after 200 ms: a
+/// process whose end `wait_process` reported may still be freeing its
+/// memory on another processor (`docs/smp.md`).
+fn settled_frames(expected: usize) -> usize {
+    for _ in 0..200 {
+        if pmm::stats().0 == expected {
+            break;
+        }
+        task::sleep_ms(1);
+    }
+    pmm::stats().0
+}
+
+/// The application processors (`docs/smp.md`), when there are any: every
+/// processor's timer ticks; wake-ups cross processors both ways; one
+/// spinning process per processor (round robin); killing them from the
+/// boot processor ends them where they run.
+fn smp(_: &'static BootInfo) {
+    static BLOCKER: AtomicU64 = AtomicU64::new(0);
+    static WOKEN: AtomicU64 = AtomicU64::new(0);
+    let n = cpu::online();
+    if n < 2 {
+        kprintln!("smp: one processor (skipped)");
+        return;
+    }
+    let before: Vec<u64> = (0..n).map(cpu::ticks_of).collect();
+    task::sleep_ms(50);
+    for (i, b) in before.iter().enumerate() {
+        assert!(
+            cpu::ticks_of(i) > b + 10,
+            "processor {i}'s timer does not tick"
+        );
+    }
+    // A thread on processor 1 wakes the main thread (processor 0).
+    let me = task::current_id();
+    task::spawn_on(1, "smp-waker", move || {
+        task::sleep_ms(20);
+        task::wake(me);
+    })
+    .expect("spawn_on");
+    let start = time::now_ns();
+    assert!(
+        task::block_until(Some(start + 2_000_000_000)),
+        "not woken from processor 1"
+    );
+    // The main thread wakes a thread blocked on processor 1.
+    let id = task::spawn_on(1, "smp-sleeper", || {
+        assert_eq!(cpu::current().id(), 1, "spawn_on(1) ran elsewhere");
+        BLOCKER.store(task::current_id(), Ordering::Release);
+        task::block();
+        WOKEN.store(1, Ordering::Release);
+    })
+    .expect("spawn_on");
+    while BLOCKER.load(Ordering::Acquire) != id {
+        task::sleep_ms(1);
+    }
+    task::sleep_ms(20);
+    task::wake(id);
+    let deadline = time::now_ns() + 1_000_000_000;
+    while WOKEN.load(Ordering::Acquire) == 0 {
+        assert!(
+            time::now_ns() < deadline,
+            "the thread on processor 1 was not woken"
+        );
+        task::sleep_ms(1);
+    }
+    // One spinner (jmp $) per processor.
+    let flags = UserFlags {
+        writable: false,
+        executable: true,
+    };
+    let mut spinners = Vec::new();
+    for i in 0..n {
+        let process = task::process::create("spinner").expect("no address space");
+        let page = pmm::alloc_zeroed_frame().expect("no frame");
+        process.space().map(CODE_BASE, page, flags).expect("map");
+        process
+            .space()
+            .load(CODE_BASE, &[0xEB, 0xFE])
+            .expect("load");
+        task::spawn_user(&process, CODE_BASE, STACK_TOP - 8, 0).expect("spawn");
+        kprintln!(
+            "smp:   spinner {i}: process {} on processor {}",
+            process.id(),
+            process.cpu()
+        );
+        spinners.push(process);
+    }
+    let mut cpus: Vec<usize> = spinners.iter().map(|p| p.cpu()).collect();
+    cpus.sort_unstable();
+    cpus.dedup();
+    assert_eq!(cpus.len(), n, "the spinners share processors");
+    let ticks = time::ticks();
+    task::sleep_ms(30);
+    assert!(time::ticks() - ticks < 100, "main starved by the spinners");
+    for p in &spinners {
+        assert_eq!(task::process::exit_status(p.id()), None);
+        task::kill(p, 99);
+    }
+    for p in spinners {
+        let pid = p.id();
+        drop(p);
+        assert_eq!(task::wait_process(pid), Some(99), "spinner {pid}");
+    }
+    kprintln!("smp: {n} processors: ticks, wake both ways, {n} spinners killed across processors");
 }
 
 fn breakpoint(_: &'static BootInfo) {
@@ -825,7 +933,7 @@ fn user_mode_faults(_: &'static BootInfo) {
     drop(process);
     assert_eq!(task::wait_process(pid), Some(77));
     // Everything (address spaces, page tables, kernel stacks) went back.
-    assert_eq!(pmm::stats().0, free, "process memory not freed");
+    assert_eq!(settled_frames(free), free, "process memory not freed");
     assert!(interrupts_enabled());
 }
 
@@ -985,7 +1093,7 @@ fn elf_loading(_: &'static BootInfo) {
     let (free, _) = pmm::stats();
     let pid = program::spawn("elf", &image).expect("spawn failed");
     assert_eq!(task::wait_process(pid), Some(42));
-    assert_eq!(pmm::stats().0, free, "program memory not freed");
+    assert_eq!(settled_frames(free), free, "program memory not freed");
     // Refused: writable and executable, not ELF, missing from the initrd.
     assert_eq!(
         program::spawn("wx", &make_elf(SYSCALL_TEST, 7)),
@@ -995,7 +1103,7 @@ fn elf_loading(_: &'static BootInfo) {
         program::spawn("junk", b"not an elf"),
         Err(LoadError::BadElf(_))
     ));
-    assert_eq!(pmm::stats().0, free, "failed loads leaked memory");
+    assert_eq!(settled_frames(free), free, "failed loads leaked memory");
     assert_eq!(
         program::spawn_path("Initrd", "no-such-program", None).err(),
         Some(LoadError::NotFound)
@@ -1034,7 +1142,7 @@ fn initrd_programs(_: &'static BootInfo) {
     assert_eq!(task::wait_process(pid), Some(0));
     // Every process's memory came back.
     assert_eq!(task::stats().zombies, 0);
-    assert_eq!(pmm::stats().0, free, "program memory not freed");
+    assert_eq!(settled_frames(free), free, "program memory not freed");
 }
 
 fn ports(_: &'static BootInfo) {
@@ -1144,7 +1252,7 @@ fn ipc_programs(_: &'static BootInfo) {
     assert_eq!(task::wait_process(pid), Some(99));
     task::sleep_ms(1);
     assert_eq!(task::stats().zombies, 0);
-    assert_eq!(pmm::stats().0, free, "ipc memory not freed");
+    assert_eq!(settled_frames(free), free, "ipc memory not freed");
 }
 
 fn pci(_: &'static BootInfo) {
@@ -1335,7 +1443,7 @@ fn processes(_: &'static BootInfo) {
     assert_eq!(task::wait_process(pid), Some(0), "proctest failed");
     task::sleep_ms(1);
     assert_eq!(task::stats().zombies, 0);
-    assert_eq!(pmm::stats().0, free, "process memory not freed");
+    assert_eq!(settled_frames(free), free, "process memory not freed");
 }
 
 /// A Linux program in raw machine code (no STELA note, so the kernel runs

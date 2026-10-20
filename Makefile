@@ -61,7 +61,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-textmode test-window \
+.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
@@ -170,7 +170,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
+test: test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -195,6 +195,15 @@ test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 		--expect "spin: " --expect "ipc_client: OK" --expect "net: raw frames work" --expect "proctest: OK" \
 		--expect "linux: hello from raw system calls" --expect "selftest: OK" \
 		-- $(QEMU) $(QEMU_TEST_FLAGS)
+
+# SMP (docs/smp.md): the whole self test on four processors; the "smp"
+# test checks each one's timer, wake-ups across processors, a spinning
+# process per processor and killing them from the boot processor.
+test-qemu-smp: esp-test $(BUILD)/OVMF_VARS.fd
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --log $(BUILD)/test-qemu-smp.log \
+		--expect "smp: 4 processor(s) online" --expect "input: OK" --expect "proctest: OK" \
+		--expect "smp: 4 processors: ticks, wake both ways" --expect "selftest: OK" \
+		-- $(QEMU) $(QEMU_TEST_FLAGS) -smp 4
 
 # The minimal machine also gets the AHCI test disk (a copy of its own):
 # AHCI, GPT, FAT, eHFS and fstest on a Core 2 without NX in 256 MiB.
@@ -360,8 +369,9 @@ test-window: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/fb_check.py $(BUILD)/screen.ppm $(WINDOW_CHECKS)
 
 # The shell on the normal kernel with the AHCI test disk (a copy of its
-# own): commands typed through QMP, their answers checked on the serial
-# console. Each command is typed when the previous one's line appears.
+# own) on two processors (docs/smp.md): commands typed through QMP, their
+# answers checked on the serial console. Each command is typed when the
+# previous one's line appears.
 test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-shell.img
 	python3 tools/qemu_test.py --timeout 120 \
@@ -375,12 +385,12 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "hello exited with code" "ps\n" \
 		--type "ended)" "mem\n" \
 		--type "memory: " "uptime\n" \
-		--expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
+		--expect "smp: 2 processor(s) online" --expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
 		--expect "hello from user mode" --expect "hello exited with code 0" \
 		--expect "shell" --expect "ended)" --expect "memory: " --expect "uptime: " \
-		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 

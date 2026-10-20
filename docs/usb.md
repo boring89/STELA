@@ -1,6 +1,6 @@
 # USB：xHCI、hub、HID 鍵盤與滑鼠
 
-> P8 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P8 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 沒有 PS/2 的新電腦也能用鍵盤與滑鼠：xHCI 主控制器、USB 2.0 hub、HID boot protocol 的鍵盤與滑鼠、熱插拔。設計參考 68k_HAL 的 `docs/usb.md`（只參考設計與數值，程式碼重寫），規格是 *eXtensible Host Controller Interface for USB 1.2*（以下「xHCI §」）、*USB 2.0 Specification*（「USB §」）、*Device Class Definition for HID 1.11*、*HID Usage Tables 1.12*。
 

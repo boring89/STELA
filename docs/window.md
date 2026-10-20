@@ -1,6 +1,6 @@
 # 視窗伺服器與桌面
 
-> P8 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P8 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 `user/windowserver` 擁有畫面、鍵盤與滑鼠，把各個程式（client）的視窗合成到畫面上；`user/terminal` 是第一個 client：視窗版的 shell。畫面的取得見 `docs/display.md`，client 用的函式庫見 `docs/toolbox.md`。
 

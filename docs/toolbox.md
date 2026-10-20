@@ -1,6 +1,6 @@
 # UI 工具箱（toolbox）
 
-> P8 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P8 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 寫視窗程式用的函式庫 `user/toolbox`。模組的切分照 Classic Mac OS 的 Manager：`draw`（QuickDraw）、`window`（Window Manager）、`event`（Event Manager）、`menu`（Menu Manager）、`control`（Control Manager）。協定見 `docs/window.md`。
 

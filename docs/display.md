@@ -1,6 +1,6 @@
 # 顯示：GOP 模式、PAT write-combining、Framebuffer 物件
 
-> P8 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P8 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 畫面怎麼從 kernel 的文字主控台交給使用者空間的視窗伺服器。架構決定見 `docs/architecture.md` §4 的 G（kernel 只提供 framebuffer 與輸入事件，視窗伺服器與繪圖在使用者空間）。視窗伺服器本身見 `docs/window.md`，畫圖的函式見 `docs/toolbox.md`。
 

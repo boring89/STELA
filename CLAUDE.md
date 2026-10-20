@@ -168,10 +168,10 @@ Claude 依照上方工作規則直接實作。
 - P4（自動排程一次做完，使用者已審核（2026-10-20））：IPC 與 handle（`docs/ipc.md`）
 - P5（自動排程一次做完，使用者已審核（2026-10-20））：PCI、儲存、eHFS、VFS（`docs/pci.md`、`docs/storage.md`、`docs/ehfs.md`、`docs/vfs.md`）
 - P6（自動排程一次做完，使用者已審核（2026-10-20））：libstela、init、shell（`docs/userland.md`）
-- P6.5（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：RTC 與關機（`docs/time.md` §5.5、`docs/acpi.md`）
-- P7（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：Linux 相容層（`docs/linux.md`）
-- P8（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：USB、顯示、視窗伺服器、工具箱（`docs/usb.md`、`docs/display.md`、`docs/window.md`、`docs/toolbox.md`）
-- P9（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：Mouseion 與識別（`docs/mouseion.md`、`docs/identity.md`）
+- P6.5（自動排程一次做完，使用者已審核（2026-10-20））：RTC 與關機（`docs/time.md` §5.5、`docs/acpi.md`）
+- P7（自動排程一次做完，使用者已審核（2026-10-20））：Linux 相容層（`docs/linux.md`）
+- P8（自動排程一次做完，使用者已審核（2026-10-20））：USB、顯示、視窗伺服器、工具箱（`docs/usb.md`、`docs/display.md`、`docs/window.md`、`docs/toolbox.md`）
+- P9（自動排程一次做完，使用者已審核（2026-10-20））：Mouseion 與識別（`docs/mouseion.md`、`docs/identity.md`）
 
 ## 已知問題（尚未修正）
 

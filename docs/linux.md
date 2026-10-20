@@ -1,6 +1,6 @@
 # Linux 相容層（Linux 人格）
 
-> P7 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P7 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 讓靜態連結的 x86-64 Linux 程式（musl）直接在 STELA 上跑：同一條 `syscall` 指令進 kernel，kernel 看行程的「人格」決定用哪一套號碼表。架構決定見 `docs/architecture.md` §4 的 H（Linux 只做 syscall 翻譯，先支援 musl 靜態程式）。STELA 自己的 ABI 見 `docs/syscall.md`。
 

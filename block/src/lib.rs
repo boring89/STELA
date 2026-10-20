@@ -13,6 +13,15 @@
 
 extern crate alloc;
 
+pub mod crc32;
+pub mod gpt;
+pub mod mem;
+pub mod partition;
+
+pub use partition::Partition;
+
+use alloc::sync::Arc;
+
 /// The block size of every [`BlockDevice`]: 4 KiB. Drivers convert to
 /// their sector size (512 or 4096).
 pub const BLOCK_SIZE: usize = 4096;
@@ -55,6 +64,50 @@ pub trait BlockDevice {
     /// Makes earlier writes durable (a cache flush on the device).
     fn flush(&self) -> Result<(), BlockError> {
         Ok(())
+    }
+}
+
+impl<T: BlockDevice + ?Sized> BlockDevice for Arc<T> {
+    fn block_count(&self) -> u64 {
+        (**self).block_count()
+    }
+
+    fn read(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        (**self).read(block, buf)
+    }
+
+    fn write(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
+        (**self).write(block, buf)
+    }
+
+    fn read_only(&self) -> bool {
+        (**self).read_only()
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        (**self).flush()
+    }
+}
+
+impl<T: BlockDevice + ?Sized> BlockDevice for &T {
+    fn block_count(&self) -> u64 {
+        (**self).block_count()
+    }
+
+    fn read(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+        (**self).read(block, buf)
+    }
+
+    fn write(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
+        (**self).write(block, buf)
+    }
+
+    fn read_only(&self) -> bool {
+        (**self).read_only()
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        (**self).flush()
     }
 }
 

@@ -38,7 +38,7 @@ KERNEL_CRATES := abi block bootinfo drivers frame kernel
 USER_CRATES := libstela $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd esp esp-test run test test-host test-qemu test-qemu-min test-fb \
-	test-images test-storage clippy fmt clean
+	host-images test-images test-storage clippy fmt clean
 
 all: esp
 
@@ -84,7 +84,11 @@ run: esp $(BUILD)/OVMF_VARS.fd
 
 test: test-host test-qemu test-qemu-min test-fb test-storage
 
-test-host: initrd
+# Images the host tests read (FAT made by mtools, GPT made by sgdisk).
+host-images:
+	python3 tools/make_test_images.py host $(BUILD)/images
+
+test-host: initrd host-images
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 	cargo test --lib $(addprefix -p ,$(HOST_LIB_CRATES))
 

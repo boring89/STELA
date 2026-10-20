@@ -144,6 +144,23 @@ pub fn volume_list(index: u64) -> Result<Option<VolumeInfo>, Error> {
 
 /// The root folder of the volume called `name`.
 pub fn volume_open(name: &str) -> Result<Handle, Error> {
+    volume_open_inner(name)
+}
+
+/// The Finder information (32 bytes) of the file or folder `h`
+/// (`NotSupported` on FAT and the initrd).
+pub fn get_info(h: Handle) -> Result<[u8; abi::FINDER_INFO_SIZE], Error> {
+    let mut info = [0u8; abi::FINDER_INFO_SIZE];
+    crate::sys::syscall2(Syscall::FileGetInfo, h.raw(), info.as_mut_ptr() as u64)?;
+    Ok(info)
+}
+
+/// Stores the Finder information of `h` (which needs `WRITE`).
+pub fn set_info(h: Handle, info: &[u8; abi::FINDER_INFO_SIZE]) -> Result<(), Error> {
+    crate::sys::syscall2(Syscall::FileSetInfo, h.raw(), info.as_ptr() as u64).map(|_| ())
+}
+
+fn volume_open_inner(name: &str) -> Result<Handle, Error> {
     syscall2(Syscall::VolumeOpen, name.as_ptr() as u64, name.len() as u64).map(Handle::from_raw)
 }
 

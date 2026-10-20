@@ -44,16 +44,35 @@ pub fn process_spawn(
     } else {
         None
     };
-    let node = {
+    let (node, bundle) = {
         let handles = process.handles().lock();
         let entry = handles.get_with(Handle::from_raw(file), Rights::READ)?;
         match &entry.object {
-            KernelObject::File(node) => node.clone(),
-            KernelObject::Directory(_) => return Err(Error::IsDir),
+            KernelObject::File(node) => (node.clone(), None),
+            KernelObject::Directory(dir) => (dir.clone(), Some(())),
             _ => return Err(Error::WrongType),
         }
     };
-    let (name, image) = program::read_program(&node.volume, node.id).map_err(load_error)?;
+    // A bundle (`Name.app/`) runs its `exec` (`docs/mouseion.md` §5).
+    let (node, bundle_name) = match bundle {
+        None => (node, None),
+        Some(()) => {
+            let info = node.volume.fs.get(node.id)?;
+            let Some(name) = program::bundle_name(&info.name) else {
+                return Err(Error::IsDir);
+            };
+            let exec = node.volume.fs.lookup(node.id, program::BUNDLE_EXEC)?;
+            let name = alloc::string::String::from(name);
+            (
+                crate::vfs::Node {
+                    volume: node.volume,
+                    id: exec.id,
+                },
+                Some(name),
+            )
+        }
+    };
+    let (file_name, image) = program::read_program(&node.volume, node.id).map_err(load_error)?;
     program::check_image(&image).map_err(|_| Error::InvalidArgument)?;
     // The initial handles and the message's handles: checked, then moved.
     let mut raw = [0u8; 12];
@@ -68,7 +87,10 @@ pub fn process_spawn(
         .map(|c| Handle(u32::from_le_bytes(*c)))
         .collect();
     let mut msg = if msg_ptr == 0 {
-        Message::with_data(tag::BOOTSTRAP_ARGS, name.as_bytes())
+        Message::with_data(
+            tag::BOOTSTRAP_ARGS,
+            bundle_name.as_deref().unwrap_or(&file_name).as_bytes(),
+        )
     } else {
         let mut b = [0u8; MESSAGE_SIZE];
         process
@@ -81,6 +103,14 @@ pub fn process_spawn(
         return Err(Error::InvalidArgument);
     }
     msg.tag = tag::BOOTSTRAP_ARGS;
+    // The process is called by its first argument (the program's name as
+    // the caller sees it), else by the bundle's or the file's name.
+    let name = match msg.payload().split(|&b| b == 0).next() {
+        Some(first) if msg.handles == 0 && !first.is_empty() && first.len() <= 24 => {
+            alloc::string::String::from_utf8_lossy(first).into_owned()
+        }
+        _ => bundle_name.unwrap_or(file_name),
+    };
     let carried: Vec<Handle> = msg.carried().to_vec();
     let mut all: Vec<Handle> = initial_handles
         .iter()

@@ -80,6 +80,15 @@ fn run() -> Result<(), i64> {
     let mut back = [0u8; 10_000];
     check(6, fs::read(file, &mut back, 0) == Ok(back.len()), "read")?;
     check(7, back == buf, "read back")?;
+    // Finder information (FileGetInfo/FileSetInfo): zero at first, then
+    // what was stored.
+    check(30, fs::get_info(file) == Ok([0; 32]), "fresh Finder info")?;
+    let mut info = [0u8; 32];
+    info[..6].copy_from_slice(b"MOUSEI");
+    info[31] = 0xA5;
+    check(31, fs::set_info(file, &info).is_ok(), "set Finder info")?;
+    check(32, fs::get_info(file) == Ok(info), "Finder info back")?;
+    check(33, fs::set_info(dir, &info).is_ok(), "folder Finder info")?;
     let st = fs::stat(file).map_err(|_| 8i64)?;
     check(
         8,
@@ -154,6 +163,11 @@ fn run() -> Result<(), i64> {
             22,
             fs::open(boot, "new", open::CREATE | open::WRITE) == Err(Error::ReadOnly),
             "read-only volume",
+        )?;
+        check(
+            34,
+            fs::get_info(hello) == Err(Error::NotSupported),
+            "no Finder info on FAT",
         )?;
         let nested = fs::open(boot, "EFI/BOOT/nested.txt", open::READ).map_err(|_| 23i64)?;
         check(

@@ -256,6 +256,17 @@ fn spawn_linux(
     start(&process, elf.entry(), stack.rsp)
 }
 
+/// The program file inside a bundle.
+pub const BUNDLE_EXEC: &str = "exec";
+
+/// The name of a bundle folder without its `.app` (ASCII case ignored),
+/// or `None` if the folder is not a bundle.
+pub fn bundle_name(folder: &str) -> Option<&str> {
+    let cut = folder.len().checked_sub(4)?;
+    (folder.is_char_boundary(cut) && folder[cut..].eq_ignore_ascii_case(".app") && cut > 0)
+        .then(|| &folder[..cut])
+}
+
 /// Largest program file `read_program` takes.
 pub const PROGRAM_MAX: u64 = 32 << 20;
 

@@ -140,11 +140,18 @@ pub enum Syscall {
     /// `HandleKind(handle) -> kind`: what the handle refers to
     /// (`object_kind::*`).
     HandleKind = 36,
+    /// `FileGetInfo(file or folder, &mut [u8; 32])`: the item's Finder
+    /// information (`FINDER_INFO_SIZE` bytes; Mouseion's window and icon
+    /// positions). `NotSupported` on volumes that do not keep it.
+    FileGetInfo = 37,
+    /// `FileSetInfo(file or folder, &[u8; 32])`: stores it (needs
+    /// `WRITE` on the handle).
+    FileSetInfo = 38,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 36] = [
+    pub const ALL: [Syscall; 38] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -181,6 +188,8 @@ impl Syscall {
         Syscall::TtyRead,
         Syscall::TtyWrite,
         Syscall::HandleKind,
+        Syscall::FileGetInfo,
+        Syscall::FileSetInfo,
     ];
 
     /// The call with number `raw`, if any.
@@ -611,6 +620,11 @@ pub mod spawn {
     /// Every defined flag.
     pub const ALL: u64 = FORCE_LINUX | FORCE_STELA;
 }
+
+/// Bytes of an item's Finder information (`FileGetInfo`, `FileSetInfo`):
+/// opaque to the kernel; eHFS keeps it in the catalog record. Mouseion's
+/// layout is in `docs/mouseion.md`.
+pub const FINDER_INFO_SIZE: usize = 32;
 
 /// `TtyCreate` flags.
 pub mod tty {
@@ -1183,7 +1197,10 @@ mod tests {
             Some(fb)
         );
         assert_eq!(&fb.to_bytes()[..4], &2560u32.to_le_bytes());
-        assert_eq!(Syscall::from_raw(37), None);
+        assert_eq!(Syscall::FileGetInfo.raw(), 37);
+        assert_eq!(Syscall::FileSetInfo.raw(), 38);
+        assert_eq!(FINDER_INFO_SIZE, 32);
+        assert_eq!(Syscall::from_raw(39), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 

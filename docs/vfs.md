@@ -81,6 +81,19 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 
 時間是 1970 起的奈秒（UTC）；P6.5 起來自 CMOS RTC（`frame::time::wall_clock_ns`，`docs/time.md` §5.5），讀不到 RTC 時是「2026-01-01 + 開機以來」。
 
+### 4.2 Finder 資訊（P9）
+
+| 編號 | 名稱 | 參數 | 權限 |
+|---|---|---|---|
+| 37 | `FileGetInfo` | 檔案或資料夾, &mut [u8; 32] | — |
+| 38 | `FileSetInfo` | 檔案或資料夾, &[u8; 32] | WRITE；唯讀卷宗 → `ReadOnly` |
+
+每個項目 32 bytes 的 Finder 資訊（`abi::FINDER_INFO_SIZE`），kernel 不解讀：eHFS 存在目錄記錄裡（格式本來就有，`docs/ehfs.md`），`Tmp` 存在記憶體；FAT 與 Initrd 回 `NotSupported`。後端：`FileSystem::get_info`／`set_info`（預設 `NotSupported`）。Mouseion 的配置（視窗矩形、圖示位置）見 `docs/mouseion.md`。
+
+### 4.3 bundle（P9）
+
+`ProcessSpawn` 也接受 `Name.app` 資料夾的 handle：執行裡面的 `exec`（`program::BUNDLE_EXEC`），行程名稱是參數的第一個字（沒有參數時用 bundle 名稱 `Name`）。其他資料夾仍是 `IsDir`。P9 起行程名稱一律取參數的第一個字（≤ 24 bytes），不再是檔名。initrd 裡的 `Terminal.app`、`Echo.app`（之後 `Viewer.app`）由 Makefile 的 `BUNDLES` 產生（`exec` + `info.txt`：名稱、版本）。
+
 ## 5. 初始 handle `[3]`
 
 `bootstrap::CWD`：kernel 建立行程時，如果有 `Data` 卷宗，`[3]` 是它的根（`READ|WRITE|DUPLICATE|TRANSFER`）；沒有就空（`BadHandle`）。P6 的 `ProcessSpawn` 讓父行程指定 `[1]`–`[3]`。

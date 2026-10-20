@@ -66,6 +66,14 @@ pub trait FileSystem: Send + Sync {
     fn unmount(&self) -> Result<(), Error> {
         Ok(())
     }
+    /// The item's 32 bytes of Finder information.
+    fn get_info(&self, _id: u64) -> Result<[u8; 32], Error> {
+        Err(Error::NotSupported)
+    }
+    /// Stores the item's Finder information.
+    fn set_info(&self, _id: u64, _info: &[u8; 32]) -> Result<(), Error> {
+        Err(Error::NotSupported)
+    }
 }
 
 /// A mounted volume.
@@ -265,6 +273,18 @@ impl FileSystem for EhfsFs {
 
     fn unmount(&self) -> Result<(), Error> {
         self.with(|v| v.unmount())
+    }
+
+    fn get_info(&self, id: u64) -> Result<[u8; 32], Error> {
+        self.with(|v| v.get(id)).map(|e| e.finder)
+    }
+
+    fn set_info(&self, id: u64, info: &[u8; 32]) -> Result<(), Error> {
+        self.with(|v| {
+            let mut e = v.get(id)?;
+            e.finder = *info;
+            v.set_info(&e)
+        })
     }
 }
 

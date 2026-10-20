@@ -13,6 +13,12 @@ KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
+# Programs packed as bundles (docs/mouseion.md): program:Name puts the
+# program at Name.app/exec with Name.app/info.txt; the rest sit in the
+# initrd's root.
+BUNDLES     := terminal:Terminal echo_win:Echo
+BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
+INITRD_ROOT := $(BUILD)/initrd-root
 
 # musl (MIT license), only to build the Linux test programs; never part of
 # the repository. Not downloaded here: the tarball is copied from where it
@@ -72,11 +78,19 @@ user:
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(USER_PROGRAMS)) $(USER_DIR)/
 
 # The initial RAM disk: the user programs in a ustar archive (the Linux
-# test programs in its linux/ folder), with fixed owners and times so that
-# the same programs give the same bytes.
+# test programs in its linux/ folder, the bundles as Name.app/ folders),
+# with fixed owners and times so that the same programs give the same
+# bytes.
 initrd: user linux-tests
+	rm -rf $(INITRD_ROOT)
+	mkdir -p $(INITRD_ROOT)
+	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED),$(USER_PROGRAMS))) $(INITRD_ROOT)/
+	cp -r $(LINUX_DIR) $(INITRD_ROOT)/linux
+	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
+		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
+		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
-		-cf $(INITRD) -C $(USER_DIR) $(USER_PROGRAMS) linux
+		-cf $(INITRD) -C $(INITRD_ROOT) .
 
 # The icons (assets/README.md): assets/*.ppm and *.pbm to Rust data in
 # assets/generated/. draft-assets redraws the DRAFT images (it overwrites
@@ -133,11 +147,12 @@ esp-test: boot initrd
 ESP_PANIC   := $(BUILD)/esp-panic
 PANIC_FACE  := 1236,600,16,12
 test-panic: esp-test $(BUILD)/OVMF_VARS.fd
-	mkdir -p $(ESP_PANIC)/EFI/BOOT $(ESP_PANIC)/STELA $(BUILD)/panic-initrd
-	cp -r $(USER_DIR)/. $(BUILD)/panic-initrd/
+	rm -rf $(BUILD)/panic-initrd
+	mkdir -p $(ESP_PANIC)/EFI/BOOT $(ESP_PANIC)/STELA
+	cp -r $(INITRD_ROOT) $(BUILD)/panic-initrd
 	touch $(BUILD)/panic-initrd/panic-test
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
-		-cf $(ESP_PANIC)/STELA/initrd.tar -C $(BUILD)/panic-initrd $(USER_PROGRAMS) linux panic-test
+		-cf $(ESP_PANIC)/STELA/initrd.tar -C $(BUILD)/panic-initrd .
 	cp $(ESP_TEST)/EFI/BOOT/BOOTX64.EFI $(ESP_PANIC)/EFI/BOOT/
 	cp $(ESP_TEST)/STELA/kernel.elf $(ESP_PANIC)/STELA/
 	python3 tools/qemu_test.py --timeout 60 --screendump $(BUILD)/panic.ppm \
@@ -204,8 +219,8 @@ WINDOW_CHECKS := --expect-rect 1000,1100,300,300,\#5b7b86 --expect-rect 1300,8,4
 	--expect-rect 1864,104,80,8,\#c8763c --expect-text 1848,144,648,440,\#f2e8d5,3
 test-window: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --timeout 90 --screendump $(BUILD)/screen.ppm --log $(BUILD)/test-window.log \
-		--type "STELA shell" "uptime\n" --type "uptime:" "run echo_win\n" \
-		--type "> run echo_win" "hello\n" \
+		--type "STELA shell" "uptime\n" --type "uptime:" "run Echo.app\n" \
+		--type "> run Echo.app" "hello\n" \
 		--expect "windowserver: " --expect "STELA shell" --expect "uptime:" \
 		--expect "echo_win: hello" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio

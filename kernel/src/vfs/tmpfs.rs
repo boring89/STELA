@@ -55,6 +55,8 @@ pub struct Node {
     pub ctime: u64,
     /// Last change.
     pub mtime: u64,
+    /// Finder information (`FileSetInfo`).
+    pub finder: [u8; 32],
 }
 
 impl Node {
@@ -103,6 +105,7 @@ impl TmpTree {
                 data: None,
                 ctime: 0,
                 mtime: 0,
+                finder: [0; 32],
             },
         );
         TmpTree {
@@ -173,6 +176,7 @@ impl TmpTree {
                 data: (!is_dir).then(Vec::new),
                 ctime: now,
                 mtime: now,
+                finder: [0; 32],
             },
         );
         if let Some(parent) = self.nodes.get_mut(&dir) {
@@ -220,6 +224,12 @@ impl TmpTree {
         let n = self.nodes.get_mut(&id).ok_or(TmpError::NotFound)?;
         n.parent = new_dir;
         n.name = new_name.into();
+        Ok(())
+    }
+
+    /// Stores the Finder information of `id`.
+    pub fn set_info(&mut self, id: u64, info: &[u8; 32]) -> Result<(), TmpError> {
+        self.nodes.get_mut(&id).ok_or(TmpError::NotFound)?.finder = *info;
         Ok(())
     }
 
@@ -391,6 +401,14 @@ mod target {
         fn kind(&self) -> u32 {
             abi::volume_kind::TMP
         }
+
+        fn get_info(&self, id: u64) -> Result<[u8; 32], Error> {
+            Ok(self.tree.lock().get(id).map_err(error)?.finder)
+        }
+
+        fn set_info(&self, id: u64, info: &[u8; 32]) -> Result<(), Error> {
+            self.tree.lock().set_info(id, info).map_err(error)
+        }
     }
 }
 
@@ -418,6 +436,9 @@ mod tests {
         t.rename(d, "a.txt", ROOT, "b.txt").unwrap();
         assert_eq!(t.lookup(ROOT, "b.txt"), Ok(f));
         assert_eq!(t.list(d).unwrap().len(), 0);
+        t.set_info(f, &[9; 32]).unwrap();
+        assert_eq!(t.get(f).unwrap().finder, [9; 32]);
+        assert_eq!(t.set_info(999, &[0; 32]), Err(TmpError::NotFound));
         t.remove(ROOT, "dir").unwrap();
         t.remove(ROOT, "b.txt").unwrap();
         assert_eq!(t.used(), 0);

@@ -130,6 +130,8 @@ kernel 的 `init` 執行緒只做兩件事：啟動 input-router、跑 `Initrd:/
 | `run prog [args]` | 先找目前資料夾（或給的路徑），再找 `Initrd:/`（P7 起相對路徑如 `linux/hello` 也找）；handles = tty（P7：自己的 `[1]` 是 tty 就沿用，否則 `TtyCreate` 一個印到主控台的）、無、目前資料夾；前景等待，每 20 ms 看一次鍵盤：Ctrl-C → `ProcessKill`，其他鍵送給 tty（`docs/linux.md` §5.2）；結束後 `InputAttach` 拿回鍵盤、印 `prog exited with code N` |
 | `ps`、`mem`、`uptime`、`vols` | `SysInfo` 與 `VolumeList` |
 | `shutdown`、`reboot` | `SystemPower`（P6.5，`docs/acpi.md`）：卸載卷宗後關機／重新開機 |
+
+P9：`run Name.app` 執行 bundle（`docs/vfs.md` §4.3）。
 | `help`、`exit` | `exit` 後 init 會再啟動一個 |
 
 程式若自己 `InputAttach`（例如 `run echo`），它結束前 shell 收不到鍵盤（Ctrl-C 也無效）；echo 以 Escape 結束。

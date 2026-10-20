@@ -1099,6 +1099,7 @@ fn start_programs(names: &[String]) {
             ),
         ];
         let base = name.rsplit('/').next().unwrap_or(name);
+        let base = base.strip_suffix(".app").unwrap_or(base);
         match process::spawn(file.0, &[base], handles) {
             Ok(p) => {
                 let _ = handle_close(p);

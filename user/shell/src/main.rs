@@ -227,21 +227,27 @@ impl Shell {
         fs::remove(parent.0, loc.name()).map_err(|e| alloc::format!("{loc}: {}", describe(e)))
     }
 
-    /// The program file: in the current folder (or the given path), then
-    /// in `Initrd:/`.
+    /// The program file (or bundle, `Name.app`): in the current folder
+    /// (or the given path), then in `Initrd:/`.
     fn find_program(&self, name: &str) -> Result<Owned, String> {
+        let runnable = |h: Handle| {
+            fs::stat(h).is_ok_and(|s| {
+                s.kind == kind::FILE || (s.kind == kind::DIRECTORY && is_bundle(name))
+            })
+        };
         if let Ok(loc) = self.resolve(name)
             && let Ok(h) = open_at(&loc, open::READ)
-            && fs::stat(h.0).is_ok_and(|s| s.kind == kind::FILE)
+            && runnable(h.0)
         {
             return Ok(h);
         }
         if !name.contains(':') && !name.starts_with('/') {
             let initrd = Owned(fs::volume_open("Initrd").map_err(|e| String::from(describe(e)))?);
-            if let Ok(h) = fs::open(initrd.0, name, open::READ)
-                && fs::stat(h).is_ok_and(|s| s.kind == kind::FILE)
-            {
-                return Ok(Owned(h));
+            if let Ok(h) = fs::open(initrd.0, name, open::READ) {
+                let h = Owned(h);
+                if runnable(h.0) {
+                    return Ok(h);
+                }
             }
         }
         Err(alloc::format!("{name}: no such program"))
@@ -253,6 +259,12 @@ impl Shell {
             .or_else(|_| open_at(&self.cwd, open::READ))
             .map_err(|e| alloc::format!("{}: {}", self.cwd, describe(e)))?;
         let base = program.rsplit(['/', ':']).next().unwrap_or(program);
+        let base = base.trim_end_matches('/');
+        let base = if is_bundle(base) {
+            &base[..base.len() - 4]
+        } else {
+            base
+        };
         let mut args = vec![base];
         args.extend_from_slice(rest);
         // The program's terminal: ours if we run in one (the terminal
@@ -307,6 +319,14 @@ impl Shell {
     }
 }
 
+/// Whether `name` names a bundle (`Name.app`).
+fn is_bundle(name: &str) -> bool {
+    let name = name.trim_end_matches('/');
+    name.len() > 4
+        && name.is_char_boundary(name.len() - 4)
+        && name[name.len() - 4..].eq_ignore_ascii_case(".app")
+}
+
 fn help() {
     println!("commands:");
     println!("  ls [path]        list a folder");
@@ -317,7 +337,9 @@ fn help() {
     println!("  rm path          remove a file or an empty folder");
     println!("  cd [path]        change the current folder (no path: the volume's root)");
     println!("  pwd              show the current folder");
-    println!("  run prog [args]  run a program (current folder, then Initrd:/); Ctrl-C stops it");
+    println!(
+        "  run prog [args]  run a program or Name.app (current folder, then Initrd:/); Ctrl-C stops it"
+    );
     println!("  ps, mem, uptime  processes, memory, time since boot");
     println!("  vols             volumes");
     println!("  shutdown, reboot turn the computer off, restart it");

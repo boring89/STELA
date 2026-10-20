@@ -156,6 +156,35 @@ pub fn dir_open(process: &Process, dir: u64, ptr: u64, len: u64, flags: u64) -> 
     insert(process, node, info.is_dir, rights)
 }
 
+/// `FileGetInfo(file or folder, &mut [u8; 32])`.
+pub fn file_get_info(process: &Process, handle: u64, ptr: u64) -> Result<u64, Error> {
+    let (node, _, _) = node_of(process, handle)?;
+    let info = node.volume.fs.get_info(node.id)?;
+    process
+        .space()
+        .write(ptr, &info)
+        .map_err(|_| Error::BadAddress)?;
+    Ok(0)
+}
+
+/// `FileSetInfo(file or folder, &[u8; 32])`: needs `WRITE`.
+pub fn file_set_info(process: &Process, handle: u64, ptr: u64) -> Result<u64, Error> {
+    let (node, _, rights) = node_of(process, handle)?;
+    if !rights.contains(Rights::WRITE) {
+        return Err(Error::AccessDenied);
+    }
+    let mut info = [0u8; abi::FINDER_INFO_SIZE];
+    process
+        .space()
+        .read(ptr, &mut info)
+        .map_err(|_| Error::BadAddress)?;
+    if node.volume.fs.read_only() {
+        return Err(Error::ReadOnly);
+    }
+    node.volume.fs.set_info(node.id, &info)?;
+    Ok(0)
+}
+
 /// `DirRead(dir, index, &mut DirEntry) -> 1 | 0`.
 pub fn dir_read(process: &Process, dir: u64, index: u64, ptr: u64) -> Result<u64, Error> {
     let (node, _) = dir_of(process, dir, Rights::READ)?;

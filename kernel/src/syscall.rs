@@ -490,6 +490,8 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::ProcessSelf => crate::psyscall::process_self(&p),
         Syscall::SysInfo => crate::psyscall::sys_info(&p, a0, a1, a2),
         Syscall::SystemPower => crate::psyscall::system_power(a0),
+        Syscall::FileGetInfo => file_get_info(&p, a0, a1),
+        Syscall::FileSetInfo => file_set_info(&p, a0, a1),
         _ => Err(Error::InvalidSyscall),
     }
 }

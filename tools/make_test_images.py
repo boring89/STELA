@@ -89,11 +89,13 @@ ESP_TYPE = uuid.UUID("C12A7328-F81F-11D2-BA4B-00A0C93EC93B")
 DATA_TYPE = uuid.UUID("0FC63DAF-8483-4772-8E79-3D69D8477DE4")
 
 
-def write_gpt(img, sector, size, parts):
+def write_gpt(img, sector, size, parts, magic=b"STELATEST"):
     """A GPT (UEFI 2.10 section 5.3) on the image file, with `sector`-byte
     sectors: protective MBR, primary header and entries, backup entries
     and header. `parts` is a list of (type UUID, first LBA, last LBA,
-    name)."""
+    name). `magic` goes at the start of the MBR's boot code area (the
+    self test writes raw blocks only on disks that carry the test-disk
+    magic; a real disk image passes b"")."""
     sectors = size // sector
     entries = bytearray(128 * 128)
     for i, (kind, first, last, name) in enumerate(parts):
@@ -113,7 +115,7 @@ def write_gpt(img, sector, size, parts):
 
     with open(img, "r+b") as f:
         mbr = bytearray(sector)
-        mbr[0:9] = b"STELATEST"
+        mbr[0:len(magic)] = magic
         # One protective partition of type 0xEE over the whole disk.
         mbr[446:462] = struct.pack("<BBBBBBBBII", 0, 0, 2, 0, 0xEE, 0xFF, 0xFF, 0xFF, 1,
                                    min(sectors - 1, 0xFFFFFFFF))

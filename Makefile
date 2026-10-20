@@ -62,7 +62,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-textmode test-window \
-	host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image test-disk-image host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -170,7 +170,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-textmode test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
+test: test-host test-qemu test-qemu-min test-textmode test-disk-image test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -206,6 +206,45 @@ test-qemu-min: esp-test test-images $(BUILD)/OVMF_VARS.fd
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-min.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-min.img
+
+# A disk image for a real machine (docs/p520.md): GPT, an ESP with the
+# loader, kernel, initrd and a boot.cfg (all options commented out), and
+# an eHFS Data volume of DATA_MIB MiB. Only the file build/stela.img is
+# written; copying it to a USB stick is the user's own step.
+DATA_MIB    ?= 4096
+DISK_IMAGE  := $(BUILD)/stela.img
+DISK_ESP    := $(BUILD)/disk-esp
+disk-image: esp ehfs-tools
+	rm -rf $(DISK_ESP)
+	cp -r $(ESP) $(DISK_ESP)
+	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
+	python3 tools/make_disk_image.py $(DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) $(DATA_MIB)
+
+# The disk image as the only disk (AHCI, the firmware boots from it): the
+# desktop comes up, a folder made in the shell survives a shutdown (the
+# host's fsck and ehfs-ls check the Data volume) and is there on the
+# second boot. A small Data volume keeps the test quick.
+TEST_DISK_IMAGE = $(IMAGES)/stela-test.img
+DISK_IMAGE_FLAGS = -drive if=none,id=disk0,format=raw,file=$(TEST_DISK_IMAGE) \
+	-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
+test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
+	rm -rf $(DISK_ESP)
+	cp -r $(ESP) $(DISK_ESP)
+	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
+	mkdir -p $(IMAGES)
+	python3 tools/make_disk_image.py $(TEST_DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
+	python3 tools/qemu_test.py --exit-code 0 --timeout 90 \
+		--type "STELA shell" "mkdir from-the-disk-image\n" \
+		--type "> mkdir from-the-disk-image" "shutdown\n" \
+		--expect "windowserver: " --expect "mouseion: ready" --expect "STELA shell" \
+		--expect "power: turning off" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio $(DISK_IMAGE_FLAGS)
+	$(EHFS_TOOLS)/fsck.ehfs --offset 133120 $(TEST_DISK_IMAGE) | grep -q "unmounted cleanly"
+	$(EHFS_TOOLS)/ehfs-ls --offset 133120 $(TEST_DISK_IMAGE) / | grep -q from-the-disk-image
+	python3 tools/qemu_test.py --timeout 90 --type "STELA shell" "ls Data:/\n" \
+		--expect "mounted Boot (FAT, ro" --expect "STELA shell" \
+		--expect "from-the-disk-image" --expect "Welcome.txt" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio $(DISK_IMAGE_FLAGS)
 
 # Boot options (docs/p520.md): the normal kernel with a boot.cfg that
 # asks for text mode and no USB; init starts the shell without the window

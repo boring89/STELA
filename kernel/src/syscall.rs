@@ -10,11 +10,10 @@ use crate::object::{Entry, KernelObject};
 use crate::task::{self, Process};
 use abi::layout::USER_END;
 use abi::{
-    DEBUG_WRITE_MAX, Error, Handle, MEMORY_MAX, MESSAGE_DATA, MESSAGE_HANDLES, MESSAGE_SIZE,
-    Message, Rights, Syscall,
+    Error, Handle, MEMORY_MAX, MESSAGE_DATA, MESSAGE_HANDLES, MESSAGE_SIZE, Message, Rights,
+    Syscall,
 };
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use frame::mm::paging::MapError;
 use frame::mm::shared::SharedMemory;
@@ -42,7 +41,6 @@ fn handle(frame: &mut SyscallFrame) {
             Ok(0)
         }
         Some(Syscall::ClockNowNs) => Ok(frame::time::now_ns()),
-        Some(Syscall::DebugWrite) => debug_write(a0, a1),
         Some(Syscall::HandleClose) => handle_close(a0),
         Some(Syscall::HandleDuplicate) => handle_duplicate(a0, a1),
         Some(Syscall::PortCreate) => port_create(),
@@ -74,29 +72,6 @@ fn thread_create(entry: u64, stack_top: u64, arg: u64) -> Result<u64, Error> {
         // The process is being torn down; this thread is about to go too.
         Err(task::SpawnError::Exiting) => Err(Error::NotSupported),
     }
-}
-
-/// `DebugWrite(ptr, len)`: copies the bytes from the caller's address
-/// space (checking every page) and prints them.
-fn debug_write(ptr: u64, len: u64) -> Result<u64, Error> {
-    if len > DEBUG_WRITE_MAX {
-        return Err(Error::InvalidArgument);
-    }
-    let Some(process) = task::current_process() else {
-        return Err(Error::NotSupported);
-    };
-    let mut buf = vec![0u8; len as usize];
-    process
-        .space()
-        .read(ptr, &mut buf)
-        .map_err(|_| Error::BadAddress)?;
-    for chunk in buf.utf8_chunks() {
-        frame::kprint!("{}", chunk.valid());
-        if !chunk.invalid().is_empty() {
-            frame::kprint!("\u{FFFD}");
-        }
-    }
-    Ok(len)
 }
 
 /// The calling process (system calls from kernel threads do not happen,

@@ -41,10 +41,8 @@ pub enum Syscall {
     SleepNs = 4,
     /// `ClockNowNs() -> ns`: nanoseconds since boot, monotonic.
     ClockNowNs = 5,
-    /// `DebugWrite(ptr, len) -> len`: writes bytes (UTF-8, invalid
-    /// sequences replaced) to the kernel console. Temporary, until there
-    /// are handles and a console service.
-    DebugWrite = 6,
+    // 6 was `DebugWrite`, removed in P4 (the console service replaced
+    // it); the number stays unused.
     /// `HandleClose(handle)`: removes the handle from the caller's table.
     HandleClose = 7,
     /// `HandleDuplicate(handle, rights) -> handle`: a new handle to the
@@ -77,14 +75,13 @@ pub enum Syscall {
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 16] = [
+    pub const ALL: [Syscall; 15] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
         Syscall::Yield,
         Syscall::SleepNs,
         Syscall::ClockNowNs,
-        Syscall::DebugWrite,
         Syscall::HandleClose,
         Syscall::HandleDuplicate,
         Syscall::PortCreate,
@@ -98,11 +95,14 @@ impl Syscall {
 
     /// The call with number `raw`, if any.
     pub const fn from_raw(raw: u64) -> Option<Syscall> {
-        if raw < Syscall::ALL.len() as u64 {
-            Some(Syscall::ALL[raw as usize])
-        } else {
-            None
+        let mut i = 0;
+        while i < Syscall::ALL.len() {
+            if Syscall::ALL[i] as u64 == raw {
+                return Some(Syscall::ALL[i]);
+            }
+            i += 1;
         }
+        None
     }
 
     /// The number.
@@ -110,6 +110,9 @@ impl Syscall {
         self as u64
     }
 }
+
+/// The number `DebugWrite` had (P3); removed, so it is `InvalidSyscall`.
+pub const REMOVED_DEBUG_WRITE: u64 = 6;
 
 /// Error statuses (RAX after a failed call). 0 means success and is not
 /// an `Error`.
@@ -527,9 +530,6 @@ const _: () = {
     assert!(core::mem::offset_of!(Message, handle_slots) == 128);
 };
 
-/// Most bytes one `DebugWrite` takes.
-pub const DEBUG_WRITE_MAX: u64 = 4096;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,7 +543,6 @@ mod tests {
         assert_eq!(Syscall::Yield.raw(), 3);
         assert_eq!(Syscall::SleepNs.raw(), 4);
         assert_eq!(Syscall::ClockNowNs.raw(), 5);
-        assert_eq!(Syscall::DebugWrite.raw(), 6);
         assert_eq!(Syscall::HandleClose.raw(), 7);
         assert_eq!(Syscall::HandleDuplicate.raw(), 8);
         assert_eq!(Syscall::PortCreate.raw(), 9);
@@ -553,10 +552,10 @@ mod tests {
         assert_eq!(Syscall::MemoryMap.raw(), 13);
         assert_eq!(Syscall::MemoryUnmap.raw(), 14);
         assert_eq!(Syscall::InputAttach.raw(), 15);
-        for (i, call) in Syscall::ALL.iter().enumerate() {
-            assert_eq!(call.raw(), i as u64);
-            assert_eq!(Syscall::from_raw(i as u64), Some(*call));
+        for call in Syscall::ALL {
+            assert_eq!(Syscall::from_raw(call.raw()), Some(call));
         }
+        assert_eq!(Syscall::from_raw(REMOVED_DEBUG_WRITE), None);
         assert_eq!(Syscall::from_raw(16), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }

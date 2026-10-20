@@ -6,14 +6,14 @@
 //! - [`entry!`] defines the program's `_start`: it calls `main` and exits
 //!   the process with the code it returns.
 //! - Safe wrappers for every system call ([`exit`], [`thread_exit`],
-//!   [`spawn`], [`yield_now`], [`sleep_ns`], [`now_ns`], [`debug_write`]).
-//! - Handles, ports and messages ([`ipc`]).
-//! - [`debug_print!`] / [`debug_println!`]: formatted output to the kernel
-//!   console (temporary, like `DebugWrite`).
+//!   [`spawn`], [`yield_now`], [`sleep_ns`], [`now_ns`]).
+//! - Handles, ports, messages and shared memory ([`ipc`]).
+//! - [`console_write`], [`debug_print!`] / [`debug_println!`]: output
+//!   through the console service (bootstrap handle `[1]`).
 //! - The panic handler: prints the message and exits with code 101.
 //!
-//! The `syscall` instruction in [`sys`] is the only `unsafe` code a STELA
-//! program needs.
+//! The `syscall` instruction in [`sys`], [`ThreadStack`] and the copies in
+//! [`ipc::Mapping`] are the only `unsafe` code a STELA program needs.
 
 #![no_std]
 
@@ -25,7 +25,7 @@ pub mod sys;
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
-use sys::{syscall0, syscall1, syscall2, syscall3};
+use sys::{syscall0, syscall1, syscall3};
 
 /// Defines the program entry point `_start`, which runs `$main` (a
 /// `fn() -> i64`) and exits the process with its result.
@@ -80,35 +80,40 @@ pub fn now_ns() -> u64 {
     syscall0(abi::Syscall::ClockNowNs).unwrap_or(0)
 }
 
-/// Writes `bytes` to the kernel console, at most
-/// [`abi::DEBUG_WRITE_MAX`] at a time. Returns how many were written.
-pub fn debug_write(bytes: &[u8]) -> Result<usize, Error> {
+/// Writes `bytes` to the console: `CONSOLE_WRITE` messages of up to 112
+/// bytes to the console service (bootstrap handle `[1]`). When its queue
+/// is full, waits for room. Returns how many bytes were sent.
+pub fn console_write(bytes: &[u8]) -> Result<usize, Error> {
     let mut written = 0;
-    for chunk in bytes.chunks(abi::DEBUG_WRITE_MAX as usize) {
-        written += syscall2(
-            abi::Syscall::DebugWrite,
-            chunk.as_ptr() as u64,
-            chunk.len() as u64,
-        )? as usize;
+    for chunk in bytes.chunks(MESSAGE_DATA) {
+        let msg = Message::with_data(tag::CONSOLE_WRITE, chunk);
+        loop {
+            match ipc::port_send(bootstrap::CONSOLE, &msg) {
+                Ok(()) => break,
+                Err(Error::Full) => yield_now(),
+                Err(e) => return Err(e),
+            }
+        }
+        written += chunk.len();
     }
     Ok(written)
 }
 
-/// Collects formatted text and sends it in as few `DebugWrite` calls as
-/// possible, so a line is not split between threads.
-struct DebugBuffer {
+/// Collects formatted text and sends it in as few messages as possible,
+/// so that a short line is not split between threads.
+struct ConsoleBuffer {
     bytes: [u8; 256],
     len: usize,
 }
 
-impl DebugBuffer {
+impl ConsoleBuffer {
     fn flush(&mut self) {
-        let _ = debug_write(&self.bytes[..self.len]);
+        let _ = console_write(&self.bytes[..self.len]);
         self.len = 0;
     }
 }
 
-impl fmt::Write for DebugBuffer {
+impl fmt::Write for ConsoleBuffer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for chunk in s.as_bytes().chunks(self.bytes.len()) {
             if self.len + chunk.len() > self.bytes.len() {
@@ -123,7 +128,7 @@ impl fmt::Write for DebugBuffer {
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    let mut buffer = DebugBuffer {
+    let mut buffer = ConsoleBuffer {
         bytes: [0; 256],
         len: 0,
     };
@@ -131,7 +136,7 @@ pub fn _print(args: fmt::Arguments) {
     buffer.flush();
 }
 
-/// Prints to the kernel console.
+/// Prints to the console (through the console service).
 #[macro_export]
 macro_rules! debug_print {
     ($($arg:tt)*) => {
@@ -139,7 +144,7 @@ macro_rules! debug_print {
     };
 }
 
-/// Prints to the kernel console, followed by a newline.
+/// Prints to the console, followed by a newline.
 #[macro_export]
 macro_rules! debug_println {
     () => {

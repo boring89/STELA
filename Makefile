@@ -10,13 +10,13 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
 # program at Name.app/exec with Name.app/info.txt; the rest sit in the
 # initrd's root.
-BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer
+BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic
 BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
 INITRD_ROOT := $(BUILD)/initrd-root
 
@@ -59,10 +59,10 @@ HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 # User-space crates (same target).
-USER_CRATES := libstela toolbox $(USER_PROGRAMS) classic
+USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-textmode test-window \
-	disk-image test-disk-image host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image test-disk-image classic test-classic host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -246,6 +246,40 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--expect "from-the-disk-image" --expect "Welcome.txt" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio $(DISK_IMAGE_FLAGS)
 
+# The Classic environment (docs/classic.md), local only (not in make test
+# or CI: it needs the user's own Mac IIci ROM and System disk, which are
+# only read; copies go into a disk image under build/). The disk image of
+# make disk-image with the two files in Data:/Classic/; the shell starts
+# Classic.app; the Mac must reach the Finder (serial "classic: finder"),
+# then the screen is saved and the Mac's desktop pattern and menu bar
+# are checked inside the window.
+MAC_ROM     ?= $(HOME)/mac/mac_rom_archive_-_as_of_8-19-2011/368CADFE - Mac IIci.ROM
+MAC_DISK    ?= $(HOME)/mac/System7_5_3.img
+CLASSIC_IMAGE = $(IMAGES)/classic-data.img
+# The Classic window lands at 70,138 (content, 640x480): the Mac's menu
+# bar (white, 20 rows) on top, the desktop pattern below it.
+CLASSIC_CHECKS := --expect-rect 340,142,200,10,\#ffffff \
+	--expect-pattern 120,200,400,300,\#000000,\#ffffff
+classic: user
+
+test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
+	test -f "$(MAC_ROM)" && test -f "$(MAC_DISK)"
+	rm -rf $(DISK_ESP)
+	cp -r $(ESP) $(DISK_ESP)
+	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
+	mkdir -p $(IMAGES)
+	python3 tools/make_disk_image.py $(CLASSIC_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
+	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) mkdir /Classic
+	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_ROM)" /Classic/ROM
+	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_DISK)" /Classic/System.img
+	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic.ppm --log $(BUILD)/test-classic.log \
+		--type "STELA shell" "run Classic.app\n" \
+		--expect "STELA shell" --expect "classic: started" --expect "classic: finder desktop shown" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
+		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
+	python3 tools/fb_check.py $(BUILD)/classic.ppm $(CLASSIC_CHECKS)
+
 # Boot options (docs/p520.md): the normal kernel with a boot.cfg that
 # asks for text mode and no USB; init starts the shell without the window
 # server and the xHCI controller is left alone.
@@ -378,7 +412,8 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 # Mouseion (2560x1600, 16x32 font, 64-pixel icons in 160x112 cells; the
 # desktop's volume icons on the right: Boot, Data, Initrd, Tmp): double
 # click Data, then welcome.txt in Data's window (the viewer opens it),
-# then Initrd, then Terminal.app in Initrd's window (a second terminal
+# then Initrd, then Terminal.app (the third icon, after Classic.app and
+# Echo.app) in Initrd's window (a second terminal
 # starts). The screen shows the volume icons and the new terminal active.
 MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
 	--expect-rect 300,192,100,10,\#c8763c
@@ -388,7 +423,7 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--click "mouseion: started Terminal" 2464 204 2 \
 		--click "mouseion: opened Data:/" 256 232 2 \
 		--click "viewer: Data:/welcome.txt" 2464 316 2 \
-		--click "mouseion: opened Initrd:/" 456 272 2 \
+		--click "mouseion: opened Initrd:/" 616 272 2 \
 		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
 		--expect "viewer: Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
 		--expect "mouseion: started Terminal" --expect "STELA shell" \

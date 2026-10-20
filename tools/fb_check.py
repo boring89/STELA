@@ -6,6 +6,7 @@
 Usage: fb_check.py <screen.ppm> [--min-ink 0.001] [--max-ink 0.3]
                    [--expect-rect X,Y,W,H,#RRGGBB] ...
                    [--expect-text X,Y,W,H,#RRGGBB,BANDS] ...
+                   [--expect-pattern X,Y,W,H,#RRGGBB,#RRGGBB] ...
 
 Without rectangle options (the text console): the most common colour is
 taken as the background; "ink" is every other pixel. The screen passes if
@@ -17,6 +18,9 @@ separate bands of rows with ink).
 given one (the desktop, a menu bar, a title bar). --expect-text: inside
 the rectangle, the pixels that are not the given background colour must
 form at least BANDS separate bands of rows (lines of text in a window).
+--expect-pattern: the rectangle is a checkerboard of the two colours
+(each pixel differs from its right and lower neighbours: the Mac's 50%
+gray desktop pattern).
 """
 import argparse
 import sys
@@ -57,10 +61,11 @@ def main():
     ap.add_argument("--max-ink", type=float, default=0.3)
     ap.add_argument("--expect-rect", action="append", default=[])
     ap.add_argument("--expect-text", action="append", default=[])
+    ap.add_argument("--expect-pattern", action="append", default=[])
     args = ap.parse_args()
 
     width, height, pixels = read_ppm(args.ppm)
-    if args.expect_rect or args.expect_text:
+    if args.expect_rect or args.expect_text or args.expect_pattern:
         return check_rects(args, width, height, pixels)
     colours = [pixels[i:i + 3] for i in range(0, len(pixels), 3)]
     background, _ = Counter(colours).most_common(1)[0]
@@ -122,6 +127,22 @@ def check_rects(args, width, height, pixels):
         print(f"fb_check: {x},{y} {w}x{h}: {bands} bands of text on #{colour.hex()}")
         if bands < int(extra[0]):
             print(f"fb_check: FAIL expected at least {extra[0]} lines", file=sys.stderr)
+            ok = False
+    for spec in args.expect_pattern:
+        x, y, w, h, first, extra = parse_rect(spec, 1)
+        second = bytes.fromhex(extra[0].lstrip("#"))
+        rows = region(width, height, pixels, x, y, w, h)
+        cells = sum(len(r) for r in rows)
+        good = 0
+        if rows and rows[0]:
+            # The colour of the top left pixel fixes the phase.
+            phase = 0 if rows[0][0] == first else 1
+            good = sum(1 for j, row in enumerate(rows) for i, c in enumerate(row)
+                       if c == (first if (i + j + phase) % 2 == 0 else second))
+        print(f"fb_check: {x},{y} {w}x{h}: checkerboard of #{first.hex()} and #{second.hex()} "
+              f"{good / max(cells, 1):.0%}")
+        if cells == 0 or good != cells:
+            print("fb_check: FAIL expected the checkerboard there", file=sys.stderr)
             ok = False
     print("fb_check: OK" if ok else "fb_check: FAIL")
     return 0 if ok else 1

@@ -678,6 +678,11 @@ pub mod sysinfo {
     /// in bytes (at most `CMDLINE_SIZE`).
     pub const CMDLINE: u64 = 5;
 
+    /// The wall clock: nanoseconds since 1970-01-01 00:00 UTC (u64, 8
+    /// bytes; the RTC read at boot plus the time since, `docs/time.md`
+    /// §5.5); returns 1.
+    pub const TIME: u64 = 6;
+
     /// Most bytes `SysInfo(CMDLINE)` returns.
     pub const CMDLINE_SIZE: usize = 256;
 
@@ -1400,5 +1405,6 @@ mod tests {
         assert_eq!(cmdline_option(c, "text"), None);
         assert_eq!(cmdline_option(b"", "text"), None);
         assert_eq!(sysinfo::CMDLINE, 5);
+        assert_eq!(sysinfo::TIME, 6);
     }
 }

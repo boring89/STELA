@@ -217,8 +217,11 @@ int mac_render(const mac_t *mac, uint32_t *out)
             else
             {
                 /* The ROM stores the table of shallow depths at the top of
-                 * the 256 entries: index 0 is white, the last is black. */
-                c = mac->dac.rgb[(index == (1u << bpp) - 1) ? 255 : index];
+                 * the 256 entries (1 bit: entries 254 and 255, white and
+                 * black). STELA: 68k_HAL read entry 'index' for all but
+                 * the last, which left white the gray of the start-up
+                 * screen. */
+                c = mac->dac.rgb[256u - (1u << bpp) + index];
             }
             out[y * MAC_SCREEN_W + x] = (uint32_t)c[0] << 16 |
                                         (uint32_t)c[1] << 8 | c[2];

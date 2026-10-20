@@ -12,6 +12,8 @@
 //! headers of `c/freestanding/include` first, no stack protector, no
 //! position-independent code (user programs are linked at a fixed
 //! address). For the host tests it is plain C against the host's libc.
+//! The program itself is linked with `user/user.ld`, like every user
+//! program.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -126,6 +128,12 @@ fn main() {
     let lib = out.join("libclassic_c.a");
     let _ = std::fs::remove_file(&lib);
     run(Command::new("ar").arg("crs").arg(&lib).args(&objects));
+    // Classic.app is a user program: linked with user/user.ld.
+    println!(
+        "cargo:rustc-link-arg-bins=-T{}",
+        root.join("../user/user.ld").display()
+    );
+    println!("cargo:rerun-if-changed=../user/user.ld");
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=classic_c");
 }

@@ -196,3 +196,38 @@ fn run_stops_at_the_cycle_limit() {
     assert!(vm.run(1000) >= 1000);
     assert!(!vm.halted());
 }
+
+struct NoDisk;
+
+impl crate::ffi::MacDisk for NoDisk {
+    fn blocks(&self) -> u32 {
+        0
+    }
+    fn read_only(&self) -> bool {
+        true
+    }
+    fn read(&mut self, _offset: u32, _buf: &mut [u8]) -> bool {
+        false
+    }
+    fn write(&mut self, _offset: u32, _data: &[u8]) -> bool {
+        false
+    }
+}
+
+#[test]
+fn mac_refuses_other_roms() {
+    use crate::ffi::{Mac, StartError};
+    let _turn = MACHINE.lock().unwrap_or_else(|e| e.into_inner());
+    // Not the IIci ROM (its checksum is 368CADFE): nothing of Apple's is
+    // in the tests.
+    let rom = vec![0u8; 512 * 1024].into_boxed_slice();
+    let r = Mac::start(rom, 8 << 20, Box::new(NoDisk), &[0; 256], 0);
+    assert_eq!(r.err(), Some(StartError::BadRom));
+    // One machine at a time: a bare 68k machine blocks the Mac.
+    let vm = Vm::new(RAM_SIZE, Cpu::M68030).expect("a machine");
+    let rom = vec![0u8; 512 * 1024].into_boxed_slice();
+    let r = Mac::start(rom, 8 << 20, Box::new(NoDisk), &[0; 256], 0);
+    assert_eq!(r.err(), Some(StartError::Busy));
+    drop(vm);
+    assert!(Vm::new(RAM_SIZE, Cpu::M68030).is_some());
+}

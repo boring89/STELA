@@ -109,3 +109,4 @@ uint32_t classic_instructions(void)
 {
     return machine.insn_count;
 }
+

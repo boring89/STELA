@@ -14,6 +14,8 @@
 extern crate alloc;
 
 pub mod ffi;
+pub mod keys;
+pub mod screen;
 
 #[cfg(test)]
 mod tests;

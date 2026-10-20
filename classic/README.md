@@ -12,7 +12,7 @@ its license header.
 | `musashi/` | `third_party/musashi/` | MIT (Karl Stenerud; `musashi/LICENSE`); `softfloat/` is John R. Hauser's SoftFloat 2 (its own notice in `softfloat/README.txt`, as in MAME) | none (configured through `c/m68k/m68kconf.h`, `MUSASHI_CNF`) |
 | `c/m68k/` | `emu/m68k/` (without `freestanding/`) | GPL-3.0-or-later | include paths |
 | `c/freestanding/` | `emu/m68k/freestanding/` | GPL-3.0-or-later | `divdi3.c` left out (only the 32-bit build needed it) |
-| `c/mac/` | `emu/mac/` | GPL-3.0-or-later | include paths |
+| `c/mac/` | `emu/mac/` | GPL-3.0-or-later | include paths; `video.c`: the built-in video's shallow depths read the top entries of the color table (white was gray) |
 | `tests/m68k/` | `tests/m68k/` | GPL-3.0-or-later | none |
 
 Include paths: `emu/m68k/…` → `m68k/…`, `emu/mac/…` → `mac/…`,

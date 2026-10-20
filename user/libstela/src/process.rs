@@ -157,6 +157,14 @@ pub fn cmdline() -> Vec<u8> {
     b
 }
 
+/// The wall clock: nanoseconds since 1970-01-01 00:00 UTC
+/// (`SysInfo(TIME)`).
+pub fn wall_clock_ns() -> Result<u64, Error> {
+    let mut b = [0u8; 8];
+    syscall3(Syscall::SysInfo, sysinfo::TIME, b.as_mut_ptr() as u64, 8)?;
+    Ok(u64::from_le_bytes(b))
+}
+
 /// Whether the boot options set `key` (`sysinfo::cmdline_flag`).
 pub fn boot_flag(key: &str) -> bool {
     sysinfo::cmdline_flag(&cmdline(), key)

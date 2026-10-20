@@ -21,19 +21,21 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 
 ```bash
 make            # 建置 loader、kernel、使用者程式與 initrd → build/esp/（EFI/BOOT/BOOTX64.EFI、STELA/kernel.elf、STELA/initrd.tar）
-make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo）→ build/user/
+make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo、fstest）→ build/user/
 make initrd     # 把 build/user/ 打包成 build/initrd.tar（GNU tar --format=ustar）
 make run        # QEMU + OVMF 開機（一般 kernel，先跑 initrd 的 hello，再跑 echo），serial 輸出到 stdio
-make test       # host 單元測試 + QEMU selftest + 最低硬體 selftest + 畫面檢查，修改後必須通過
+make test       # host 單元測試 + QEMU selftest + 最低硬體 selftest + 畫面檢查 + 儲存測試，修改後必須通過
+make ehfs-tools # host 的 mkfs.ehfs、fsck.ehfs、ehfs-cp、ehfs-ls → build/host/ehfs/
+make test-ehfs-compat  # 本機專用：與 68k_HAL 的 eHFS 工具交叉檢查（不在 make test／CI）
 make clippy     # cargo clippy（loader、kernel 端 crate 含 selftest feature、使用者程式、host 測試），警告視為錯誤
 make fmt        # cargo fmt
 make clean
 ```
 
-- 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）。
+- 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）、`mtools`、`gdisk`（測試映像）。
 - cargo 的輸出在 `build/target/`（`.cargo/config.toml`）。
 - CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `cargo fmt --check`、`make clippy` 與 `make test`。
-- `make test` 的組成：`test-host`（依賴 `make initrd`；`HOST_CRATES` = abi、bootinfo、elfload、frame 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel 的 `cargo test --lib`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter，依序檢查 `input: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP）、`test-fb`（一般 kernel 開機、看到 `hello from user mode`、`exited with code 0` 與 `echo: ready` 之後 QMP 打 `h i ret`、看到 `uptime:` 後 screendump，`tools/fb_check.py` 檢查畫面有字）。`make run` 永遠跑沒有 selftest 的 kernel（先跑 hello，再跑使用者程式 echo：打字會 echo，Enter 印 uptime）。
+- `make test` 的組成：`test-host`（依賴 `make initrd` 與 `host-images`（mtools／sgdisk 做的 FAT、GPT 映像）；`HOST_CRATES` = abi、block、bootinfo、drivers、ehfs、ehfs-tools、elfload、frame 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel 的 `cargo test --lib`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter，依序檢查 `input: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP；也接 AHCI 測試磁碟跑 fstest）、`test-fb`（一般 kernel 開機、看到 `hello from user mode`、`exited with code 0` 與 `echo: ready` 之後 QMP 打 `h i ret`、看到 `uptime:` 後 screendump，`tools/fb_check.py` 檢查畫面有字）、`test-storage`（`make test-images` 在 `build/images/` 造 AHCI（GPT：FAT ESP + eHFS Data）與 NVMe（4Kn，eHFS Archive）兩顆磁碟，selftest 開機兩次檢查持久性與 fstest，最後 host 的 `fsck.ehfs` 檢查）。`make run` 永遠跑沒有 selftest 的 kernel（先跑 hello，再跑使用者程式 echo：打字會 echo，Enter 印 uptime）。
 - QEMU 的 TCG 不支援 invariant TSC，`make test` 只測得到 tick 退路；TSC 路徑要在本機用 `-enable-kvm -cpu host,+invtsc` 手動驗證（`docs/time.md` §5.3）。
 
 ### 測試
@@ -41,40 +43,47 @@ make clean
 - 不碰硬體的 crate（純邏輯：資料結構、檔案系統、協定解析）要能在 host 上以 `cargo test` 測試；硬體相關的 crate 把邏輯與硬體存取分開，讓邏輯的部分可以在 host 測。
 - 需要硬體的測試放在 kernel 的 selftest（`kernel/src/selftest.rs`，`selftest` feature；QEMU + OVMF 開機，檢查 serial 輸出，結束時經 `isa-debug-exit` 回報 exit code）。
 - 需要使用者自己的檔案（Mac ROM、磁碟映像）的測試只放在本機專用目標，不進 `make test` 或 CI。
+- 測試映像只放在 `build/` 底下；造映像與 eHFS 的工具拒絕一般檔案以外的目標（不可對實體磁碟操作）。
 
 ## 目錄結構（規劃，隨進度更新）
 
 ```
-abi/           kernel 與使用者程式共用的 syscall ABI：編號、錯誤碼、位址配置、Handle／Rights／Message、key（no_std，host 測試）（docs/syscall.md、docs/ipc.md）
+abi/           kernel 與使用者程式共用的 syscall ABI：編號、錯誤碼、位址配置、Handle／Rights／Message、key、DirEntry／Stat／VolumeInfo（no_std，host 測試）（docs/syscall.md、docs/ipc.md、docs/vfs.md）
+block/         BlockDevice trait、Partition、GPT、CRC-32、MemDisk（no_std，host 測試）（docs/storage.md）
 boot/          UEFI loader（x86_64-unknown-uefi）：讀 kernel.elf 與 initrd.tar、建分頁表、取得記憶體表與 framebuffer、交棒（docs/boot.md）
 bootinfo/      loader 與 kernel 共用的 BootInfo 結構（版本 2，no_std，host 測試）
 elfload/       最小 ELF64 解析（只處理 PT_LOAD，host 測試）
+ehfs/          eHFS（與 68k_HAL 的 eHFS v1 格式相容；no_std，host 測試）（docs/ehfs.md）
 frame/         框架 crate：所有 unsafe 的家，對外只提供 safe API（docs/frame.md）
   src/arch/x86_64/  架構相關：port I/O、MSR、GDT/TSS、IDT、256 個向量的 stub、8259、local/I/O APIC、PIT、i8042、
                     context 切換與 enter_user（context.rs）、syscall 進入點與 MSR（syscall.rs）
-  src/acpi/         RSDP/XSDT/MADT 解析（tables.rs 純邏輯，host 測試）（docs/irq.md）
+  src/acpi/         RSDP/XSDT/MADT/MCFG 解析（tables.rs 純邏輯，host 測試）（docs/irq.md、docs/pci.md）
+  src/pci.rs        PCI 設定空間的 legacy ports（docs/pci.md）
   src/irq.rs        向量配置、irq::register、分派與 EOI（docs/irq.md）
   src/cpu.rs        per-CPU 區（GS_BASE；kernel_rsp、need_resched、目前的 context）
   src/task/         TaskContext、switch_to、kernel 堆疊、enter_user、搶佔與使用者例外的回呼（docs/process.md）
   src/syscall.rs    SyscallFrame、set_handler（docs/syscall.md）
   src/time/         APIC timer 1000 Hz、now_ns、sleep_ms（docs/time.md）
   src/input/        鍵盤解碼、輸入事件佇列、notify hook（docs/keyboard.md）
-  src/mm/           頁框配置（bitmap）、kernel 分頁、MMIO 映射、heap、行程位址空間（user.rs）、共享記憶體（shared.rs）、initrd()
+  src/mm/           頁框配置（bitmap）、kernel 分頁、MMIO 映射、heap（16 MiB）、行程位址空間（user.rs）、共享記憶體（shared.rs）、DMA（dma.rs）、initrd()
   src/console/      字型、文字主控台、framebuffer、panic 畫面
 kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）；lib（host 測試純邏輯）+ bin（入口與 selftest）
   src/task/         Thread、排程器、run queue／睡眠清單／WaitQueue（queue.rs，host 測試）、block_until、Process、wait_process（docs/process.md）
   src/object/       handle 表（handle.rs）、映射區配置（regions.rs）（host 測試）、Port、KernelObject（docs/ipc.md）
   src/console.rs    console 服務；src/input.rs  input-router（docs/ipc.md）
+  src/block.rs      磁碟 probe；src/fs/  區塊快取（cache.rs）、FAT 唯讀（fat.rs）（docs/storage.md）
+  src/vfs/          卷宗、資料夾／檔案 Node、eHFS 與 FAT 後端、掛載（docs/vfs.md）；src/fsyscall.rs  檔案 syscall
   src/syscall.rs    syscall 分派（docs/syscall.md、docs/ipc.md）
   src/initrd.rs     ustar 解析（host 測試）
   src/program.rs    從 initrd 載入 ELF、建立行程
 user/          使用者程式（x86_64-unknown-none，user.ld 連結在 0x40_0000）（docs/syscall.md §5）
   libstela/         執行期：entry!、syscall 包裝、ipc（handle／port／memory／Mapping）、debug_println!（經 console 服務）、ThreadStack/spawn、panic handler
-  hello/ spin/ fault/ ipc_server/ ipc_client/  initrd 裡的測試程式；echo/  鍵盤 echo（make run）
-drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）（尚未建立）
+  hello/ spin/ fault/ ipc_server/ ipc_client/ fstest/  initrd 裡的測試程式；echo/  鍵盤 echo（make run）
+drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）：PCI、AHCI、NVMe、sync（排程 hooks、SleepLock、SleepMutex）（docs/pci.md、docs/storage.md）
 third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause）
 docs/          設計文件（每個元件完成後寫 docs/<元件>.md）
-tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、font_to_rs.py）
+tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、font_to_rs.py、make_test_images.py、make_test_disk.py、gen_casefold.py、ehfs_compat.py）
+  ehfs/             host 工具 crate：mkfs.ehfs、fsck.ehfs、ehfs-cp、ehfs-ls
 ```
 
 ## 程式風格
@@ -140,6 +149,7 @@ Claude 依照上方工作規則直接實作。
 - P2（自動排程一次做完，使用者已審核（2026-10-20））：ACPI MADT、APIC 與中斷、per-CPU、鎖（`docs/irq.md`）、計時器與時鐘（`docs/time.md`）、PS/2 鍵盤與輸入事件（`docs/keyboard.md`）
 - P3（自動排程一次做完，使用者已審核（2026-10-20））：執行緒、排程、context 切換、位址空間、使用者模式、initrd（`docs/process.md`）、syscall ABI 與 libstela（`docs/syscall.md`）
 - P4（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：IPC 與 handle（`docs/ipc.md`）
+- P5（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：PCI、儲存、eHFS、VFS（`docs/pci.md`、`docs/storage.md`、`docs/ehfs.md`、`docs/vfs.md`）
 
 ## 已知問題（尚未修正）
 
@@ -150,8 +160,9 @@ Claude 依照上方工作規則直接實作。
 - 沒有設定 PAT：framebuffer 是 write-back 而不是 write-combining，捲動要讀 framebuffer，實機上會慢。
 - loader 不切換 GOP 模式（OVMF 預設 1280x800）；不支援 Bitmask 像素格式。
 - 記憶體表合併後最多 256 個區段（`regions_truncated`）；`KernelAndBoot`（含 loader 自己）與 identity map 用過的分頁表不回收。
-- kernel heap 固定 4 MiB；空掉的中間分頁表不回收；`alloc_contiguous` 是線性 first-fit。
+- kernel heap 固定 16 MiB（P5 從 4 MiB 加大）；空掉的中間分頁表不回收；`alloc_contiguous` 是線性 first-fit。
 - 排程：單一等級 round-robin（10 ms 時間片），`priority` 只存不用；`block`/`wake` 的競賽只靠「單顆 CPU + 關中斷」，SMP 時要重做；沒有 tickless；睡眠解析度 1 ms。
 - 位址空間只有 4 KiB 頁、沒有需求分頁／mmap；kernel 半部不能新增 PML4 項目（行程的 PML4 是建立時複製的）；使用者 FPU 只有 FXSAVE（無 XSAVE/AVX）；沒有 SMAP（kernel 不直接解參考使用者指標）。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。
+- 儲存：一次一個請求（AHCI 一個 slot、NVMe 每次一個 4 KiB 區塊）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；沒有 RTC（時間戳 = 2026-01-01 + 開機以來）；`DirRead` 每次重新列出（O(n²)）；一個卷宗一次一個操作；一般 kernel 沒有關機卸載（docs/storage.md §12、docs/vfs.md §8）。
 - IPC：沒有 port set；訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；任何有 port SEND 的程式都能 `InputAttach` 搶鍵盤；共享記憶體是 eager（`docs/ipc.md` §12）。

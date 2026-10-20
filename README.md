@@ -11,7 +11,7 @@ whose experience it reuses and whose code it does not.
 
 ## Status
 
-Early (phase P4 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+Early (phase P5 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -24,24 +24,31 @@ slices, sleeping, blocking), processes with their own address spaces, ring 3 use
 through `iretq` and left through `syscall`/`sysret`, and a small user runtime (libstela).
 Processes hold capabilities: handles with rights in a per-process table, to ports (message
 queues carrying small messages and handles) and shared memory; output goes through a console
-service and keyboard events arrive as messages. `make run` starts the `hello` program from the
+service and keyboard events arrive as messages. It enumerates PCI (ECAM, MSI/MSI-X), drives
+AHCI and NVMe disks, reads GPT and FAT, and has its own file system, eHFS (journaled B-trees,
+persistent file ids, case-insensitive Unicode names; on-disk compatible with 68k_HAL's eHFS),
+with volumes as separate roots (`Data:/docs/a.txt`) reached through folder handles; host tools
+`mkfs.ehfs`, `fsck.ehfs`, `ehfs-cp` and `ehfs-ls` work on image files. `make run` starts the `hello` program from the
 initrd (two threads printing from user mode), then the `echo` program, which echoes what you
 type and prints the uptime on Enter; a faulting program is killed and the kernel goes on. Only
 the boot processor runs. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
-[docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md) and
-[docs/ipc.md](docs/ipc.md).
+[docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
+[docs/ipc.md](docs/ipc.md), [docs/pci.md](docs/pci.md), [docs/storage.md](docs/storage.md),
+[docs/ehfs.md](docs/ehfs.md) and [docs/vfs.md](docs/vfs.md).
 
 ## Building
 
 Requirements: `rustup` (the pinned toolchain and targets are installed automatically from
-`rust-toolchain.toml`), `qemu-system-x86`, `ovmf`, `python3`, `make`, GNU `tar`.
+`rust-toolchain.toml`), `qemu-system-x86`, `ovmf`, `python3`, `make`, GNU `tar`, `mtools`,
+`gdisk` (the last two make test disk images).
 
 ```bash
 make        # build the loader, the kernel, the user programs and the initrd into build/esp/
 make run    # boot it in QEMU with OVMF, serial on stdio
-make test   # host unit tests + QEMU self tests (keys typed via QMP) + a screen check
+make test   # host unit tests + QEMU self tests (keys typed via QMP) + a screen check + disk tests
+make ehfs-tools  # mkfs.ehfs, fsck.ehfs, ehfs-cp, ehfs-ls for image files, in build/host/ehfs/
 ```
 
 ## License
@@ -50,6 +57,9 @@ GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
 
 The Spleen font in `third_party/spleen/` is by Frederic Cambus and is under the BSD 2-Clause
 license (see [third_party/spleen/LICENSE](third_party/spleen/LICENSE)).
+
+`ehfs/src/unicode_data.rs` is generated from the Unicode Character Database 15.0.0 and carries
+the Unicode License V3 (included in the file).
 
 ## Author
 

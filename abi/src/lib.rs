@@ -686,16 +686,13 @@ pub mod sysinfo {
     /// the key is absent. Keys compare ASCII case-insensitively; the last
     /// occurrence wins.
     pub fn cmdline_option<'a>(cmdline: &'a [u8], key: &str) -> Option<&'a [u8]> {
-        cmdline
-            .split(|&b| b == b' ')
-            .rev()
-            .find_map(|word| {
-                let (k, v) = match word.iter().position(|&b| b == b'=') {
-                    Some(i) => (&word[..i], &word[i + 1..]),
-                    None => (word, &word[word.len()..]),
-                };
-                k.eq_ignore_ascii_case(key.as_bytes()).then_some(v)
-            })
+        cmdline.split(|&b| b == b' ').rev().find_map(|word| {
+            let (k, v) = match word.iter().position(|&b| b == b'=') {
+                Some(i) => (&word[..i], &word[i + 1..]),
+                None => (word, &word[word.len()..]),
+            };
+            k.eq_ignore_ascii_case(key.as_bytes()).then_some(v)
+        })
     }
 
     /// Whether a command line has the option `key` (bare or with a value

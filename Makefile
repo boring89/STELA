@@ -61,7 +61,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 # User-space crates (same target).
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-window \
+.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-textmode test-window \
 	host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
@@ -139,6 +139,7 @@ esp-test: boot initrd
 	cp $(BOOT_EFI) $(ESP_TEST)/EFI/BOOT/BOOTX64.EFI
 	cp $(KERNEL_ELF) $(ESP_TEST)/STELA/kernel.elf
 	cp $(INITRD) $(ESP_TEST)/STELA/initrd.tar
+	printf '# boot options for the self tests (docs/p520.md)\nselftest\n' > $(ESP_TEST)/STELA/boot.cfg
 
 # The panic screen: the self-test kernel with a file `panic-test` in its
 # initrd panics on purpose and halts; the screen must show the cracked
@@ -169,7 +170,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
+test: test-host test-qemu test-qemu-min test-textmode test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -205,6 +206,20 @@ test-qemu-min: esp-test test-images $(BUILD)/OVMF_VARS.fd
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-min.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-min.img
+
+# Boot options (docs/p520.md): the normal kernel with a boot.cfg that
+# asks for text mode and no USB; init starts the shell without the window
+# server and the xHCI controller is left alone.
+ESP_TEXT    := $(BUILD)/esp-text
+test-textmode: esp $(BUILD)/OVMF_VARS.fd
+	rm -rf $(ESP_TEXT)
+	cp -r $(ESP) $(ESP_TEXT)
+	printf 'textmode\n  nousb   # no xHCI\n' > $(ESP_TEXT)/STELA/boot.cfg
+	python3 tools/qemu_test.py --timeout 60 --type "STELA shell" "uptime\n" \
+		--expect "boot: options textmode nousb" --expect "usb: off (boot option nousb)" \
+		--expect "init: text mode (boot option)" --expect "STELA shell" --expect "uptime: " \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEXT) -display none -serial stdio \
+		-device qemu-xhci
 
 # The desktop: boot the normal kernel (init starts the window server and
 # the terminal, the terminal the shell), type a command, start echo_win

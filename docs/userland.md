@@ -38,7 +38,7 @@ tools/qemu_test.py           --type：經 QMP 打字
 - Process handle 只記**行程 id**，不讓行程的記憶體活著：行程結束就回收；結束碼留在行程表裡，所以 `ProcessWait` 可以重複呼叫。
 - `ProcessWait` 等在行程表的 waiter 清單上（`block_until`，可逾時）；等待者自己被 kill 時放棄。
 - `ProcessKill` 自己 → 等於 `ProcessExit(137)`。
-- `SysInfo`：`PROCESSES`（每筆 48 bytes：pid、執行緒數、狀態 1 執行中／2 已結束、exit code、名稱 24 bytes；回傳總筆數，可能多於放得下的）、`MEMORY`（PMM 總數／空閒頁框、kernel heap 大小／已用）、`UPTIME`（奈秒、tick）。
+- `SysInfo`：`PROCESSES`（每筆 48 bytes：pid、執行緒數、狀態 1 執行中／2 已結束、exit code、名稱 24 bytes；回傳總筆數，可能多於放得下的）、`MEMORY`（PMM 總數／空閒頁框、kernel heap 大小／已用）、`UPTIME`（奈秒、tick）、`FRAMEBUFFER`（`docs/display.md`）、`CMDLINE`（5，P10：開機選項的位元組，回傳長度；`abi::sysinfo::cmdline_flag` 查選項，libstela 的 `process::boot_flag`；`docs/p520.md` §3）。
 
 ### 2.1 程式一律從檔案啟動
 

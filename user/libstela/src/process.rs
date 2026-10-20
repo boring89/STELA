@@ -141,6 +141,27 @@ pub fn framebuffer_info() -> Option<sysinfo::FramebufferInfo> {
     }
 }
 
+/// The boot options (`SysInfo(CMDLINE)`): space-separated `key` or
+/// `key=value` words; empty when there are none.
+pub fn cmdline() -> Vec<u8> {
+    let mut b = vec![0u8; sysinfo::CMDLINE_SIZE];
+    match syscall3(
+        Syscall::SysInfo,
+        sysinfo::CMDLINE,
+        b.as_mut_ptr() as u64,
+        b.len() as u64,
+    ) {
+        Ok(n) => b.truncate((n as usize).min(sysinfo::CMDLINE_SIZE)),
+        Err(_) => b.clear(),
+    }
+    b
+}
+
+/// Whether the boot options set `key` (`sysinfo::cmdline_flag`).
+pub fn boot_flag(key: &str) -> bool {
+    sysinfo::cmdline_flag(&cmdline(), key)
+}
+
 /// Flushes the volumes and turns the machine off (`SystemPower`). Returns
 /// only on failure (`NotSupported` when the machine has no ACPI soft off).
 pub fn shutdown() -> Error {

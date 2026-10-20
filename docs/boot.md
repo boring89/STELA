@@ -204,14 +204,14 @@ jmp r10                   ; kernel 的 e_entry；RDI = BootInfo 的 HHDM 位址
 
 NX 支援由 `CPUID.80000001H:EDX[20]` 偵測（Vol. 2A "CPUID"）；沒有 NX 時不設 NXE，也不在任何項目設 bit 63（否則那是保留位元，會 page fault）。`BootInfo::nx_enabled` 告訴 kernel。`make test-qemu-min` 用 `-cpu Conroe,-nx` 驗證這條路。
 
-## 9. `BootInfo` 格式（版本 2）
+## 9. `BootInfo` 格式（版本 3）
 
 `#[repr(C)]`，所有位址都是**實體位址**（kernel 加上 `hhdm_base` 讀取）。列舉欄位存成 `u32` 原值，用 `kind()`／`format()` 解碼，壞值不會造成 UB。
 
 | 位移 | 欄位 | 說明 |
 |---|---|---|
 | 0 | `magic: u64` | `"STELABI\0"` |
-| 8 | `version: u32` | 2（P3 起；版本 1 沒有 initrd 欄位） |
+| 8 | `version: u32` | 3（P10 起；版本 2 沒有 `ap_trampoline_phys` 與 `cmdline`，版本 1 沒有 initrd 欄位） |
 | 12 | `region_count: u32` | `regions` 的有效項目數 |
 | 16 | `hhdm_base: u64` | `0xFFFF_8000_0000_0000` |
 | 24 | `hhdm_size: u64` | HHDM 涵蓋的位元組數 |
@@ -227,15 +227,19 @@ NX 支援由 `CPUID.80000001H:EDX[20]` 偵測（Vol. 2A "CPUID"）；沒有 NX �
 | 96 | `framebuffer` | `phys_addr`、`size`、`width`、`height`、`pitch`、`format`（32 bytes） |
 | 128 | `initrd_phys: u64` | initrd（`\STELA\initrd.tar`，ustar）的實體位址，頁對齊；0 = 沒有 |
 | 136 | `initrd_size: u64` | initrd 的位元組數；0 = 沒有 |
-| 144 | `regions[256]` | 每項 24 bytes：`kind: u32`、`reserved: u32`、`phys_start: u64`、`page_count: u64` |
+| 144 | `ap_trampoline_phys: u64` | loader 在 640 KiB 以下保留的一頁（`AllocatePages(MaxAddress 0x9FFFF)`，`LOADER_DATA`），給 AP 的 real-mode 啟動程式（SIPI 的向量是 1 MiB 以下 4 KiB 頁的編號，Intel SDM Vol. 3A §8.4.4）；0 = 沒拿到 |
+| 152 | `cmdline_len: u32` | `cmdline` 的有效長度 |
+| 156 | `reserved: u32` | 0 |
+| 160 | `cmdline[256]` | `\STELA\boot.cfg` 經 `bootinfo::parse_config` 正規化：每行一個 `key` 或 `key=value`，`#` 之後是註解，以單一空白串接；不是可列印 ASCII 或放不下的選項丟掉（`docs/p520.md` §3） |
+| 416 | `regions[256]` | 每項 24 bytes：`kind: u32`、`reserved: u32`、`phys_start: u64`、`page_count: u64` |
 
-總大小 6,288 bytes。initrd 的頁面是 `LOADER_DATA`（kernel 看到 `KernelAndBoot`，PMM 不會拿去用）；kernel 用 `frame::mm::initrd()` 讀取，它先檢查範圍落在某個 KernelAndBoot 區段與 HHDM 內。`bootinfo` 的 host 測試鎖住這些位移；改格式時要一起改 `VERSION`。
+總大小 6,560 bytes。initrd 的頁面是 `LOADER_DATA`（kernel 看到 `KernelAndBoot`，PMM 不會拿去用）；kernel 用 `frame::mm::initrd()` 讀取，它先檢查範圍落在某個 KernelAndBoot 區段與 HHDM 內。`bootinfo` 的 host 測試鎖住這些位移；改格式時要一起改 `VERSION`。
 
 framebuffer：loader **不切換模式**，用 GOP 目前的模式（OVMF 預設 1280x800）。只接受 32 位元的 RGB／BGR；Bitmask 與 BltOnly 模式回報為「沒有 framebuffer」。
 
 ## 10. 測試
 
-- `cargo test -p bootinfo -p elfload`：結構位移（版本 2、initrd 欄位）、列舉、區段合併；ELF 的各種錯誤輸入，以及（若已建置）真的 `kernel.elf`。
+- `cargo test -p bootinfo -p elfload`：結構位移（版本 3、initrd、trampoline、cmdline 欄位）、`boot.cfg` 的解析、列舉、區段合併；ELF 的各種錯誤輸入，以及（若已建置）真的 `kernel.elf`。
 - `make test-qemu`：loader banner → `STELA kernel` → `selftest: OK`、QEMU exit code 33。
 - `make test-qemu-min`：同上，`-cpu Conroe,-nx -m 256M`。
 

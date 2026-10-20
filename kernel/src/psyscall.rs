@@ -264,6 +264,12 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
             }
             None => 0,
         },
+        abi::sysinfo::CMDLINE => {
+            let cmdline = frame::cmdline();
+            let n = cmdline.len().min(abi::sysinfo::CMDLINE_SIZE);
+            out.extend_from_slice(&cmdline[..n]);
+            n as u64
+        }
         _ => return Err(Error::InvalidArgument),
     };
     let n = out.len().min(len as usize);

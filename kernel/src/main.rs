@@ -93,11 +93,17 @@ fn init() {
     }
 }
 
-/// Text mode: when nothing took the screen within 5 seconds, the boot
-/// screen gives way to the text console.
+/// Text mode: when nothing took the screen within 5 seconds (at once with
+/// the boot option `textmode` or `nowindow`), the boot screen gives way to
+/// the text console.
 #[cfg(not(feature = "selftest"))]
 fn end_boot_screen() {
-    for _ in 0..50 {
+    let wait = if frame::boot_flag("textmode") || frame::boot_flag("nowindow") {
+        0
+    } else {
+        50
+    };
+    for _ in 0..wait {
         if frame::console::handed_over() {
             return;
         }

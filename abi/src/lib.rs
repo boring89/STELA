@@ -673,6 +673,42 @@ pub mod sysinfo {
     /// when there is no framebuffer.
     pub const FRAMEBUFFER: u64 = 4;
 
+    /// The boot options (`\\STELA\\boot.cfg`, `docs/p520.md`) as
+    /// space-separated `key` or `key=value` words; returns their length
+    /// in bytes (at most `CMDLINE_SIZE`).
+    pub const CMDLINE: u64 = 5;
+
+    /// Most bytes `SysInfo(CMDLINE)` returns.
+    pub const CMDLINE_SIZE: usize = 256;
+
+    /// Looks up an option in a command line made by `bootinfo::parse_config`:
+    /// `Some("")` for a bare `key`, `Some(value)` for `key=value`, `None` when
+    /// the key is absent. Keys compare ASCII case-insensitively; the last
+    /// occurrence wins.
+    pub fn cmdline_option<'a>(cmdline: &'a [u8], key: &str) -> Option<&'a [u8]> {
+        cmdline
+            .split(|&b| b == b' ')
+            .rev()
+            .find_map(|word| {
+                let (k, v) = match word.iter().position(|&b| b == b'=') {
+                    Some(i) => (&word[..i], &word[i + 1..]),
+                    None => (word, &word[word.len()..]),
+                };
+                k.eq_ignore_ascii_case(key.as_bytes()).then_some(v)
+            })
+    }
+
+    /// Whether a command line has the option `key` (bare or with a value
+    /// other than `off`, `0` or `no`).
+    pub fn cmdline_flag(cmdline: &[u8], key: &str) -> bool {
+        match cmdline_option(cmdline, key) {
+            Some(v) => {
+                !(v.eq_ignore_ascii_case(b"off") || v == b"0" || v.eq_ignore_ascii_case(b"no"))
+            }
+            None => false,
+        }
+    }
+
     /// Size of the framebuffer record.
     pub const FRAMEBUFFER_INFO_SIZE: usize = 24;
 
@@ -1350,5 +1386,22 @@ mod tests {
         assert_eq!(sysinfo::MemInfo::from_bytes(&m.to_bytes()), Some(m));
         assert_eq!(tag::BOOTSTRAP_ARGS, 3);
         assert_eq!(EXIT_KILLED, 137);
+    }
+
+    #[test]
+    fn cmdline_options() {
+        use sysinfo::{cmdline_flag, cmdline_option};
+        let c = b"textmode nousb classic=off serial=0 serial";
+        assert!(cmdline_flag(c, "textmode"));
+        assert!(cmdline_flag(c, "NOUSB"));
+        assert!(!cmdline_flag(c, "classic"));
+        assert!(!cmdline_flag(c, "nosmp"));
+        assert!(cmdline_flag(c, "serial"));
+        assert!(!cmdline_flag(b"serial serial=no", "serial"));
+        assert_eq!(cmdline_option(c, "classic"), Some(&b"off"[..]));
+        assert_eq!(cmdline_option(c, "textmode"), Some(&b""[..]));
+        assert_eq!(cmdline_option(c, "text"), None);
+        assert_eq!(cmdline_option(b"", "text"), None);
+        assert_eq!(sysinfo::CMDLINE, 5);
     }
 }

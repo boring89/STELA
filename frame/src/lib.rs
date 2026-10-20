@@ -48,6 +48,7 @@ pub mod trap;
 /// once, first thing in the kernel.
 #[cfg(target_os = "none")]
 pub fn init(info: &'static bootinfo::BootInfo) {
+    let _ = BOOT_INFO.set(info);
     serial::init();
     arch::x86_64::init();
     arch::x86_64::pat::init();
@@ -61,6 +62,31 @@ pub fn init(info: &'static bootinfo::BootInfo) {
     input::init();
     time::init();
     irq::enable();
+}
+
+/// The boot information, kept for later readers (it lives in
+/// `KernelAndBoot` memory, which is never reused).
+#[cfg(target_os = "none")]
+static BOOT_INFO: sync::Once<&'static bootinfo::BootInfo> = sync::Once::new();
+
+/// The boot options from `\\STELA\\boot.cfg` (space-separated `key` or
+/// `key=value` words; `docs/p520.md`); empty before [`init`].
+#[cfg(target_os = "none")]
+pub fn cmdline() -> &'static [u8] {
+    BOOT_INFO.get().map_or(&[], |info| info.cmdline())
+}
+
+/// Whether the boot options set `key` ([`abi::sysinfo::cmdline_flag`]).
+#[cfg(target_os = "none")]
+pub fn boot_flag(key: &str) -> bool {
+    abi::sysinfo::cmdline_flag(cmdline(), key)
+}
+
+/// Physical address of the page below 1 MiB the loader reserved for the
+/// application processors' start-up code; 0 if there is none.
+#[cfg(target_os = "none")]
+pub fn ap_trampoline_phys() -> u64 {
+    BOOT_INFO.get().map_or(0, |info| info.ap_trampoline_phys)
 }
 
 /// Enables interrupts and waits for the next one (`sti; hlt`: `sti` takes

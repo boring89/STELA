@@ -103,6 +103,19 @@ fn boot_information(info: &'static BootInfo) {
         .windows(2)
         .all(|w| w[0].phys_end() <= w[1].phys_start);
     assert!(sorted, "memory map not sorted or overlapping");
+    // make esp-test writes a boot.cfg with this option (docs/p520.md).
+    assert!(frame::boot_flag("selftest"), "boot.cfg not read");
+    assert!(!frame::boot_flag("nosmp"));
+    let trampoline = frame::ap_trampoline_phys();
+    assert!(
+        trampoline != 0 && trampoline < 0xA_0000 && trampoline.is_multiple_of(4096),
+        "bad AP trampoline page {trampoline:#x}"
+    );
+    kprintln!(
+        "boot: options \"{}\", AP trampoline at {:#x}",
+        core::str::from_utf8(frame::cmdline()).unwrap_or("?"),
+        trampoline
+    );
 }
 
 fn breakpoint(_: &'static BootInfo) {

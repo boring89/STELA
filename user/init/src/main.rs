@@ -8,6 +8,9 @@
 //! with the framebuffer, the console and the root of `Data` (`Initrd`
 //! when there is no `Data`), and starts it again if it ends.
 //!
+//! The boot options `textmode` and `nowindow` (`docs/p520.md`) keep it
+//! in text mode even with a screen.
+//!
 //! Otherwise (text mode) it starts `Initrd:/shell` with the console, a
 //! `SEND` handle to its own main port (bootstrap `[2]`) and the same
 //! working directory, waits for the shell to report in (`SHELL_READY`,
@@ -115,7 +118,10 @@ fn main() -> i64 {
             }
         },
     };
-    if handle_kind(bootstrap::BOOTSTRAP) == Ok(object_kind::FRAMEBUFFER) {
+    let text_only = process::boot_flag("textmode") || process::boot_flag("nowindow");
+    if text_only {
+        println!("init: text mode (boot option)");
+    } else if handle_kind(bootstrap::BOOTSTRAP) == Ok(object_kind::FRAMEBUFFER) {
         run_desktop(home);
         println!("init: no window server; text mode");
     }

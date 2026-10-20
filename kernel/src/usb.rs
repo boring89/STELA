@@ -9,7 +9,12 @@ use crate::task;
 
 /// Probes the first xHCI controller and starts its thread. Call once at
 /// boot, after `block::probe` (which hands the drivers the scheduler).
+/// The boot option `nousb` leaves the controller alone.
 pub fn start() {
+    if frame::boot_flag("nousb") {
+        frame::kprintln!("usb: off (boot option nousb)");
+        return;
+    }
     let Some(controller) = drivers::usb::xhci::probe() else {
         return;
     };

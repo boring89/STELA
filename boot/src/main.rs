@@ -41,6 +41,8 @@ use uefi::{CStr16, cstr16, println};
 const KERNEL_PATH: &CStr16 = cstr16!("\\STELA\\kernel.elf");
 /// The initial RAM disk: the first user programs, as a ustar archive.
 const INITRD_PATH: &CStr16 = cstr16!("\\STELA\\initrd.tar");
+/// Boot options, one per line (`docs/p520.md`); optional.
+const CONFIG_PATH: &CStr16 = cstr16!("\\STELA\\boot.cfg");
 
 /// Size of the kernel's initial stack.
 const STACK_SIZE: usize = 64 * 1024;
@@ -128,6 +130,9 @@ fn boot() -> Result<core::convert::Infallible, Fail> {
         println!(r"boot: no \STELA\initrd.tar");
     }
 
+    let config = read_config();
+    let trampoline = reserve_trampoline();
+
     let rsdp = find_rsdp();
     let stack = alloc_pages(STACK_SIZE / 4096);
     let stack_phys = stack.as_ptr() as u64;
@@ -142,6 +147,14 @@ fn boot() -> Result<core::convert::Infallible, Fail> {
     info.nx_enabled = u32::from(nx);
     info.initrd_phys = initrd_phys;
     info.initrd_size = initrd_size;
+    info.ap_trampoline_phys = trampoline;
+    info.set_config(&config);
+    if !info.cmdline().is_empty() {
+        println!(
+            "boot: options {}",
+            core::str::from_utf8(info.cmdline()).unwrap_or("?")
+        );
+    }
 
     // The direct map covers all RAM the firmware reports (usable, in use,
     // ACPI), the framebuffer, and at least 4 GiB. Reserved and MMIO ranges
@@ -274,6 +287,30 @@ fn load_initrd() -> Result<(u64, u64), Fail> {
     let pages = alloc_pages(file.len().div_ceil(4096));
     write_bytes(pages, 0, &file);
     Ok((pages.as_ptr() as u64, file.len() as u64))
+}
+
+/// Reads `\\STELA\\boot.cfg`; empty when it does not exist.
+fn read_config() -> alloc::vec::Vec<u8> {
+    let Ok(fs) = uefi::boot::get_image_file_system(uefi::boot::image_handle()) else {
+        return alloc::vec::Vec::new();
+    };
+    uefi::fs::FileSystem::new(fs)
+        .read(CONFIG_PATH)
+        .unwrap_or_default()
+}
+
+/// Reserves one page below 640 KiB for the application processors'
+/// real-mode start-up code: the Startup IPI's vector is the number of a
+/// 4 KiB page below 1 MiB (Intel SDM Vol. 3A 10.4.4.1 / 11.4.4.1 "Typical
+/// BSP Initialization Sequence"). Type `LOADER_DATA`, so the kernel sees it
+/// in use. Returns 0 when the firmware has no such page free.
+fn reserve_trampoline() -> u64 {
+    uefi::boot::allocate_pages(
+        uefi::boot::AllocateType::MaxAddress(0x9_FFFF),
+        MemoryType::LOADER_DATA,
+        1,
+    )
+    .map_or(0, |page| page.as_ptr() as u64)
 }
 
 /// The ACPI RSDP from the configuration table: ACPI 2.0+ preferred, ACPI 1.0

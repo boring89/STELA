@@ -55,7 +55,7 @@ make clean
 abi/           kernel 與使用者程式共用的 syscall ABI：編號、錯誤碼、位址配置、Handle／Rights／Message、key、DirEntry／Stat／VolumeInfo（no_std，host 測試）（docs/syscall.md、docs/ipc.md、docs/vfs.md）
 block/         BlockDevice trait、Partition、GPT、CRC-32、MemDisk（no_std，host 測試）（docs/storage.md）
 boot/          UEFI loader（x86_64-unknown-uefi）：讀 kernel.elf 與 initrd.tar、建分頁表、取得記憶體表與 framebuffer、交棒（docs/boot.md）
-bootinfo/      loader 與 kernel 共用的 BootInfo 結構（版本 2，no_std，host 測試）
+bootinfo/      loader 與 kernel 共用的 BootInfo 結構（版本 3：含 boot.cfg 的 cmdline 與 AP trampoline 頁，no_std，host 測試）
 elfload/       最小 ELF64 解析（只處理 PT_LOAD，host 測試）
 ehfs/          eHFS（與 68k_HAL 的 eHFS v1 格式相容；no_std，host 測試）（docs/ehfs.md）
 frame/         框架 crate：所有 unsafe 的家，對外只提供 safe API（docs/frame.md）

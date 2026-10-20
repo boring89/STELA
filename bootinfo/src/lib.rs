@@ -20,11 +20,14 @@
 pub const MAGIC: u64 = u64::from_le_bytes(*b"STELABI\0");
 
 /// Layout version; bump on every incompatible change to any structure here.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Capacity of [`BootInfo::regions`]. The loader merges adjacent regions of
 /// the same kind, so firmware memory maps of a few hundred entries fit.
 pub const MAX_REGIONS: usize = 256;
+
+/// Capacity of [`BootInfo::cmdline`] in bytes.
+pub const CMDLINE_SIZE: usize = 256;
 
 /// Size of a page frame, the unit of [`MemoryRegion::page_count`].
 pub const PAGE_SIZE: u64 = 4096;
@@ -227,6 +230,17 @@ pub struct BootInfo {
     pub initrd_phys: u64,
     /// Size of the initial RAM disk in bytes; 0 if there is none.
     pub initrd_size: u64,
+    /// Physical address of one page below 1 MiB that the loader reserved
+    /// for the application processors' start-up code (a SIPI vector names
+    /// a 4 KiB page below 1 MiB); 0 if none could be had.
+    pub ap_trampoline_phys: u64,
+    /// Number of valid bytes at the start of [`BootInfo::cmdline`].
+    pub cmdline_len: u32,
+    /// Always zero; keeps the layout explicit.
+    pub reserved: u32,
+    /// The boot options from `\STELA\boot.cfg`, normalised by
+    /// [`parse_config`] into space-separated `key` or `key=value` words.
+    pub cmdline: [u8; CMDLINE_SIZE],
     /// The physical memory map, sorted by address; only the first
     /// [`BootInfo::region_count`] entries are valid.
     pub regions: [MemoryRegion; MAX_REGIONS],
@@ -253,6 +267,10 @@ impl BootInfo {
             framebuffer: Framebuffer::NONE,
             initrd_phys: 0,
             initrd_size: 0,
+            ap_trampoline_phys: 0,
+            cmdline_len: 0,
+            reserved: 0,
+            cmdline: [0; CMDLINE_SIZE],
             regions: [MemoryRegion::EMPTY; MAX_REGIONS],
         }
     }
@@ -266,6 +284,17 @@ impl BootInfo {
     pub fn regions(&self) -> &[MemoryRegion] {
         let count = (self.region_count as usize).min(MAX_REGIONS);
         &self.regions[..count]
+    }
+
+    /// The valid part of the command line.
+    pub fn cmdline(&self) -> &[u8] {
+        let len = (self.cmdline_len as usize).min(CMDLINE_SIZE);
+        &self.cmdline[..len]
+    }
+
+    /// Stores the boot options parsed from a `boot.cfg` file.
+    pub fn set_config(&mut self, config: &[u8]) {
+        self.cmdline_len = parse_config(config, &mut self.cmdline) as u32;
     }
 
     /// Appends a region, merging it into the previous one when it has the
@@ -293,6 +322,36 @@ impl BootInfo {
     }
 }
 
+/// Turns the text of a `boot.cfg` file into a command line: one option per
+/// line (`key` or `key=value`), `#` starts a comment, blank space around
+/// an option is dropped, and options are joined with single spaces into
+/// `out`. Options with characters other than printable ASCII, and options
+/// that no longer fit, are left out. Returns the number of bytes written.
+pub fn parse_config(config: &[u8], out: &mut [u8]) -> usize {
+    let mut len = 0;
+    for line in config.split(|&b| b == b'\n') {
+        let line = match line.iter().position(|&b| b == b'#') {
+            Some(i) => &line[..i],
+            None => line,
+        };
+        let line = line.trim_ascii();
+        if line.is_empty() || !line.iter().all(|&b| b.is_ascii_graphic()) {
+            continue;
+        }
+        let needed = line.len() + usize::from(len > 0);
+        if len + needed > out.len() {
+            continue;
+        }
+        if len > 0 {
+            out[len] = b' ';
+            len += 1;
+        }
+        out[len..len + line.len()].copy_from_slice(line);
+        len += line.len();
+    }
+    len
+}
+
 impl Default for BootInfo {
     fn default() -> BootInfo {
         BootInfo::new()
@@ -316,8 +375,11 @@ mod tests {
         assert_eq!(offset_of!(BootInfo, framebuffer), 96);
         assert_eq!(offset_of!(BootInfo, initrd_phys), 128);
         assert_eq!(offset_of!(BootInfo, initrd_size), 136);
-        assert_eq!(offset_of!(BootInfo, regions), 144);
-        assert_eq!(size_of::<BootInfo>(), 144 + 24 * MAX_REGIONS);
+        assert_eq!(offset_of!(BootInfo, ap_trampoline_phys), 144);
+        assert_eq!(offset_of!(BootInfo, cmdline_len), 152);
+        assert_eq!(offset_of!(BootInfo, cmdline), 160);
+        assert_eq!(offset_of!(BootInfo, regions), 416);
+        assert_eq!(size_of::<BootInfo>(), 416 + 24 * MAX_REGIONS);
         assert_eq!(align_of::<BootInfo>(), 8);
     }
 
@@ -349,7 +411,9 @@ mod tests {
     fn new_block_is_valid() {
         let info = BootInfo::new();
         assert!(info.is_valid());
-        assert_eq!(info.version, 2);
+        assert_eq!(info.version, 3);
+        assert!(info.cmdline().is_empty());
+        assert_eq!(info.ap_trampoline_phys, 0);
         assert_eq!((info.initrd_phys, info.initrd_size), (0, 0));
         assert!(info.regions().is_empty());
         assert!(!info.framebuffer.is_present());
@@ -391,5 +455,22 @@ mod tests {
         assert!(!info.push_region(MemoryRegion::new(MemoryKind::Mmio, 1 << 40, 1)));
         assert_eq!(info.regions_truncated, 1);
         assert_eq!(info.regions().len(), MAX_REGIONS);
+    }
+
+    #[test]
+    fn config_becomes_a_command_line() {
+        let mut info = BootInfo::new();
+        info.set_config(
+            b"# STELA boot options\r\ntextmode\n\n  nousb  # no xHCI\nclassic=off\nbad\x01word\n",
+        );
+        assert_eq!(info.cmdline(), b"textmode nousb classic=off");
+    }
+
+    #[test]
+    fn config_overflow_drops_options() {
+        let mut out = [0u8; 8];
+        assert_eq!(parse_config(b"abc\nlonger-than-eight\nde", &mut out), 6);
+        assert_eq!(&out[..6], b"abc de");
+        assert_eq!(parse_config(b"", &mut out), 0);
     }
 }

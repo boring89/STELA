@@ -6,6 +6,7 @@ members = [
     "boot",
     "bootinfo",
     "drivers",
+    "ehfs",
     "elfload",
     "frame",
     "kernel",

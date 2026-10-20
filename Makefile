@@ -32,7 +32,7 @@ MUSL_DIR    := $(BUILD)/musl
 MUSL_GCC    := $(MUSL_DIR)/install/bin/musl-gcc
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys
+LINUX_TESTS := hello files memory time tty nosys net
 LINUX_DIR   := $(USER_DIR)/linux
 LINUX_CFLAGS := -static -O2 -no-pie -fno-pie -Wall -Wextra -Werror \
                -Wl,-z,max-page-size=4096 -Wl,--build-id=none
@@ -62,7 +62,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-textmode test-window \
-	disk-image test-disk-image classic test-classic host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image test-disk-image classic test-classic test-net test-net-cards host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -170,7 +170,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-textmode test-disk-image test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
+test: test-host test-qemu test-qemu-min test-textmode test-disk-image test-net test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -279,6 +279,37 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
 	python3 tools/fb_check.py $(BUILD)/classic.ppm $(CLASSIC_CHECKS)
+
+# Networking (docs/net.md): QEMU user networking (slirp: gateway and host
+# 10.0.2.2, DNS 10.0.2.3, us 10.0.2.15) with each of the three cards; an
+# HTTP server on the host serves build/www. The shell's ifconfig (DHCP),
+# ping to the gateway, fetch of a file over TCP and the Linux program
+# linux/net (BSD sockets) must work; DNS (ifconfig resolve) only when the
+# host itself resolves names (tools/with_http.py sets HOST_DNS).
+NET_PORT    := 8642
+NET_CARDS   := e1000 e1000e virtio-net-pci
+NET_DNS_TYPE   = $(if $(HOST_DNS),--type "ping exited" "ifconfig resolve example.com\n",)
+NET_DNS_EXPECT = $(if $(HOST_DNS),--expect "example.com has address",)
+NET_FETCH_AFTER = $(if $(HOST_DNS),ifconfig exited,ping exited)
+test-net: esp $(BUILD)/OVMF_VARS.fd
+	mkdir -p $(BUILD)/www
+	printf 'hello from the host over TCP\n' > $(BUILD)/www/hello.txt
+	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- $(MAKE) --no-print-directory test-net-cards
+
+test-net-cards:
+	for card in $(NET_CARDS); do \
+		python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-net-$$card.log \
+			--type "STELA shell" "ifconfig\n" \
+			--type "inet 10.0.2.15" "ping 10.0.2.2 2\n" \
+			$(NET_DNS_TYPE) \
+			--type "$(NET_FETCH_AFTER)" "fetch http://10.0.2.2:$(NET_PORT)/hello.txt\n" \
+			--type "fetch exited" "run linux/net $(NET_PORT) host\n" \
+			--expect "net: DHCP: 10.0.2.15" --expect "inet 10.0.2.15 mask 255.255.255.0 gateway 10.0.2.2" \
+			--expect "bytes from 10.0.2.2: seq=1" $(NET_DNS_EXPECT) --expect "hello from the host over TCP" \
+			--expect "net: connected from 10.0.2.15" --expect "net: OK" \
+			-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio -nic none \
+			-netdev user,id=n0 -device $$card,netdev=n0 || exit 1; \
+	done
 
 # Boot options (docs/p520.md): the normal kernel with a boot.cfg that
 # asks for text mode and no USB; init starts the shell without the window

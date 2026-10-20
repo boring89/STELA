@@ -226,11 +226,14 @@ P6 的 `InitrdFs` 把所有檔案放在根目錄；P7 起建一棵樹：成員�
 | host `abi` | 編號 33–36、`note::BYTES`、`spawn::FORCE_*`、`tty::MASTER`、`object_kind` |
 | selftest "linux personality" | hello 有 note、裸 ELF 沒有；手組的 Linux 機器碼：write 到 tty（`linux: hello from raw system calls`）、RDX 保留、fork → `-ENOSYS`、exit_group(38)，兩次 PMM 回復；強制 STELA 人格（同一段碼變成 `ThreadExit`，exit 0）；`Initrd:/linux/hello`（musl）exit 3，兩次 PMM 回復 |
 | `make test-linux` | 一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打 `stela rocks`），檢查輸出與 exit code |
+| `make test-net`（P10） | `run linux/net PORT host`：BSD socket 抓 host 的 HTTP 檔、`getsockname`／`getpeername`／`getsockopt`、UDP `sendto`、關著的 port → `ECONNREFUSED`、`AF_INET6` → `EAFNOSUPPORT`（`docs/net.md` §7） |
 
 ## 13. 已知限制
 
+- 網路（P10，`docs/net.md` §7）：只有 `AF_INET` 的 `SOCK_STREAM`／`SOCK_DGRAM`；`socket`、`connect`、`bind`、`listen`、`accept`/`accept4`、`sendto`、`recvfrom`、`shutdown`、`getsockname`、`getpeername`、`setsockopt`（忽略）、`getsockopt`（一律 0）；socket 上的 `read`/`write` 等於 recv/send；沒有 `poll`/`select`、`sendmsg`/`recvmsg`，所以 musl 的 `getaddrinfo`（DNS）不能用。
+
 - 只有靜態、非 PIE 的 x86-64 程式（`ET_EXEC`）；沒有動態連結、`ET_DYN`、32 位元（`int 0x80`）。
-- 單執行緒：沒有 `clone`／執行緒；`futex` 是單執行緒的簡化；沒有 `fork`／`execve`／`pipe`、訊號遞送（`rt_sigaction` 只回 0）、網路、`/proc`、檔案 mmap、`MAP_FIXED`、`mremap`、`poll`／`select`。
+- 單執行緒：沒有 `clone`／執行緒；`futex` 是單執行緒的簡化；沒有 `fork`／`execve`／`pipe`、訊號遞送（`rt_sigaction` 只回 0）、`/proc`、檔案 mmap、`MAP_FIXED`、`mremap`、`poll`／`select`。
 - Linux 程式不受能力限制：合成根目錄看得到所有卷宗。
 - cwd 只從 `[3]` 的卷宗根開始；`getppid` 是 1；`getrandom` 不安全；時間只有 tick 解析度（沒有 invariant TSC 時 1 ms）。
 - tty：一個 tty 的 `TIOCGWINSZ` 永遠 25×80；沒有 job control（`TIOCSPGRP` 什麼都不做）；VMIN／VTIME 不看；raw 模式下 `read` 有一個字就回。

@@ -3,17 +3,35 @@
 
 //! ifconfig: the network card and the interface's address
 //! (`docs/net.md`). Waits up to 5 seconds for DHCP if it is not done yet.
+//! `ifconfig resolve NAME` looks a name up through DNS instead.
 
 #![no_std]
 #![no_main]
 #![forbid(unsafe_code)]
 
 use libstela::net::{self, ip_text};
-use libstela::println;
+use libstela::{println, process};
 
 libstela::entry!(main);
 
 fn main() -> i64 {
+    let args = process::args();
+    if let (Some("resolve"), Some(name)) = (args.get(1).map(|a| a.as_str()), args.get(2)) {
+        if net::wait_configured(5_000_000_000).is_none() {
+            println!("ifconfig: the network is not up");
+            return 1;
+        }
+        return match net::resolve(name) {
+            Ok(ip) => {
+                println!("{name} has address {}", ip_text(ip));
+                0
+            }
+            Err(e) => {
+                println!("ifconfig: {name}: {}", e.name());
+                1
+            }
+        };
+    }
     let Some(mut i) = net::info() else {
         println!("ifconfig: no network card");
         return 1;

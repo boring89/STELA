@@ -24,6 +24,8 @@ pub mod input;
 pub mod irq;
 pub mod mm;
 #[cfg(target_os = "none")]
+pub mod pci;
+#[cfg(target_os = "none")]
 pub mod qemu;
 #[cfg(target_os = "none")]
 pub mod serial;

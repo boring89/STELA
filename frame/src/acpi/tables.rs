@@ -363,9 +363,75 @@ pub fn parse_madt(table: &[u8]) -> Result<Madt, AcpiError> {
     Ok(madt)
 }
 
+/// One ECAM window of the MCFG: the configuration space of buses
+/// `start_bus..=end_bus` of PCI segment `segment` starts at `base` (bus `b`,
+/// device `d`, function `f` at `base + ((b - start_bus) << 20 | d << 15 |
+/// f << 12)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct McfgEntry {
+    /// Physical base address of the window (for bus `start_bus`).
+    pub base: u64,
+    /// PCI segment group.
+    pub segment: u16,
+    /// First bus decoded.
+    pub start_bus: u8,
+    /// Last bus decoded.
+    pub end_bus: u8,
+}
+
+/// Parses a checked MCFG (signature "MCFG"; PCI Firmware Specification 3.0
+/// section 4.1.2): 8 reserved bytes after the header, then 16-byte entries
+/// (base u64, segment u16, start bus, end bus, 4 reserved).
+pub fn parse_mcfg(table: &[u8]) -> Result<Vec<McfgEntry>, AcpiError> {
+    let body = table.get(HEADER_LEN + 8..).ok_or(AcpiError::BadLength)?;
+    if !body.len().is_multiple_of(16) {
+        return Err(AcpiError::BadEntry);
+    }
+    let mut entries = Vec::new();
+    for entry in body.as_chunks::<16>().0 {
+        let e = McfgEntry {
+            base: u64_at(entry, 0)?,
+            segment: u16_at(entry, 8)?,
+            start_bus: entry[10],
+            end_bus: entry[11],
+        };
+        if e.end_bus < e.start_bus {
+            return Err(AcpiError::BadEntry);
+        }
+        entries.push(e);
+    }
+    Ok(entries)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcfg_entries() {
+        // QEMU q35: one window at 0xB000_0000, segment 0, buses 0-255.
+        let mut body = vec![0u8; 8];
+        body.extend_from_slice(&0xB000_0000u64.to_le_bytes());
+        body.extend_from_slice(&[0, 0, 0, 0xFF, 0, 0, 0, 0]);
+        let entries = parse_mcfg(&table(b"MCFG", &body)).unwrap();
+        assert_eq!(
+            entries,
+            [McfgEntry {
+                base: 0xB000_0000,
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255
+            }]
+        );
+        assert_eq!(parse_mcfg(&table(b"MCFG", &[0; 8])).unwrap(), []);
+        assert_eq!(
+            parse_mcfg(&table(b"MCFG", &[0; 12])),
+            Err(AcpiError::BadEntry)
+        );
+        let mut bad = vec![0u8; 8];
+        bad.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0]);
+        assert_eq!(parse_mcfg(&table(b"MCFG", &bad)), Err(AcpiError::BadEntry));
+    }
 
     /// Sets byte `at` so that the whole slice sums to 0.
     fn fix_checksum(bytes: &mut [u8], at: usize) {

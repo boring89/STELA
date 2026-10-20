@@ -52,7 +52,11 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("initrd programs", initrd_programs),
         ("ports", ports),
         ("ipc programs", ipc_programs),
+        ("pci", pci),
     ];
+    // Let the service threads (console) reach their first wait, so that
+    // their start-up allocations do not land in the middle of a test.
+    task::sleep_ms(1);
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
         test(info);
@@ -1009,4 +1013,36 @@ fn ipc_programs(_: &'static BootInfo) {
     task::sleep_ms(1);
     assert_eq!(task::stats().zombies, 0);
     assert_eq!(pmm::stats().0, free, "ipc memory not freed");
+}
+
+fn pci(_: &'static BootInfo) {
+    use drivers::pci::{self, Bar, system};
+    let devices = system::devices();
+    assert!(system::uses_ecam(), "QEMU q35 has an MCFG");
+    let host = devices
+        .iter()
+        .find(|f| f.class == 0x06 && f.subclass == 0x00)
+        .expect("no host bridge");
+    assert_eq!(host.address.bus, 0);
+    // ECAM and the legacy ports agree on the first registers.
+    let at = host.address;
+    for offset in [0u16, 8, 0x2C] {
+        assert_eq!(
+            system::config().read32(at, offset),
+            frame::pci::legacy_read32(at.bus, at.device, at.function, offset as u8)
+        );
+    }
+    let ahci = devices
+        .iter()
+        .find(|f| f.is(0x01, 0x06, 0x01))
+        .expect("no AHCI controller (q35 has one at 00:1f.2)");
+    // ABAR is BAR5, a 32-bit memory BAR.
+    assert!(matches!(
+        pci::bar(system::config(), ahci, 5),
+        Some(Bar::Memory { size, .. }) if size >= 0x1000
+    ));
+    assert!(pci::find_capability(system::config(), ahci.address, pci::capability::MSI).is_some());
+    let first = frame::irq::alloc_vector().expect("no vector");
+    let second = frame::irq::alloc_vector().expect("no vector");
+    assert!(first >= frame::irq::FIRST_FREE_VECTOR && second == first + 1);
 }

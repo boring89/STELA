@@ -23,7 +23,7 @@
 use crate::arch::x86_64::{apic, interrupts, ioapic, pic};
 use crate::sync::SpinLock;
 use crate::trap::TrapFrame;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 pub use crate::acpi::tables::{Polarity, Trigger};
 
@@ -74,6 +74,25 @@ pub fn register(vector: u8, handler: Handler) -> Result<(), IrqError> {
     }
     *slot = Some(handler);
     Ok(())
+}
+
+/// Last vector [`alloc_vector`] hands out (0xF0-0xFE stay free for later
+/// system uses).
+pub const LAST_DEVICE_VECTOR: u8 = 0xEF;
+
+static NEXT_VECTOR: AtomicU8 = AtomicU8::new(FIRST_FREE_VECTOR);
+
+/// A vector for a device interrupt (MSI), never handed out twice; `None`
+/// when they are used up.
+pub fn alloc_vector() -> Option<u8> {
+    let mut v = NEXT_VECTOR.load(Ordering::Acquire);
+    while v <= LAST_DEVICE_VECTOR {
+        match NEXT_VECTOR.compare_exchange_weak(v, v + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(v),
+            Err(now) => v = now,
+        }
+    }
+    None
 }
 
 /// Removes the handler of `vector`, if any.

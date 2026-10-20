@@ -4,6 +4,7 @@ members = [
     "abi",
     "boot",
     "bootinfo",
+    "drivers",
     "elfload",
     "frame",
     "kernel",

@@ -29,11 +29,11 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi bootinfo elfload frame
+HOST_CRATES := abi bootinfo drivers elfload frame
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel
 # Crates built for the bare-metal kernel target.
-KERNEL_CRATES := abi bootinfo frame kernel
+KERNEL_CRATES := abi bootinfo drivers frame kernel
 # User-space crates (same target).
 USER_CRATES := libstela $(USER_PROGRAMS)
 

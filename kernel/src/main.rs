@@ -59,20 +59,25 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     selftest::run(info);
 
     #[cfg(not(feature = "selftest"))]
-    main_loop();
+    {
+        if let Err(e) = kernel::task::spawn("echo", echo_loop) {
+            panic!("kernel: cannot start the echo thread: {e:?}");
+        }
+        // The boot thread's work is done; the scheduler takes over.
+        kernel::task::exit();
+    }
 }
 
 /// Echoes what is typed and prints the uptime on Enter, sleeping between
-/// events. A placeholder until there are processes (P3) and a shell (P6).
+/// events. A kernel thread; a placeholder until there is a shell (P6).
 #[cfg(not(feature = "selftest"))]
-fn main_loop() -> ! {
+fn echo_loop() {
     use frame::input::{self, InputEvent};
     kprintln!("kernel: ready; type to echo, Enter prints the uptime");
     loop {
         let Some(InputEvent::Key(event)) = input::pop() else {
-            // An event that arrives between pop() and the halt only waits
-            // for the next timer tick (1 ms).
-            frame::halt_until_interrupt();
+            // Poll the input queue every few milliseconds.
+            kernel::task::sleep_ms(4);
             continue;
         };
         match input::key_to_char(&event) {

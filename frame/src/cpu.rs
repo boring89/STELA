@@ -91,6 +91,11 @@ impl PerCpu {
     pub fn set_need_resched(&self) {
         self.need_resched.store(true, Ordering::Relaxed);
     }
+
+    /// Clears the reschedule request and returns whether it was set.
+    pub(crate) fn take_need_resched(&self) -> bool {
+        self.need_resched.swap(false, Ordering::Relaxed)
+    }
 }
 
 /// Set once the boot processor has its area.

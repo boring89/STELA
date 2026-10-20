@@ -43,6 +43,8 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("keyboard", keyboard),
         ("kernel threads", kernel_threads),
         ("thread reaping", thread_reaping),
+        ("preemption", preemption),
+        ("sleep order", sleep_order),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -521,4 +523,76 @@ fn thread_reaping(_: &'static BootInfo) {
     assert_eq!(pmm::stats().0, free, "kernel stacks not freed");
     assert_eq!(heap::stats().used, heap, "thread control blocks not freed");
     kprintln!("selftest:   16 threads exited and freed, {free} frames free");
+}
+
+static SPIN_STOP: AtomicU64 = AtomicU64::new(0);
+static SPINS: AtomicU64 = AtomicU64::new(0);
+static SPIN_EXITED: AtomicU64 = AtomicU64::new(0);
+
+fn preemption(_: &'static BootInfo) {
+    // A thread that never yields: only the timer can take the processor
+    // away from it.
+    task::spawn("spinner", || {
+        while SPIN_STOP.load(Ordering::Acquire) == 0 {
+            SPINS.fetch_add(1, Ordering::Relaxed);
+            core::hint::spin_loop();
+        }
+        SPIN_EXITED.store(1, Ordering::Release);
+    })
+    .expect("spawn failed");
+    // Let it start, then sleep: main must come back within 100 ms although
+    // the spinner keeps the processor busy.
+    task::yield_now();
+    for _ in 0..5 {
+        let start = time::ticks();
+        task::sleep_ms(10);
+        let took = time::ticks() - start;
+        assert!(
+            (10..100).contains(&took),
+            "sleep_ms(10) took {took} ticks next to a spinner"
+        );
+    }
+    let spins = SPINS.load(Ordering::Relaxed);
+    assert!(spins > 0, "the spinner never ran");
+    // Without yielding, main still gets time slices.
+    let start = time::ticks();
+    while time::ticks() < start + 30 {
+        core::hint::spin_loop();
+    }
+    assert!(
+        SPINS.load(Ordering::Relaxed) > spins,
+        "main was never preempted"
+    );
+    SPIN_STOP.store(1, Ordering::Release);
+    while SPIN_EXITED.load(Ordering::Acquire) == 0 {
+        task::yield_now();
+    }
+    kprintln!(
+        "selftest:   spinner looped {} times",
+        SPINS.load(Ordering::Relaxed)
+    );
+}
+
+static WOKEN: SpinLock<Vec<u64>> = SpinLock::new(Vec::new());
+
+fn sleep_order(_: &'static BootInfo) {
+    for ms in [30u64, 10, 20, 0] {
+        task::spawn("sleeper", move || {
+            let start = time::now_ns();
+            task::sleep_ms(ms);
+            let slept = time::now_ns() - start;
+            assert!(slept >= ms * 1_000_000, "sleep_ms({ms}) took {slept} ns");
+            WOKEN.lock().push(ms);
+        })
+        .expect("spawn failed");
+    }
+    let deadline = time::ticks() + 1000;
+    while WOKEN.lock().len() < 4 {
+        assert!(time::ticks() < deadline, "sleepers did not wake up");
+        task::sleep_ms(1);
+    }
+    assert_eq!(*WOKEN.lock(), [0, 10, 20, 30]);
+    // Let the last one finish exiting.
+    task::sleep_ms(1);
+    assert_eq!(task::stats().sleeping, 0);
 }

@@ -24,9 +24,18 @@ impl fmt::Write for Both {
     }
 }
 
+/// Keeps one `kprint!` from being interleaved with another: with threads
+/// and preemption, two lines could otherwise mix on the serial port. Held
+/// with interrupts disabled, so an interrupt handler cannot run into it on
+/// the same processor. Panics bypass it (they write the serial port
+/// directly).
+#[cfg(target_os = "none")]
+static PRINT: crate::sync::SpinLock<()> = crate::sync::SpinLock::new(());
+
 #[doc(hidden)]
 #[cfg(target_os = "none")]
 pub fn _print(args: fmt::Arguments) {
+    let _guard = PRINT.lock();
     // Neither output can fail.
     let _ = fmt::Write::write_fmt(&mut Both, args);
 }

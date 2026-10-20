@@ -148,6 +148,66 @@ pub fn init() {
         idle_id,
         zombies: Vec::new(),
     });
+    drop(cpu);
+    frame::time::set_tick_hook(tick);
+    frame::task::set_scheduler(preempt);
+}
+
+/// Runs on every timer tick (1 ms), inside the interrupt: wakes the
+/// sleepers whose time has come and counts down the running thread's time
+/// slice. When the slice is used up and someone else is ready, or the idle
+/// thread runs while someone is ready, it asks for a reschedule at the end
+/// of the interrupt.
+fn tick() {
+    let now = frame::time::now_ns();
+    let resched = with(|s| {
+        while let Some(mut t) = s.sleeping.pop_expired(now) {
+            t.state = State::Ready;
+            s.ready.push(t);
+        }
+        let idle_id = s.idle_id;
+        let ready = !s.ready.is_empty();
+        let t = current_mut(s);
+        if t.id == idle_id {
+            return ready;
+        }
+        t.slice = t.slice.saturating_sub(1);
+        if t.slice == 0 {
+            t.slice = TIME_SLICE;
+            return ready;
+        }
+        false
+    });
+    if resched {
+        frame::cpu::current().set_need_resched();
+    }
+}
+
+/// The preemption point registered with `frame::task`: called at the end
+/// of an interrupt that asked for a reschedule.
+fn preempt() {
+    schedule();
+}
+
+/// Sleeps for at least `ns` nanoseconds. Wake-ups happen on timer ticks,
+/// so the sleep is rounded up to the next millisecond or so.
+pub fn sleep_ns(ns: u64) {
+    let _irq = IrqGuard::new();
+    // Without an invariant TSC the clock counts whole ticks and may lag the
+    // real time by up to one tick; one more makes the minimum hold.
+    let lag = if frame::time::tsc_invariant() {
+        0
+    } else {
+        1_000_000_000 / frame::time::TICK_HZ
+    };
+    let wake_at = frame::time::now_ns().saturating_add(ns).saturating_add(lag);
+    with(|s| current_mut(s).state = State::Sleeping(wake_at));
+    schedule();
+}
+
+/// Sleeps for at least `ms` milliseconds.
+pub fn sleep_ms(ms: u64) {
+    sleep_ns(ms.saturating_mul(1_000_000));
 }
 
 /// The idle thread: waits for interrupts, and gives the processor away as

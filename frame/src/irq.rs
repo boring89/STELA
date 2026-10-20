@@ -106,6 +106,12 @@ pub(crate) fn dispatch(frame: &TrapFrame) {
         }
     }
     apic::eoi();
+    // Preemption point: the interrupt is over (EOI sent), so if the
+    // handler asked for it, let the scheduler switch away. The interrupt
+    // frame stays on this thread's stack until it runs again and returns.
+    if crate::cpu::current().take_need_resched() {
+        crate::task::preempt();
+    }
 }
 
 /// Masks the 8259s, enables the local APIC of the boot processor, sets up
@@ -154,7 +160,8 @@ pub fn legacy_pic_masks() -> u16 {
     pic::masks()
 }
 
-/// Enables interrupts.
+/// Enables interrupts (they are enabled after `frame::init`; this is for
+/// code that starts with them disabled, like a new thread).
 pub(crate) fn enable() {
     interrupts::enable();
 }

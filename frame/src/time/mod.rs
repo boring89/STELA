@@ -25,7 +25,7 @@
 pub mod calc;
 
 #[cfg(target_os = "none")]
-pub use target::{now_ns, sleep_ms, ticks, tsc_hz, tsc_invariant};
+pub use target::{now_ns, set_tick_hook, sleep_ms, ticks, tsc_hz, tsc_invariant};
 
 #[cfg(target_os = "none")]
 pub(crate) use target::init;
@@ -102,9 +102,22 @@ mod target {
         )
     }
 
+    /// The kernel's per-tick function (the scheduler's clock).
+    static TICK_HOOK: Once<fn()> = Once::new();
+
+    /// Registers a function called on every timer tick, inside the
+    /// interrupt (interrupts disabled; it must be short). Only the first
+    /// registration counts.
+    pub fn set_tick_hook(hook: fn()) {
+        let _ = TICK_HOOK.set(hook);
+    }
+
     fn timer_interrupt(_: &TrapFrame) {
         TICKS.fetch_add(1, Ordering::Relaxed);
         crate::cpu::current().tick();
+        if let Some(hook) = TICK_HOOK.get() {
+            hook();
+        }
     }
 
     /// Calibrates the APIC timer and the TSC against the PIT, then starts

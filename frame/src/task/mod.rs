@@ -24,6 +24,7 @@ pub mod stack;
 
 use crate::arch::x86_64::{context, gdt};
 use crate::cpu;
+use crate::sync::Once;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
@@ -95,6 +96,25 @@ impl TaskContext {
     /// Whether the context saves the FPU/SSE state.
     pub fn has_fpu(&self) -> bool {
         self.fpu.is_some()
+    }
+}
+
+/// The kernel's scheduler entry for preemption, see [`set_scheduler`].
+static SCHEDULER: Once<fn()> = Once::new();
+
+/// Registers the function called at the end of an interrupt when the
+/// handler asked for a reschedule (`PerCpu::set_need_resched`). It runs
+/// with interrupts disabled, on the interrupted thread's stack, and may
+/// switch to another thread. Only the first registration counts.
+pub fn set_scheduler(schedule: fn()) {
+    let _ = SCHEDULER.set(schedule);
+}
+
+/// Called by `irq::dispatch` after the EOI when a reschedule was asked
+/// for.
+pub(crate) fn preempt() {
+    if let Some(schedule) = SCHEDULER.get() {
+        schedule();
     }
 }
 

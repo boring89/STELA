@@ -24,11 +24,11 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := bootinfo elfload frame
+HOST_CRATES := abi bootinfo elfload frame
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel
 # Crates built for the bare-metal kernel target.
-KERNEL_CRATES := bootinfo frame kernel
+KERNEL_CRATES := abi bootinfo frame kernel
 
 .PHONY: all boot kernel esp esp-test run test test-host test-qemu test-qemu-min test-fb clippy fmt clean
 
@@ -73,7 +73,8 @@ SEND_KEYS := --send-keys "input: waiting" "s t e l a ret"
 
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --expect "STELA boot loader" \
-		--expect "STELA kernel" --expect "input: OK" --expect "selftest: OK" \
+		--expect "STELA kernel" --expect "input: OK" \
+		--expect "user: hello from built-in user code" --expect "selftest: OK" \
 		-- $(QEMU) $(QEMU_TEST_FLAGS)
 
 test-qemu-min: esp-test $(BUILD)/OVMF_VARS.fd

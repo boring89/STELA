@@ -26,6 +26,7 @@ bench = false
 selftest = []
 
 [dependencies]
+abi = { path = "../abi" }
 frame = { path = "../frame" }
 
 [lints]

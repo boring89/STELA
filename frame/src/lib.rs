@@ -29,6 +29,8 @@ pub mod qemu;
 pub mod serial;
 pub mod sync;
 #[cfg(target_os = "none")]
+pub mod syscall;
+#[cfg(target_os = "none")]
 pub mod task;
 pub mod time;
 pub mod trap;
@@ -49,6 +51,8 @@ pub fn init(info: &'static bootinfo::BootInfo) {
     acpi::init(info);
     irq::init(acpi::madt());
     task::init();
+    arch::x86_64::syscall::init();
+    arch::x86_64::enable_smep();
     input::init();
     time::init();
     irq::enable();

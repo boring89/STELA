@@ -15,6 +15,7 @@ pub(crate) mod ioapic;
 pub(crate) mod msr;
 pub(crate) mod pic;
 pub(crate) mod pit;
+pub(crate) mod syscall;
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -70,4 +71,34 @@ pub(crate) fn halt_forever() -> ! {
         // loop halts again afterwards.
         unsafe { asm!("cli", "hlt", options(nomem, nostack)) };
     }
+}
+
+/// Whether SMEP (supervisor-mode execution prevention) is on.
+static SMEP: AtomicBool = AtomicBool::new(false);
+
+/// Turns on SMEP when the processor has it (CPUID.(EAX=07H,ECX=0):EBX[7]):
+/// with CR4.SMEP (bit 20) set, ring 0 cannot execute pages that ring 3 can
+/// reach (Intel SDM Vol. 3A 4.6.1 "Determination of Access Rights").
+pub(crate) fn enable_smep() {
+    let max = core::arch::x86_64::__cpuid(0).eax;
+    if max < 7 || core::arch::x86_64::__cpuid_count(7, 0).ebx & (1 << 7) == 0 {
+        return;
+    }
+    // SAFETY: the kernel never executes user pages, so forbidding it only
+    // turns a bug into a page fault.
+    unsafe {
+        asm!(
+            "mov {tmp}, cr4",
+            "bts {tmp}, 20",
+            "mov cr4, {tmp}",
+            tmp = out(reg) _,
+            options(nostack)
+        )
+    };
+    SMEP.store(true, Ordering::Relaxed);
+}
+
+/// Whether SMEP is enabled.
+pub fn smep_enabled() -> bool {
+    SMEP.load(Ordering::Relaxed)
 }

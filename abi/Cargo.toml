@@ -1,0 +1,14 @@
+[package]
+name = "abi"
+description = "The STELA system-call ABI, shared by the kernel and user programs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+
+[lints]
+workspace = true

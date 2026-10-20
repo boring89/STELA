@@ -4,14 +4,15 @@ STELA is an operating system written from scratch in Rust for x86-64 PCs with UE
 It inherits the design philosophy of the classic Macintosh — simplicity, directness, a spatial
 file manager — and adds what a modern operating system needs. It depends on no Apple component;
 a classic Macintosh environment (the user's own ROM and System running on a 68k interpreter)
-is planned as an optional, isolated compatibility layer, next to a Linux compatibility layer.
+is an optional, isolated compatibility layer, next to a Linux compatibility layer.
 
 STELA is the successor of [68k_HAL](https://github.com/boring89/68k_HAL) (C, archived at v1.0),
-whose experience it reuses and whose code it does not.
+whose experience it reuses and whose code it does not — except the Classic environment, which
+is a reduced 68k_HAL by definition (see [classic/README.md](classic/README.md)).
 
 ## Status
 
-Early (phase P9 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+Early (phase P10 of [the plan](docs/architecture.md); P10 is not reviewed yet): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -44,7 +45,13 @@ comes from PS/2 and from USB (xHCI, hubs, HID boot keyboards and mice, hot plugg
 desktop belongs to Mouseion, a spatial file manager: one icon per volume, one window per
 folder that remembers its place (in eHFS's Finder information), double clicks to open folders,
 run `.app` bundles and view text, drag and drop to move or copy. The boot screen shows a stela
-and a kernel panic a cracked one (all icons are drafts for now). Only the boot processor runs. See
+and a kernel panic a cracked one (all icons are drafts for now). P10 adds: a bootable disk
+image for real machines with boot options in `STELA/boot.cfg`; the Classic environment
+(`Classic.app`: Musashi and 68k_HAL's Macintosh IIci model in a window, booting the user's own
+ROM and System 7 to the Finder); networking (e1000, e1000e/I219 and virtio-net drivers, a
+protocol stack with DHCP, ARP, ICMP, UDP and TCP, socket system calls and BSD sockets for Linux
+programs, `ifconfig`, `ping`, `fetch`); sound output (Intel HD Audio, `tone`); and SMP (the
+application processors start and run processes, each process on one processor). See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
@@ -52,20 +59,26 @@ and a kernel panic a cracked one (all icons are drafts for now). Only the boot p
 [docs/ehfs.md](docs/ehfs.md), [docs/vfs.md](docs/vfs.md), [docs/userland.md](docs/userland.md),
 [docs/acpi.md](docs/acpi.md), [docs/linux.md](docs/linux.md), [docs/display.md](docs/display.md),
 [docs/window.md](docs/window.md), [docs/toolbox.md](docs/toolbox.md), [docs/usb.md](docs/usb.md),
-[docs/mouseion.md](docs/mouseion.md) and [docs/identity.md](docs/identity.md).
+[docs/mouseion.md](docs/mouseion.md), [docs/identity.md](docs/identity.md),
+[docs/p520.md](docs/p520.md), [docs/classic.md](docs/classic.md), [docs/net.md](docs/net.md),
+[docs/sound.md](docs/sound.md) and [docs/smp.md](docs/smp.md).
 
 ## Building
 
 Requirements: `rustup` (the pinned toolchain and targets are installed automatically from
 `rust-toolchain.toml`), `qemu-system-x86`, `ovmf`, `python3`, `make`, GNU `tar`, `mtools`,
 `gdisk` (the last two make test disk images), `gcc` (builds musl, MIT, for the Linux test
-programs; the musl tarball is copied, not downloaded: see [third_party/README.md](third_party/README.md)).
+programs, and the Classic environment's C code; the musl tarball is copied, not downloaded: see
+[third_party/README.md](third_party/README.md)), `binutils-m68k-linux-gnu` (the Classic
+environment's 68k test programs).
 
 ```bash
 make        # build the loader, the kernel, the user programs and the initrd into build/esp/
 make run    # boot it in QEMU with OVMF into the desktop (Mouseion and a terminal), serial on stdio
 make test   # host unit tests + QEMU self tests (keys typed via QMP) + a screen check + disk tests
 make ehfs-tools  # mkfs.ehfs, fsck.ehfs, ehfs-cp, ehfs-ls for image files, in build/host/ehfs/
+make disk-image  # build/stela.img for a USB stick (writing it is your own step: docs/p520.md)
+make test-classic  # local only: boots your own Mac IIci ROM and System to the Finder
 ```
 
 ## License
@@ -75,6 +88,10 @@ GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
 musl is not part of the repository; the Linux test programs in the initrd are linked with it
 (MIT). The Spleen font in `third_party/spleen/` is by Frederic Cambus and is under the BSD 2-Clause
 license (see [third_party/spleen/LICENSE](third_party/spleen/LICENSE)).
+
+The Classic environment's `classic/musashi/` is Karl Stenerud's Musashi (MIT) with John R.
+Hauser's SoftFloat (see `classic/musashi/softfloat/README.txt`); `classic/c/` comes from 68k_HAL
+(GPL-3.0-or-later). No Apple ROM, System software, fonts or headers are in the repository.
 
 `ehfs/src/unicode_data.rs` is generated from the Unicode Character Database 15.0.0 and carries
 the Unicode License V3 (included in the file).

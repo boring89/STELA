@@ -45,8 +45,11 @@ jobs:
         # programs, PCI, AHCI and NVMe disks, GPT, FAT and eHFS volumes over
         # two boots, processes, the Linux personality), a framebuffer
         # screendump check after a command was typed into the shell, a
-        # scripted shell session, shutdown and reboot, and the static musl
-        # test programs run from the shell.
+        # scripted shell session (on two processors), shutdown and reboot,
+        # the static musl test programs run from the shell; P10: boot
+        # options, the disk image, networking on three cards (slirp and a
+        # local HTTP server), sound recorded to a WAV file, and the self
+        # tests on four processors.
         # Builds the user programs and packs the initrd with
         # the runner's GNU tar. No KVM needed.
         run: make test

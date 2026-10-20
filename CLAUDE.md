@@ -15,6 +15,7 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 - **開機**：自己的 UEFI loader（`boot/`，`uefi` crate），不用 Limine／GRUB。
 - **使用者程式**：STELA 自己的 syscall ABI 是主要介面；Linux 等其他系統的相容是相容層，與 Classic 環境同級。
 - **Classic 環境**：縮減版 68k_HAL（Musashi 直譯 + Mac 機器模型）跑在使用者空間行程，呈現方式類似 Windows 7 的 XP Mode；執行使用者自己的 ROM 與 System，是可選功能。
+- **Classic 環境（P10）**：`classic/` 是 STELA 原生程式（Rust 包裝 + C 核心經 FFI，不是 Linux 相容程式；`docs/architecture.md` H 的註記）。
 - **識別**：標誌是一塊石碑（stela），panic 畫面是裂開的石碑，檔案管理員叫 Mouseion，主題是古希臘；P9 做了機制與**草稿**圖示（`assets/`、`docs/identity.md`），正式的圖由使用者畫。
 
 ## 建置與執行
@@ -185,6 +186,7 @@ Claude 依照上方工作規則直接實作。
 - P7（自動排程一次做完，使用者已審核（2026-10-20））：Linux 相容層（`docs/linux.md`）
 - P8（自動排程一次做完，使用者已審核（2026-10-20））：USB、顯示、視窗伺服器、工具箱（`docs/usb.md`、`docs/display.md`、`docs/window.md`、`docs/toolbox.md`）
 - P9（自動排程一次做完，使用者已審核（2026-10-20））：Mouseion 與識別（`docs/mouseion.md`、`docs/identity.md`）
+- P10（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：實機映像（`docs/p520.md`）、Classic 環境（`docs/classic.md`）、網路（`docs/net.md`）、音效（`docs/sound.md`）、SMP（`docs/smp.md`）
 
 ## 已知問題（尚未修正）
 

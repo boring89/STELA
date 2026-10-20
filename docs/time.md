@@ -1,6 +1,6 @@
 # 時間：PIT 校準、APIC timer 與單調時鐘
 
-> P2 由自動排程一次做完，**使用者尚未審核**。之後修改前請先帶使用者過一遍這份文件。
+> P2 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 程式碼：`frame/src/time/`（`calc.rs` 純邏輯、`mod.rs`）、`frame/src/arch/x86_64/pit.rs`、`apic.rs` 的 timer 暫存器。中斷的部分見 `docs/irq.md`。
 

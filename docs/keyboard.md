@@ -1,6 +1,6 @@
 # 鍵盤與輸入事件：i8042、掃描碼 set 1、KeyCode、事件佇列
 
-> P2 由自動排程一次做完，**使用者尚未審核**。之後修改前請先帶使用者過一遍這份文件。
+> P2 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 程式碼：`frame/src/arch/x86_64/i8042.rs`（控制器）、`frame/src/input/keyboard.rs`（解碼、KeyCode、字元，純邏輯）、`frame/src/input/queue.rs`（ring buffer，純邏輯）、`frame/src/input/mod.rs`（中斷處理與全域佇列）、`kernel/src/main.rs`（echo 主迴圈）、`tools/qemu_test.py`（QMP 打字）。
 

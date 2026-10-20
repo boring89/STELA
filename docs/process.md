@@ -1,6 +1,6 @@
 # 行程、執行緒與使用者模式
 
-> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。
+> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（`block_until`、`WaitQueue`、被 kill 時阻塞點的重檢查、共享映射與映射區、行程的 handle 表）**使用者尚未審核**，見 `docs/ipc.md`。
 
 這份文件說明 STELA 怎麼讓「很多件事輪流做」：kernel 執行緒、排程與搶佔、context 切換、每個行程自己的位址空間、進出 ring 3、使用者程式出錯時怎麼收拾，以及第一個使用者程式怎麼從 initrd 載入。syscall 的 ABI 與 libstela 見 `docs/syscall.md`。
 
@@ -72,7 +72,7 @@ frame 不知道「下一個該誰」，kernel 不碰暫存器與分頁表。kern
 | 欄位 | 意思 |
 |---|---|
 | `id` | 全域遞增的 u64（`AtomicU64`），不重用；行程 id 另一組 |
-| `name` | `"main"`、`"idle"`、`"echo"`、`"user"`… |
+| `name` | `"main"`、`"idle"`、`"console"`、`"input-router"`、`"user"`… |
 | `state` | `Ready`／`Running`／`Sleeping(wake_at)`／`Blocked`／`Zombie` |
 | `priority` | `u8`，存著但沒有政策（單一等級 round-robin） |
 | `slice` | 這次時間片還剩幾個 tick（從 10 開始） |
@@ -252,6 +252,8 @@ QEMU 實測：一個從不讓出的 spinner 旁邊，主執行緒 `sleep_ms(10)`
 ```
 
   解法：`wake` 對一個還在跑（或在 ready 裡）的執行緒設 `wake_pending`；`block` 看到 `wake_pending` 就清掉、直接返回；`wait_process` 迴圈重新檢查。`block` 的「決定要睡」與 `schedule` 之間關著中斷，所以單顆 CPU 上 `wake` 不會插在中間；SMP 時要改成持排程器的鎖跨過切換。
+- `block_until(deadline)`（P4）：可逾時的 `block`。執行緒以 `Sleeping(deadline)` + `wakeable` 進睡眠清單；tick 到期時標 `timed_out`，`wake(id)` 也會到睡眠清單找 wakeable 的那個提早放回 ready。回傳是否被叫醒。port 的收方用它（`docs/ipc.md` §9）；`WaitQueue`（`queue.rs`）記錄在某個物件上等的執行緒 id。
+- `current_killed()`（P4）：阻塞點醒來後先看自己的行程是否被 kill，是就放棄等待（§14）。
 
 ### 6.4 idle
 
@@ -283,13 +285,14 @@ QEMU 實測：一個從不讓出的 spinner 旁邊，主執行緒 `sleep_ms(10)`
 | 函式 | 說明 |
 |---|---|
 | `map(virt, PhysFrame, UserFlags)` | `virt < 0x0000_8000_0000_0000`、4 KiB 對齊；中間表 P\|W\|U，葉子 P\|U（\|W）（\|NX，有 NX 才設）；吃掉頁框的所有權憑證 |
-| `unmap(virt) -> PhysFrame` | 還回憑證 |
+| `unmap(virt) -> PhysFrame` | 還回憑證（共享頁拒絕） |
+| `map_shared(virt, &SharedMemory, flags)`／`unmap_shared(virt)` | P4：映射共享記憶體的全部頁；葉子帶軟體位元 9，`Drop` 不釋放那些頁框；位址空間持有物件的一份 clone 直到 unmap（`docs/ipc.md` §5） |
 | `translate(virt)` | 已映射的使用者頁才有值 |
 | `check(virt, len, write)` | 每一頁都已映射、U/S=1（寫入時還要 W=1）、不溢位、不超出使用者半部 |
 | `read(virt, &mut buf)`、`write(virt, &buf)` | copy_from_user／copy_to_user：先 `check` 全部，再一頁一頁**經 HHDM** 複製 |
 | `load(virt, &buf)` | 同 `write` 但不要求 W（載入程式到唯讀頁） |
 | `activate()` | CR3 ≠ 自己才寫 CR3 |
-| `Drop` | 若是目前的 CR3，先切回 kernel 的 PML4；再走 0..255 的表，把所有葉子頁框、中間表、PML4 還給 PMM |
+| `Drop` | 若是目前的 CR3，先切回 kernel 的 PML4；再走 0..255 的表，把所有自己的葉子頁框（不含 bit 9 的共享頁）、中間表、PML4 還給 PMM |
 
 kernel **從不直接解參考使用者位址**：壞指標在檢查時就變成錯誤值（`BadAddress`），不會在 kernel 裡 page fault，也不需要 SMAP 的 `stac`/`clac`。U/S 位元的規則見 Vol. 3A §4.6。
 
@@ -297,6 +300,8 @@ kernel **從不直接解參考使用者位址**：壞指標在檢查時就變成
 
 ```
  0x0000_0000_0040_0000   程式（user/user.ld）：text R-X、rodata R--、data RW-，各自 4 KiB 對齊
+       …
+ 0x0000_1000_0000_0000   MAP_BASE：MemoryMap 的映射區（P4，到 MAP_END = 0x0000_7000_0000_0000）
        …
  0x0000_7FFF_FFDF_F000   guard 頁（不映射；堆疊溢位 → page fault → 行程被殺）
  0x0000_7FFF_FFE0_0000   主執行緒的堆疊 1 MiB，載入時全部映射（清零）
@@ -435,12 +440,17 @@ pub struct Process {
     space: AddressSpace,
     live: AtomicUsize,               // 建立了、還沒回收的執行緒數
     exit_code: SpinLock<Option<i64>>,
+    handles: SpinLock<HandleTable>,  // P4：handle 表（docs/ipc.md §3）
+    main_port: Arc<Port>,            // P4：主 port（handle [0]）
+    ports: SpinLock<Vec<Weak<Port>>>,// P4：它建立的 port，結束時 close
+    maps: SpinLock<Regions>,         // P4：映射區的區間
 }
 static TABLE: SpinLock<BTreeMap<ProcessId, Status>>;   // Running { waiters } | Exited(code)
 ```
 
 - `process::create(name)`、`spawn_user(&process, entry, rsp, arg)`（行程正在結束就拒絕）。
-- 最後一個執行緒被回收 → `finish(id, code)`：表裡改成 `Exited`、叫醒所有 waiter。
+- `process::create_with(name, bootstrap)`（P4）：建立時放好初始 handle `[0]` 主 port、`[1]` console、`[2]` bootstrap。
+- 最後一個執行緒被回收 → `release()`（放掉所有 handle、close 它建立的 port）→ `finish(id, code)`：表裡改成 `Exited`、叫醒所有 waiter。
 - `wait_process(id) -> Option<i64>`：kernel 內部的（不是 syscall）；`Exited` 就回傳，否則登記成 waiter 後 `block()`，醒來再檢查。狀態會留著，再等一次還是同一個值。未知 id 回 `None`。
 - `exit_status(id)`：不等待，只看。
 - 從沒有執行緒的行程（載入失敗）drop 時以 −1 結束，等它的人不會永遠等。
@@ -505,19 +515,19 @@ kernel 端 `frame::mm::initrd()` 檢查範圍落在某個 KernelAndBoot 區段�
 ### 12.5 `make run` 的開機流程
 
 ```
- kernel_main（boot 執行緒）→ task::init → syscall::init → spawn("init") → exit()
- init：spawn_from_initrd("hello") → wait_process → 印 exit code → echo 迴圈
+ kernel_main（boot 執行緒）→ task::init → syscall::init → console::start → spawn("init") → exit()
+ init：hello（等它結束、印 exit code）→ input::start（input-router）→ echo（等它，永遠）
 ```
 
 ```
 hello from user mode
 hello from a second thread (argument 7)
-hello: thread 5 finished within 2000 us
+hello: thread 6 finished within 2000 us
 kernel: hello (process 1) exited with code 0
-kernel: ready; type to echo, Enter prints the uptime
+echo: ready; type to echo, Enter prints the uptime
 ```
 
-echo 迴圈沒有輸入時 `sleep_ms(4)`（之前是 `hlt`，現在 CPU 讓給別人）。
+P4 起 echo 是使用者程式（`user/echo`，`docs/ipc.md` §8），kernel 的 echo 迴圈刪除。
 
 ## 13. 測試
 
@@ -534,7 +544,8 @@ echo 迴圈沒有輸入時 `sleep_ms(4)`（之前是 `hlt`，現在 CPU 讓給�
 | selftest "user mode faults" | 內建機器碼：`ud2`→134、讀 0→142、讀 kernel 位址→142（error code 0x5：保護違規、使用者）、`hlt`→141、`jmp $` 被搶佔、`kill`→99；`AddressSpace` 的 check／write 拒絕；結束後 PMM 回到原值 |
 | selftest "system calls"／"elf loading" | 見 `docs/syscall.md` |
 | selftest "initrd programs" | hello→0（`make test-qemu` 檢查兩個執行緒的輸出）、fault→142、spin→0 且主執行緒 5 次 `sleep_ms(10)` 都 < 100 tick；之後沒有 Zombie、PMM 回到原值 |
-| `make test-fb` | 一般 kernel：serial 依序出現 `hello from user mode`、`exited with code 0`、`kernel: ready`，打 `h i ret` 後 `uptime:`，畫面檢查 |
+| `make test-fb` | 一般 kernel：serial 依序出現 `hello from user mode`、`exited with code 0`、`echo: ready`，打 `h i ret` 後 `uptime:`，畫面檢查 |
+| P4 的測試 | 見 `docs/ipc.md` §11（"ports"、"ipc programs"） |
 | `make test-qemu-min` | 同 selftest，`-cpu Conroe,-nx -m 256M`（沒有 NX：程式段全部可執行，W^X 只剩 W） |
 
 另外手動做過 6 個 selftest QEMU 並行（各自一份 ESP 副本），都通過。
@@ -548,7 +559,6 @@ echo 迴圈沒有輸入時 `sleep_ms(4)`（之前是 `hlt`，現在 CPU 讓給�
 - 位址空間：只有 4 KiB 頁；沒有需求分頁、copy-on-write、`mmap`／`munmap` 類的 syscall；空掉的中間表不回收（只在整個位址空間 drop 時一起釋放）。kernel 半部不能新增 PML4 項目（§7.1）。
 - 使用者 FPU 只有 FXSAVE（x87/SSE），沒有 XSAVE/AVX。
 - NMI、#MC 若剛好發生在 `swapgs` 前後或 `sysret` 前（使用者 RSP 已載入）會用錯 GS／堆疊；它們沒有 IST（NMI 現在被遮蔽在 LINT1）。之後給 NMI/#MC/#DB 各自的 IST，並在 stub 裡用 GS_BASE 的值判斷而不是 CS。
-- 被 kill 的行程的其他執行緒要等到下一次回 ring 3 才結束；若有一個停在 kernel 裡永遠不回來（例如之後的 IPC 無限期 block 而沒有被叫醒），它就不會結束——`kill` 會把 blocked 的搬回 ready，但之後的阻塞點要記得醒來後檢查。SMP 時，正在別顆 CPU 上跑的執行緒要靠 IPI 讓它進 kernel。
+- 被 kill 的行程的其他執行緒要等到下一次回 ring 3 才結束；`kill` 會把 blocked／sleeping 的搬回 ready，每個阻塞點醒來後要檢查 `current_killed()`（P4 的 `Port::receive` 有做；之後新增的阻塞點也要做）。SMP 時，正在別顆 CPU 上跑的執行緒要靠 IPI 讓它進 kernel。
 - 行程表的 `Exited` 狀態永遠不清（沒有「回收狀態」的動作，P4 有 handle 之後再定）。
 - 使用者程式的 `.data`／`.bss` 若是空的，連結出來的空 PT_LOAD 會被 `elfload` 拒絕（目前三個程式都有資料，未實際遇到）。
-- `DebugWrite` 是暫時的（P4 之後改成 console 服務的 handle）。

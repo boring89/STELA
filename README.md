@@ -11,7 +11,7 @@ whose experience it reuses and whose code it does not.
 
 ## Status
 
-Early (phase P3 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
+Early (phase P4 of [the plan](docs/architecture.md)): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -21,13 +21,17 @@ legacy 8259s and runs on the local and I/O APICs, with a per-CPU area, a 1000 Hz
 calibrated against the PIT, a monotonic clock (TSC when invariant) and a PS/2 keyboard feeding
 an input event queue. It has kernel threads with a preemptive round-robin scheduler (10 ms time
 slices, sleeping, blocking), processes with their own address spaces, ring 3 user mode entered
-through `iretq` and left through `syscall`/`sysret`, seven system calls, and a small user
-runtime (libstela). `make run` starts the `hello` program from the initrd (two threads printing
-from user mode), then echoes what you type and prints the uptime on Enter; a faulting program
-is killed and the kernel goes on. Only the boot processor runs. See
+through `iretq` and left through `syscall`/`sysret`, and a small user runtime (libstela).
+Processes hold capabilities: handles with rights in a per-process table, to ports (message
+queues carrying small messages and handles) and shared memory; output goes through a console
+service and keyboard events arrive as messages. `make run` starts the `hello` program from the
+initrd (two threads printing from user mode), then the `echo` program, which echoes what you
+type and prints the uptime on Enter; a faulting program is killed and the kernel goes on. Only
+the boot processor runs. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
-[docs/process.md](docs/process.md) and [docs/syscall.md](docs/syscall.md).
+[docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md) and
+[docs/ipc.md](docs/ipc.md).
 
 ## Building
 

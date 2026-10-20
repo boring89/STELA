@@ -1,8 +1,8 @@
 # 鍵盤與輸入事件：i8042、掃描碼 set 1、KeyCode、事件佇列
 
-> P2 由自動排程一次做完，使用者已於 2026-10-20 審核。
+> P2 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（`KeyCode`／`KeyEvent`／`key_to_char` 搬到 `abi::key`、notify hook、input-router 與使用者程式 echo 取代 kernel 主迴圈，§7）**使用者尚未審核**。
 
-程式碼：`frame/src/arch/x86_64/i8042.rs`（控制器）、`frame/src/input/keyboard.rs`（解碼、KeyCode、字元，純邏輯）、`frame/src/input/queue.rs`（ring buffer，純邏輯）、`frame/src/input/mod.rs`（中斷處理與全域佇列）、`kernel/src/main.rs`（echo 主迴圈）、`tools/qemu_test.py`（QMP 打字）。
+程式碼：`frame/src/arch/x86_64/i8042.rs`（控制器）、`frame/src/input/keyboard.rs`（解碼，純邏輯）、`abi/src/key.rs`（KeyCode、KeyEvent 與其 4 bytes 編碼、字元，純邏輯；P4 從 frame 搬來，使用者程式也用）、`frame/src/input/queue.rs`（ring buffer，純邏輯）、`frame/src/input/mod.rs`（中斷處理、全域佇列、notify hook）、`kernel/src/input.rs`（input-router）、`user/echo`、`tools/qemu_test.py`（QMP 打字）。
 
 ## 1. 比喻：打字員、翻譯與信箱
 
@@ -22,7 +22,7 @@
                                      EventQueue<InputEvent, 256>  ◄── 之後 USB HID（P8）也推這裡
                                                          │ pop()
                                                          ▼
-                                     kernel 主迴圈：key_to_char → echo
+                     （P4）input-router → INPUT_KEY 訊息 → user/echo：key_to_char → 印
 ```
 
 ## 2. 名詞
@@ -134,18 +134,9 @@ N = 4，push 1 2 3 4 5：
 
 鎖：佇列是 `SpinLock`。中斷處理程式在 IF=0 時 push；主迴圈 pop 時 SpinLock 會關中斷，所以中斷不可能在主迴圈持鎖時進來 push（`docs/irq.md` §11）。
 
-## 7. kernel 主迴圈（`make run`）
+## 7. 事件的去向（P4 起）
 
-```rust
-loop {
-    match input::pop() {
-        Some(Key(e)) => echo(key_to_char(&e)),   // 字元照印；控制字元印成 ^X（Backspace = ^H）
-        None => kernel::task::sleep_ms(4),       // P3 起：讓出 CPU，4 ms 後再看
-    }
-}
-```
-
-Enter 換行後印 `uptime: 0.307 s, 307 ticks`。輸出經 `kprint!` 同時到畫面與 serial。P2 時沒有事件就 `sti; hlt`；P3 起它是 kernel 執行緒 `init`（先跑完 initrd 的 `hello`，`docs/process.md` §12.5），沒有事件就睡 4 ms 讓別的執行緒用 CPU，所以按鍵最多延遲約 5 ms 才印出。
+P2–P3 時 kernel 的 `init` 執行緒每 4 ms 輪詢佇列並 echo。P4 起：`frame::input::push` 之後呼叫 kernel 註冊的 notify hook（中斷裡，只叫醒 `input-router` 執行緒）；router 把事件編成 4 bytes 的 `INPUT_KEY` 訊息送到 `InputAttach` 的 port；使用者程式 `user/echo` 收到後 `key_to_char`、印字（控制字元印成 `^X`），Enter 印 `uptime: 0.307 s`。細節見 `docs/ipc.md` §8。selftest 不啟動 router（"keyboard" 測試直接 `pop`）。
 
 ## 8. 測試
 
@@ -154,7 +145,7 @@ Enter 換行後印 `uptime: 0.307 s, 307 ticks`。輸出經 `kprint!` 同時到�
 | host `input::keyboard` | make/break、"stela\n"、Shift／右 Shift／Caps Lock、Ctrl 字母、E0 鍵、PrintScreen 與 Pause、回覆位元組、Enter/Tab/Backspace/Escape |
 | host `input::queue` | FIFO、滿了丟最舊、與 `VecDeque` 模型比對 1000 輪 |
 | selftest "keyboard" | IRQ 1 的 I/O APIC 項目 = 向量 33 且沒遮蔽；印 `input: waiting`；5 秒內收到 `stela\n`、沒有丟事件；印 `key: S 's'` … `input: OK` |
-| `make test-fb` | 一般 kernel 印 `kernel: ready` 後打 `h i ret`，等 `uptime:` 再 screendump |
+| `make test-fb` | 一般 kernel 的 `echo` 印 `echo: ready` 後打 `h i ret`，等 `uptime:` 再 screendump |
 
 `tools/qemu_test.py --send-keys TRIGGER KEYS`：在 QEMU 命令加上 `-qmp unix:build/qmp-<pid>.sock,server=on,wait=off`；serial 出現 TRIGGER 那一行時，連上 QMP（QEMU Machine Protocol，JSON）、送 `qmp_capabilities`，再對每個鍵送 `send-key`（QKeyCode 名稱，例如 `s`、`ret`；按住 50 ms、間隔 150 ms）。腳本讀 serial 改用 `select` 加逾時，guest 卡住不印字時也會在時限內失敗。
 
@@ -163,4 +154,4 @@ Enter 換行後印 `uptime: 0.307 s, 307 ticks`。輸出經 `kprint!` 同時到�
 - 很多新電腦（尤其筆電、沒有 legacy 支援的 UEFI 機器）沒有 i8042，或只靠 SMM 模擬：那時 `i8042: no PS/2 keyboard`，要等 P8 的 USB HID。ACPI FADT 的 `IAPC_BOOT_ARCH` bit 1（有沒有 8042）沒有檢查。
 - 只有 US 配置；沒有數字鍵台、LED、按住重複、滑鼠（port 2 關閉）。
 - 沒有重設鍵盤（0xFF）；假設韌體留下的狀態是正常的。
-- 主迴圈的 echo 只是暫時的；之後鍵盤事件要送給前景行程的 port（架構 C）。
+- 一次只有一個 `InputAttach` 的接收者；之後由 shell（P6）、視窗伺服器（P8）決定前景。

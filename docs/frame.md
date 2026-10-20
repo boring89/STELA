@@ -33,7 +33,7 @@ frame/src/
   task/               TaskContext、switch_to、kernel 堆疊、enter_user、搶佔與使用者例外的回呼（P3）
   syscall.rs          SyscallFrame、set_handler（P3）
   time/               APIC timer 1000 Hz、now_ns、sleep_ms（calc.rs 純邏輯）
-  input/              鍵盤解碼、KeyCode、事件佇列（keyboard.rs、queue.rs 純邏輯）
+  input/              鍵盤解碼、事件佇列、notify hook（keyboard.rs、queue.rs 純邏輯；KeyCode 在 abi::key）
   serial.rs           COM1
   qemu.rs             isa-debug-exit
   trap.rs             TrapFrame 與例外報告格式（純邏輯，host 測試）
@@ -43,7 +43,8 @@ frame/src/
     frames.rs         頁框配置邏輯（純邏輯，host 測試）
     pmm.rs            全域 PMM、PhysFrame
     paging.rs         kernel 端的 map/unmap/translate（一律走 kernel 的 PML4）
-    user.rs           AddressSpace：每個行程的 PML4、copy from/to user（P3）
+    user.rs           AddressSpace：每個行程的 PML4、copy from/to user（P3）、map_shared（P4）
+    shared.rs         SharedMemory：可共享的頁框集合（P4，docs/ipc.md §5）
     mmio.rs           裝置暫存器的不快取映射、MmioRegion（docs/irq.md §7）
     heap.rs           #[global_allocator]
     mod.rs            initrd()（P3）

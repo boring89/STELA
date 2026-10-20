@@ -1,6 +1,6 @@
 # System call ABI 與 libstela
 
-> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。
+> P3 由自動排程一次做完，使用者已於 2026-10-20 審核。P4 的修改（handle／port／memory／input 的呼叫、移除 `DebugWrite`、libstela 經 console 服務印字）**使用者尚未審核**，見 `docs/ipc.md`。
 
 使用者程式怎麼請 kernel 辦事：暫存器怎麼放、有哪些呼叫、錯誤怎麼回報、kernel 怎麼進出，以及使用者程式用的執行期 libstela。行程、執行緒與位址空間見 `docs/process.md`。
 
@@ -43,7 +43,16 @@
 | 3 | `Yield` | — | 0 | 讓別的執行緒先跑 |
 | 4 | `SleepNs` | ns | 0 | 至少睡 `ns` 奈秒（tick 解析度：1 ms） |
 | 5 | `ClockNowNs` | — | 開機以來的奈秒 | 單調；沒有 invariant TSC 時解析度 1 ms |
-| 6 | `DebugWrite` | ptr, len | len | 把 bytes 印到 kernel 主控台（畫面與 serial）；**暫時的**，P4 之後改成 console 服務 |
+| 6 | —（`DebugWrite`，P4 移除） | | | 編號保留不用，回 `InvalidSyscall`；印字改成送訊息到 console 服務（`docs/ipc.md` §7） |
+| 7 | `HandleClose` | h | 0 | 見 `docs/ipc.md` §10 |
+| 8 | `HandleDuplicate` | h, rights | 新 handle | 權限只能減少 |
+| 9 | `PortCreate` | — | handle | |
+| 10 | `PortSend` | port, &Message | 0 | 不阻塞；`Full`／`PeerClosed` |
+| 11 | `PortReceive` | port, &mut Message, timeout_ns | 0 | 0 = 不等，`u64::MAX` = 永遠 |
+| 12 | `MemoryCreate` | size | handle | 4 KiB 倍數，≤ 64 MiB |
+| 13 | `MemoryMap` | memory, flags | 位址 | 在 `MAP_BASE..MAP_END` |
+| 14 | `MemoryUnmap` | addr | 0 | |
+| 15 | `InputAttach` | port | 0 | 鍵盤事件送到 port |
 
 編號就是 ABI：`abi` 的 host 測試把每個值鎖住。未知編號 → `InvalidSyscall`。
 
@@ -52,10 +61,11 @@
 | 值 | 名稱 | 何時 |
 |---|---|---|
 | 1 | `InvalidSyscall` | RAX 不是任何呼叫 |
-| 2 | `InvalidArgument` | 參數超出範圍：`ThreadCreate` 的 entry ≥ `USER_END`、stack_top 不在 16..=`USER_END`；`DebugWrite` 的 len > 4096 |
+| 2 | `InvalidArgument` | 參數超出範圍：`ThreadCreate` 的 entry ≥ `USER_END`、stack_top 不在 16..=`USER_END`；訊息的 len > 112 或 handles > 4；未定義的權限／flag 位元 |
 | 3 | `BadAddress` | 指標所指的範圍有任何一頁不是已映射的使用者頁（kernel 位址、未映射、跨出使用者半部、溢位） |
 | 4 | `OutOfMemory` | kernel 配不到記憶體（例如新執行緒的 kernel 堆疊） |
 | 5 | `NotSupported` | 合法但這裡不能做（kernel 執行緒沒有行程；行程正在結束時 `ThreadCreate`） |
+| 6–13 | `BadHandle`、`AccessDenied`、`WrongType`、`Full`、`TimedOut`、`PeerClosed`、`OutOfHandles`、`AlreadyMapped` | 見 `docs/ipc.md` §10 |
 
 `abi::encode(Result) -> (rax, rdx)` 給 kernel、`abi::decode(rax, rdx) -> Result` 給使用者；未知的非 0 狀態解成 `InvalidSyscall`。
 
@@ -68,6 +78,7 @@
 | `STACK_TOP` − `STACK_SIZE` | `0x0000_7FFF_FFE0_0000` | 主堆疊底（1 MiB） |
 | `STACK_TOP` | `0x0000_7FFF_FFF0_0000` | 主堆疊頂；初始 RSP = `STACK_TOP − 8` |
 | `USER_END` | `0x0000_8000_0000_0000` | 使用者半部結尾（不含） |
+| `MAP_BASE`／`MAP_END` | `0x0000_1000_0000_0000`／`0x0000_7000_0000_0000` | `MemoryMap` 的映射區（`docs/ipc.md` §5.3） |
 
 不變量（4 KiB 對齊、順序）在 `abi` 裡用編譯期 `const` 斷言檢查。
 
@@ -147,7 +158,8 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::Yield) => { task::yield_now(); Ok(0) }
         Some(Syscall::SleepNs) => { task::sleep_ns(a0); Ok(0) }
         Some(Syscall::ClockNowNs) => Ok(frame::time::now_ns()),
-        Some(Syscall::DebugWrite) => debug_write(a0, a1),
+        Some(Syscall::HandleClose) => handle_close(a0),
+        // ... HandleDuplicate、Port*、Memory*、InputAttach（docs/ipc.md）
         None => Err(Error::InvalidSyscall),
     };
     let (status, value) = abi::encode(result);
@@ -155,19 +167,21 @@ fn handle(frame: &mut SyscallFrame) {
 }
 ```
 
-`debug_write`：len ≤ 4096 → 從目前行程的 `AddressSpace::read` 複製到 kernel 的緩衝區（走表檢查每一頁，`docs/process.md` §7.2）→ 以 UTF-8 印出（無效的序列印成 U+FFFD）。
+讀使用者記憶體一律經 `AddressSpace::read`／`write`（走表檢查每一頁，`docs/process.md` §7.2），例如 `PortSend` 把 144 bytes 的訊息複製進來。
 
 ## 5. libstela（`user/libstela/`）
 
-使用者程式的執行期，`#![no_std]`。**使用者程式唯一需要的 `unsafe` 在這裡**：`sys.rs` 的 `syscall` inline asm，以及 `ThreadStack` 的 `Sync` 與起始資料。
+使用者程式的執行期，`#![no_std]`。**使用者程式唯一需要的 `unsafe` 在這裡**：`sys.rs` 的 `syscall` inline asm、`ThreadStack` 的 `Sync` 與起始資料，以及 `ipc::Mapping` 對共享記憶體的複製。
 
 | 項目 | 說明 |
 |---|---|
 | `entry!(main)` | 產生 `#[unsafe(no_mangle)] extern "C" fn _start() -> !`：呼叫 `main() -> i64`，以回傳值 `exit`。由外部巨集產生，所以程式本身可以 `#![forbid(unsafe_code)]`（和 frame 的 `entry_point!` 同一招） |
 | `exit(code)`、`thread_exit()` | `-> !` |
 | `yield_now()`、`sleep_ns(ns)`、`sleep_ms(ms)`、`now_ns()` | |
-| `debug_write(&[u8]) -> Result<usize, Error>` | 超過 4096 bytes 自動分段 |
-| `debug_print!`、`debug_println!` | 格式化進 256 bytes 的堆疊緩衝區，一次 `DebugWrite`（一行不會被別的執行緒插進來）；超過 256 bytes 就分次送 |
+| `console_write(&[u8]) -> Result<usize, Error>` | 112 bytes 一則 `CONSOLE_WRITE` 訊息送到 `[1]`；`Full` 時讓出再送 |
+| `debug_print!`、`debug_println!` | 格式化進 256 bytes 的堆疊緩衝區再 `console_write`（一行不會被別的執行緒插進來）；超過 256 bytes 就分次送 |
+| `ipc::*` | `handle_close`、`handle_duplicate`、`port_create`、`port_send`、`port_receive`（`FOREVER`）、`memory_create`、`memory_map`、`memory_unmap`、`Mapping`、`input_attach`（`docs/ipc.md`） |
+| `pub use abi` | 程式可以用 `libstela::abi::key` 等型別 |
 | `ThreadStack<N>` + `spawn(entry: fn(u64), arg, &'static ThreadStack<N>) -> Result<u64, Error>` | 放在 `static` 的堆疊，只能用一次（第二次 `InvalidArgument`）。`(entry, arg)` 存在 ThreadStack 開頭，`ThreadCreate` 的 arg 是 ThreadStack 的位址；新執行緒從 libstela 的 `thread_start` 開始，讀出來呼叫 `entry(arg)`，回來就 `thread_exit()` |
 | `sys::syscall0..3` | 原始呼叫：`inlateout("rax")`、`in("rdi"/"rsi")`、`inlateout("rdx")`、`lateout("rcx"/"r11")` |
 | panic handler | `debug_println!("panic: {info}")` → `exit(101)` |
@@ -193,14 +207,13 @@ fn handle(frame: &mut SyscallFrame) {
 | 測試 | 內容 |
 |---|---|
 | host `abi` | 每個編號與錯誤值固定、`from_raw` 往返與邊界、`encode`/`decode` 往返、未知狀態 → `InvalidSyscall`、layout 的值 |
-| selftest "system calls" | 手組的 281 bytes 使用者程式（GNU as 組譯，原始碼在 `kernel/src/selftest.rs` 的註解）：ClockNowNs、DebugWrite 正常（`make test-qemu` 檢查 `user: hello from built-in user code`）／kernel 位址／未映射／太長、編號 999、Yield、SleepNs(2 ms) 後時間至少多 2 ms、rbx 保留、ProcessExit(42)；任何一項不對就 exit 1 |
+| selftest "system calls" | 手組的 379 bytes 使用者程式（GNU as 組譯，原始碼在 `kernel/src/selftest.rs` 的註解；P4 重新組譯）：ClockNowNs、`PortSend` 到 console `[1]` 正常（`make test-qemu` 檢查 `user: hello from built-in user code`）／kernel 位址／未映射 → `BadAddress`、編號 6（已移除）與 999 → `InvalidSyscall`、`HandleClose(0)` → `BadHandle`、Yield、SleepNs(2 ms) 後時間至少多 2 ms、rbx 保留、ProcessExit(42)；任何一項不對就 exit 1 |
 | selftest "elf loading" | 把上面的程式包成手工 ELF（一個 PT_LOAD，`p_memsz` 多 8 KiB 測 .bss）：exit 42、記憶體回復；W+X 段、非 ELF、initrd 沒有的名稱都被拒 |
 | selftest "initrd programs" | hello／fault／spin，見 `docs/process.md` §13 |
 
 ## 7. 已知限制與待辦
 
-- 沒有 handle、IPC、檔案、記憶體配置類的 syscall（P4 起依 `docs/architecture.md` 決定 D：handle + 權限位元）。
-- `DebugWrite` 直接寫 kernel 主控台，任何程式都能印；是暫時的。
+- 沒有檔案（P5）、行程（P6）類的 syscall。
 - `ThreadCreate` 不檢查 stack_top 是否已映射（用到才 page fault → 行程被殺）；沒有 join，程式自己用共享記憶體同步（hello 用 atomic）。
 - 沒有 SMAP；kernel 不直接解參考使用者指標，所以目前不需要。沒有 32 位元相容（`int 0x80`、compat mode）的進入點。
 - syscall 進入點與 NMI 的交互（`swapgs` 之前、`sysret` 之前的 NMI）見 `docs/process.md` §14。

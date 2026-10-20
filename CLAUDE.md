@@ -21,9 +21,9 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 
 ```bash
 make            # 建置 loader、kernel、使用者程式與 initrd → build/esp/（EFI/BOOT/BOOTX64.EFI、STELA/kernel.elf、STELA/initrd.tar）
-make user       # 建置 user/ 的程式（hello、spin、fault）→ build/user/
+make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、echo）→ build/user/
 make initrd     # 把 build/user/ 打包成 build/initrd.tar（GNU tar --format=ustar）
-make run        # QEMU + OVMF 開機（一般 kernel，先跑 initrd 的 hello），serial 輸出到 stdio
+make run        # QEMU + OVMF 開機（一般 kernel，先跑 initrd 的 hello，再跑 echo），serial 輸出到 stdio
 make test       # host 單元測試 + QEMU selftest + 最低硬體 selftest + 畫面檢查，修改後必須通過
 make clippy     # cargo clippy（loader、kernel 端 crate 含 selftest feature、使用者程式、host 測試），警告視為錯誤
 make fmt        # cargo fmt
@@ -33,7 +33,7 @@ make clean
 - 需要的套件：`rustup`（目標 `x86_64-unknown-none`、`x86_64-unknown-uefi`，元件 `rust-src`、`llvm-tools`）、`qemu-system-x86`、`ovmf`（`/usr/share/OVMF/OVMF_CODE_4M.fd`）。
 - cargo 的輸出在 `build/target/`（`.cargo/config.toml`）。
 - CI：`.github/workflows/ci.yml` 在 push 到 main 與 PR 時執行 `cargo fmt --check`、`make clippy` 與 `make test`。
-- `make test` 的組成：`test-host`（依賴 `make initrd`；`HOST_CRATES` = abi、bootinfo、elfload、frame 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel 的 `cargo test --lib`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter，依序檢查 `input: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP）、`test-fb`（一般 kernel 開機、看到 `hello from user mode` 與 `exited with code 0` 之後 QMP 打 `h i ret`、看到 `uptime:` 後 screendump，`tools/fb_check.py` 檢查畫面有字）。`make run` 永遠跑沒有 selftest 的 kernel（先跑 hello，之後打字會 echo，Enter 印 uptime）。
+- `make test` 的組成：`test-host`（依賴 `make initrd`；`HOST_CRATES` = abi、bootinfo、elfload、frame 的 `cargo test`，加上 `HOST_LIB_CRATES` = kernel 的 `cargo test --lib`）、`test-qemu`（`selftest` feature 的 kernel，放在 `build/esp-test/`，selftest 印 `input: waiting` 時 `tools/qemu_test.py --send-keys` 經 QMP `send-key` 打 `stela` + Enter，依序檢查 `input: OK`、內建使用者程式與 initrd 程式（hello、子執行緒、fault、spin）的輸出、`ipc_client: OK`、`selftest: OK` 與 QEMU exit code 33）、`test-qemu-min`（同一個 kernel，`-cpu Conroe,-nx -m 256M`：無 NX、無 invariant TSC、無 SMEP）、`test-fb`（一般 kernel 開機、看到 `hello from user mode`、`exited with code 0` 與 `echo: ready` 之後 QMP 打 `h i ret`、看到 `uptime:` 後 screendump，`tools/fb_check.py` 檢查畫面有字）。`make run` 永遠跑沒有 selftest 的 kernel（先跑 hello，再跑使用者程式 echo：打字會 echo，Enter 印 uptime）。
 - QEMU 的 TCG 不支援 invariant TSC，`make test` 只測得到 tick 退路；TSC 路徑要在本機用 `-enable-kvm -cpu host,+invtsc` 手動驗證（`docs/time.md` §5.3）。
 
 ### 測試
@@ -45,7 +45,7 @@ make clean
 ## 目錄結構（規劃，隨進度更新）
 
 ```
-abi/           kernel 與使用者程式共用的 syscall ABI：編號、錯誤碼、位址配置（no_std，host 測試）（docs/syscall.md）
+abi/           kernel 與使用者程式共用的 syscall ABI：編號、錯誤碼、位址配置、Handle／Rights／Message、key（no_std，host 測試）（docs/syscall.md、docs/ipc.md）
 boot/          UEFI loader（x86_64-unknown-uefi）：讀 kernel.elf 與 initrd.tar、建分頁表、取得記憶體表與 framebuffer、交棒（docs/boot.md）
 bootinfo/      loader 與 kernel 共用的 BootInfo 結構（版本 2，no_std，host 測試）
 elfload/       最小 ELF64 解析（只處理 PT_LOAD，host 測試）
@@ -58,17 +58,19 @@ frame/         框架 crate：所有 unsafe 的家，對外只提供 safe API（
   src/task/         TaskContext、switch_to、kernel 堆疊、enter_user、搶佔與使用者例外的回呼（docs/process.md）
   src/syscall.rs    SyscallFrame、set_handler（docs/syscall.md）
   src/time/         APIC timer 1000 Hz、now_ns、sleep_ms（docs/time.md）
-  src/input/        鍵盤解碼、KeyCode、輸入事件佇列（docs/keyboard.md）
-  src/mm/           頁框配置（bitmap）、kernel 分頁、MMIO 映射、heap、行程位址空間（user.rs）、initrd()
+  src/input/        鍵盤解碼、輸入事件佇列、notify hook（docs/keyboard.md）
+  src/mm/           頁框配置（bitmap）、kernel 分頁、MMIO 映射、heap、行程位址空間（user.rs）、共享記憶體（shared.rs）、initrd()
   src/console/      字型、文字主控台、framebuffer、panic 畫面
 kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）；lib（host 測試純邏輯）+ bin（入口與 selftest）
-  src/task/         Thread、排程器、run queue／睡眠清單（queue.rs，host 測試）、Process、wait_process（docs/process.md）
-  src/syscall.rs    syscall 分派（docs/syscall.md）
+  src/task/         Thread、排程器、run queue／睡眠清單／WaitQueue（queue.rs，host 測試）、block_until、Process、wait_process（docs/process.md）
+  src/object/       handle 表（handle.rs）、映射區配置（regions.rs）（host 測試）、Port、KernelObject（docs/ipc.md）
+  src/console.rs    console 服務；src/input.rs  input-router（docs/ipc.md）
+  src/syscall.rs    syscall 分派（docs/syscall.md、docs/ipc.md）
   src/initrd.rs     ustar 解析（host 測試）
   src/program.rs    從 initrd 載入 ELF、建立行程
 user/          使用者程式（x86_64-unknown-none，user.ld 連結在 0x40_0000）（docs/syscall.md §5）
-  libstela/         執行期：entry!、syscall 包裝、debug_println!、ThreadStack/spawn、panic handler
-  hello/ spin/ fault/  initrd 裡的三個測試程式
+  libstela/         執行期：entry!、syscall 包裝、ipc（handle／port／memory／Mapping）、debug_println!（經 console 服務）、ThreadStack/spawn、panic handler
+  hello/ spin/ fault/ ipc_server/ ipc_client/  initrd 裡的測試程式；echo/  鍵盤 echo（make run）
 drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）（尚未建立）
 third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause）
 docs/          設計文件（每個元件完成後寫 docs/<元件>.md）
@@ -83,7 +85,7 @@ tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、font_t
   // SPDX-License-Identifier: GPL-3.0-or-later
   ```
 - `cargo fmt` 的預設格式；`cargo clippy` 零警告（`make clippy`）。
-- `unsafe` 只能出現在 `frame/`，以及 `boot/` 的兩處（`exit_boot_services` 與跳進 kernel 的 inline asm；`boot/` 用 `#![deny(unsafe_code)]` 加局部 `#[allow(unsafe_code)]`）、`user/libstela`（`syscall` 指令與 `ThreadStack`，使用者程式唯一需要 unsafe 的地方）、`user/fault`（故意讀位址 0 的一處 inline asm）；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
+- `unsafe` 只能出現在 `frame/`，以及 `boot/` 的兩處（`exit_boot_services` 與跳進 kernel 的 inline asm；`boot/` 用 `#![deny(unsafe_code)]` 加局部 `#[allow(unsafe_code)]`）、`user/libstela`（`syscall` 指令、`ThreadStack` 與 `ipc::Mapping` 的複製，使用者程式唯一需要 unsafe 的地方）、`user/fault`（故意讀位址 0 的一處 inline asm）；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
 - 不用 `unwrap()`／`expect()` 處理可能失敗的情況；錯誤用 `Result` 傳回。無法恢復的錯誤用 `panic!`（kernel 的 panic handler 負責顯示）。
 - 與既有程式碼保持一致；不要只為了風格而修改無關的程式碼。
 
@@ -137,6 +139,7 @@ Claude 依照上方工作規則直接實作。
 - P1（自動排程一次做完，使用者已審核（2026-10-20））：開機載入器（`docs/boot.md`）、frame 的 GDT/IDT/分頁/記憶體/主控台（`docs/frame.md`）
 - P2（自動排程一次做完，使用者已審核（2026-10-20））：ACPI MADT、APIC 與中斷、per-CPU、鎖（`docs/irq.md`）、計時器與時鐘（`docs/time.md`）、PS/2 鍵盤與輸入事件（`docs/keyboard.md`）
 - P3（自動排程一次做完，使用者已審核（2026-10-20））：執行緒、排程、context 切換、位址空間、使用者模式、initrd（`docs/process.md`）、syscall ABI 與 libstela（`docs/syscall.md`）
+- P4（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：IPC 與 handle（`docs/ipc.md`）
 
 ## 已知問題（尚未修正）
 
@@ -150,4 +153,5 @@ Claude 依照上方工作規則直接實作。
 - kernel heap 固定 4 MiB；空掉的中間分頁表不回收；`alloc_contiguous` 是線性 first-fit。
 - 排程：單一等級 round-robin（10 ms 時間片），`priority` 只存不用；`block`/`wake` 的競賽只靠「單顆 CPU + 關中斷」，SMP 時要重做；沒有 tickless；睡眠解析度 1 ms。
 - 位址空間只有 4 KiB 頁、沒有需求分頁／mmap；kernel 半部不能新增 PML4 項目（行程的 PML4 是建立時複製的）；使用者 FPU 只有 FXSAVE（無 XSAVE/AVX）；沒有 SMAP（kernel 不直接解參考使用者指標）。
-- NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清；`DebugWrite` 是暫時的 syscall。
+- NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。
+- IPC：沒有 port set；訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；任何有 port SEND 的程式都能 `InputAttach` 搶鍵盤；共享記憶體是 eager（`docs/ipc.md` §12）。

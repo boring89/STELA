@@ -30,10 +30,16 @@ const OUT2: u8 = 1 << 5;
 /// mode 0 "interrupt on terminal count" (bits 1-3 = 000), binary.
 const CHANNEL2_MODE0: u8 = 0b1011_0000;
 
+/// Polls of port B before deciding the PIT is not counting (some recent
+/// platforms gate the 8254 off). A port read takes about a microsecond on
+/// real hardware, so this is seconds, far beyond any window used here.
+const MAX_POLLS: u32 = 10_000_000;
+
 /// Counts `count` PIT clocks on channel 2 and returns `sample()` taken just
-/// before the countdown starts and just after it ends. Interrupts should be
-/// off so that nothing stretches the window between the samples.
-pub(crate) fn measure<T>(count: u16, mut sample: impl FnMut() -> T) -> (T, T) {
+/// before the countdown starts and just after it ends, or `None` if the
+/// countdown never ends. Interrupts should be off so that nothing stretches
+/// the window between the samples.
+pub(crate) fn measure<T>(count: u16, mut sample: impl FnMut() -> T) -> Option<(T, T)> {
     // SAFETY: ports 0x42, 0x43 and 0x61 belong to this module (channel 2
     // and its gate are not used by anything else); the writes only program
     // the timer and keep the speaker off.
@@ -48,8 +54,10 @@ pub(crate) fn measure<T>(count: u16, mut sample: impl FnMut() -> T) -> (T, T) {
         outb(CHANNEL2_DATA, (count >> 8) as u8);
         start
     };
+    let mut polls = 0;
     // SAFETY: reading port B has no side effects.
-    while unsafe { inb(PORT_B) } & OUT2 == 0 {
+    while unsafe { inb(PORT_B) } & OUT2 == 0 && polls < MAX_POLLS {
+        polls += 1;
         core::hint::spin_loop();
     }
     let end = sample();
@@ -58,5 +66,5 @@ pub(crate) fn measure<T>(count: u16, mut sample: impl FnMut() -> T) -> (T, T) {
         let port_b = inb(PORT_B);
         outb(PORT_B, port_b & !(SPEAKER | GATE2));
     }
-    (start, end)
+    (polls < MAX_POLLS).then_some((start, end))
 }

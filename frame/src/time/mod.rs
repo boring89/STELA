@@ -90,7 +90,11 @@ mod target {
         apic::write(apic::LVT_TIMER, apic::LVT_MASKED);
         apic::write(apic::TIMER_DIVIDE, DIVIDE_BY_16);
         apic::write(apic::TIMER_INITIAL, u32::MAX);
-        let (start, end) = pit::measure(WINDOW, || (apic::read(apic::TIMER_CURRENT), rdtsc()));
+        let Some((start, end)) =
+            pit::measure(WINDOW, || (apic::read(apic::TIMER_CURRENT), rdtsc()))
+        else {
+            panic!("time: the PIT does not count; cannot calibrate the timers");
+        };
         apic::write(apic::TIMER_INITIAL, 0);
         (
             u64::from(start.0.wrapping_sub(end.0)),

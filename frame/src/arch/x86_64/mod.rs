@@ -54,10 +54,10 @@ pub(crate) fn breakpoint_count() -> u64 {
 
 /// `sti; hlt`: enables interrupts and sleeps until one arrives.
 pub(crate) fn halt_until_interrupt() {
-    // SAFETY: every vector has a gate once `frame::init` has run (the
-    // public wrapper is only reachable after it in practice; before, no
-    // interrupt source is unmasked). `hlt` only stops this processor until
-    // the next interrupt.
+    assert!(initialized(), "halt_until_interrupt() before frame::init()");
+    // SAFETY: the IDT has a gate for all 256 vectors (checked above), so
+    // any interrupt that arrives is handled. `hlt` only stops this
+    // processor until the next interrupt.
     unsafe { asm!("sti", "hlt", options(nomem, nostack)) };
 }
 

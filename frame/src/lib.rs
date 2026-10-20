@@ -19,6 +19,7 @@ pub mod arch;
 pub mod console;
 #[cfg(target_os = "none")]
 pub mod cpu;
+pub mod input;
 #[cfg(target_os = "none")]
 pub mod irq;
 pub mod mm;
@@ -32,7 +33,8 @@ pub mod trap;
 /// Brings up what the kernel relies on: serial console, GDT, TSS and IDT,
 /// the frame allocator, the page tables, the heap, the framebuffer console,
 /// the ACPI MADT, the interrupt controllers (8259s masked, local APIC, I/O
-/// APICs) and the per-CPU area. Interrupts are enabled on return. Call
+/// APICs), the per-CPU area and the PS/2 keyboard. Interrupts are enabled
+/// on return. Call
 /// once, first thing in the kernel.
 #[cfg(target_os = "none")]
 pub fn init(info: &'static bootinfo::BootInfo) {
@@ -42,6 +44,7 @@ pub fn init(info: &'static bootinfo::BootInfo) {
     console::fb::init(info);
     acpi::init(info);
     irq::init(acpi::madt());
+    input::init();
     irq::enable();
 }
 

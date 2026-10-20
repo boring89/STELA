@@ -64,12 +64,18 @@ test: test-host test-qemu test-qemu-min test-fb
 test-host:
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 
+# The keyboard self test prints "input: waiting"; the script then types
+# "stela" and Enter through QMP send-key.
+SEND_KEYS := --send-keys "input: waiting" "s t e l a ret"
+
 test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --exit-code 33 --expect "STELA boot loader" --expect "STELA kernel" --expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS)
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --expect "STELA boot loader" \
+		--expect "STELA kernel" --expect "input: OK" --expect "selftest: OK" \
+		-- $(QEMU) $(QEMU_TEST_FLAGS)
 
 test-qemu-min: esp-test $(BUILD)/OVMF_VARS.fd
-	python3 tools/qemu_test.py --exit-code 33 --expect "NX off" --expect "selftest: OK" \
-		-- $(QEMU) $(QEMU_MIN_FLAGS)
+	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --expect "NX off" \
+		--expect "input: OK" --expect "selftest: OK" -- $(QEMU) $(QEMU_MIN_FLAGS)
 
 # Boot the normal kernel, save the screen once it is idle, and check that the
 # framebuffer console drew text.

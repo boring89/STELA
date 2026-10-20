@@ -4,6 +4,7 @@
 """Boot STELA in QEMU and check its serial output.
 
 Usage: qemu_test.py [--timeout S] [--exit-code N] [--screendump FILE]
+                    [--send-keys TRIGGER KEYS]
                     --expect TEXT [--expect TEXT ...] -- <qemu command>
 
 The expected strings must appear on the serial console in the given order.
@@ -14,9 +15,16 @@ isa-debug-exit device) with status N. Either way the timeout applies.
 With --screendump, a QEMU monitor socket is added to the command, and once
 the last expected line is seen the screen is saved to FILE (PPM) before QEMU
 is killed. Not combinable with --exit-code.
+
+With --send-keys, a QMP socket is added to the command, and when a serial
+line containing TRIGGER appears, the space-separated QEMU key names in KEYS
+(QKeyCode names: "s", "ret", "shift", ...) are typed one after another with
+the QMP command send-key. The keyboard self test uses this.
 """
 import argparse
+import json
 import os
+import select
 import socket
 import subprocess
 import sys
@@ -38,11 +46,88 @@ def screendump(monitor, path, deadline):
             reply += chunk
 
 
+def serial_lines(proc, deadline, state):
+    """Yields QEMU's output line by line until it exits or the deadline
+    passes, without blocking past the deadline (a hung guest prints
+    nothing). Sets state["eof"] when QEMU closed its output."""
+    buffer = b""
+    fd = proc.stdout.fileno()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if not ready:
+            return
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            state["eof"] = True
+            if buffer:
+                yield buffer.decode("utf-8", "replace").rstrip("\r")
+            return
+        buffer += chunk
+        while b"\n" in buffer:
+            line, buffer = buffer.split(b"\n", 1)
+            yield line.decode("utf-8", "replace").rstrip("\r")
+
+
+class Qmp:
+    """A minimal QMP client (QEMU Machine Protocol, docs/interop/qmp-spec)."""
+
+    def __init__(self, path, deadline):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(max(1.0, deadline - time.monotonic()))
+        self.sock.connect(path)
+        self.buffer = b""
+        self.reply()  # the greeting
+        self.execute("qmp_capabilities")
+
+    def reply(self):
+        """The next message that is not an asynchronous event."""
+        while True:
+            while b"\n" not in self.buffer:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("QMP connection closed")
+                self.buffer += chunk
+            line, self.buffer = self.buffer.split(b"\n", 1)
+            message = json.loads(line)
+            if "event" not in message:
+                return message
+
+    def execute(self, command, arguments=None):
+        request = {"execute": command}
+        if arguments is not None:
+            request["arguments"] = arguments
+        self.sock.sendall(json.dumps(request).encode() + b"\n")
+        message = self.reply()
+        if "error" in message:
+            raise RuntimeError(f"QMP {command}: {message['error']}")
+        return message.get("return")
+
+    def close(self):
+        self.sock.close()
+
+
+def send_keys(path, keys, deadline):
+    """Types `keys` (QKeyCode names), one press-and-release at a time."""
+    qmp = Qmp(path, deadline)
+    try:
+        for key in keys:
+            qmp.execute("send-key", {"keys": [{"type": "qcode", "data": key}],
+                                     "hold-time": 50})
+            # Let the release happen before the next press.
+            time.sleep(0.15)
+    finally:
+        qmp.close()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--exit-code", type=int)
     ap.add_argument("--screendump")
+    ap.add_argument("--send-keys", nargs=2, metavar=("TRIGGER", "KEYS"))
     ap.add_argument("--expect", action="append", required=True)
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
     args = ap.parse_args()
@@ -58,6 +143,14 @@ def main():
             os.unlink(args.screendump)
         cmd = cmd + ["-monitor", f"unix:{monitor},server=on,wait=off"]
 
+    qmp = None
+    if args.send_keys:
+        qmp = os.path.abspath(os.path.join("build", f"qmp-{os.getpid()}.sock"))
+        if os.path.exists(qmp):
+            os.unlink(qmp)
+        cmd = cmd + ["-qmp", f"unix:{qmp},server=on,wait=off"]
+    keys_sent = False
+
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL)
     deadline = time.monotonic() + args.timeout
@@ -65,22 +158,29 @@ def main():
     log = []
     status = None
     try:
-        while time.monotonic() < deadline:
-            if not pending and args.exit_code is None:
-                break
-            line = proc.stdout.readline()
-            if not line:
-                status = proc.wait()
-                break
-            text = line.decode("utf-8", "replace").rstrip("\r\n")
+        state = {"eof": False}
+        for text in serial_lines(proc, deadline, state):
             log.append(text)
+            if qmp and not keys_sent and args.send_keys[0] in text:
+                keys_sent = True
+                send_keys(qmp, args.send_keys[1].split(), deadline)
             if pending and pending[0] in text:
                 pending.pop(0)
+            if not pending and args.exit_code is None:
+                break
+        else:
+            if state["eof"]:
+                try:
+                    status = proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
         if not pending and monitor:
             screendump(monitor, os.path.abspath(args.screendump), deadline)
     finally:
         if monitor and os.path.exists(monitor):
             os.unlink(monitor)
+        if qmp and os.path.exists(qmp):
+            os.unlink(qmp)
         if status is None:
             proc.kill()
             proc.wait()

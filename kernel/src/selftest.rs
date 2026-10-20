@@ -13,6 +13,7 @@ use core::fmt::{self, Write};
 use core::hint::black_box;
 use core::sync::atomic::{AtomicU64, Ordering};
 use frame::bootinfo::BootInfo;
+use frame::input::{self, InputEvent};
 use frame::mm::paging::{self, Flags};
 use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, MMIO_BASE, heap, mmio, pmm};
 use frame::sync::{IrqGuard, SpinLock, interrupts_enabled};
@@ -36,6 +37,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("acpi madt", acpi_madt),
         ("interrupt controllers", interrupt_controllers),
         ("interrupt dispatch", interrupt_dispatch),
+        ("keyboard", keyboard),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -366,4 +368,30 @@ fn interrupt_dispatch(_: &'static BootInfo) {
     irq::unregister(TEST_VECTOR);
     irq::self_ipi(TEST_VECTOR);
     assert_eq!(TEST_HITS.load(Ordering::Relaxed), before + 4);
+}
+
+/// What `tools/qemu_test.py --send-keys` types after `input: waiting`.
+const TYPED: &str = "stela\n";
+
+fn keyboard(_: &'static BootInfo) {
+    assert!(input::keyboard_present(), "no PS/2 keyboard");
+    // IRQ 1 is routed to vector 33 and unmasked (bit 16 clear).
+    let entry = irq::isa_entry(1).expect("IRQ 1 has no I/O APIC input");
+    assert_eq!(entry & 0x1_00FF, u32::from(irq::isa_vector(1)));
+    while input::pop().is_some() {}
+    kprintln!("input: waiting");
+    let mut text = alloc::string::String::new();
+    while text.chars().count() < TYPED.chars().count() {
+        let Some(InputEvent::Key(event)) = input::pop() else {
+            frame::halt_until_interrupt();
+            continue;
+        };
+        if let Some(ch) = input::key_to_char(&event) {
+            kprintln!("key: {:?} {:?}", event.code, ch);
+            text.push(ch);
+        }
+    }
+    assert_eq!(text, TYPED);
+    assert_eq!(input::dropped(), 0);
+    kprintln!("input: OK");
 }

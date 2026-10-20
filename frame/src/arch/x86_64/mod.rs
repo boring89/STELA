@@ -6,6 +6,7 @@
 pub(crate) mod apic;
 pub(crate) mod exceptions;
 pub(crate) mod gdt;
+pub(crate) mod i8042;
 pub(crate) mod idt;
 pub(crate) mod interrupts;
 pub(crate) mod io;

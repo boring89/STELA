@@ -116,6 +116,7 @@ pub fn report_panic(info: &core::panic::PanicInfo) {
         )),
         None => console::fb::panic_screen(format_args!("{}", info.message())),
     }
+    let _ = writeln!(serial, "(the panic screen is up)");
 }
 
 /// Stops the processor for good: interrupts off, then `hlt` in a loop.

@@ -56,7 +56,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-min test-window \
-	host-images test-images test-storage test-shell test-shutdown test-linux test-usb ehfs-tools test-ehfs-compat clippy fmt clean
+	host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -126,6 +126,27 @@ esp-test: boot initrd
 	cp $(KERNEL_ELF) $(ESP_TEST)/STELA/kernel.elf
 	cp $(INITRD) $(ESP_TEST)/STELA/initrd.tar
 
+# The panic screen: the self-test kernel with a file `panic-test` in its
+# initrd panics on purpose and halts; the screen must show the cracked
+# stela (terracotta in the stela's left face; 2560x1600: the 256x256
+# stela at 1152,544) on the panic colour.
+ESP_PANIC   := $(BUILD)/esp-panic
+PANIC_FACE  := 1236,600,16,12
+test-panic: esp-test $(BUILD)/OVMF_VARS.fd
+	mkdir -p $(ESP_PANIC)/EFI/BOOT $(ESP_PANIC)/STELA $(BUILD)/panic-initrd
+	cp -r $(USER_DIR)/. $(BUILD)/panic-initrd/
+	touch $(BUILD)/panic-initrd/panic-test
+	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
+		-cf $(ESP_PANIC)/STELA/initrd.tar -C $(BUILD)/panic-initrd $(USER_PROGRAMS) linux panic-test
+	cp $(ESP_TEST)/EFI/BOOT/BOOTX64.EFI $(ESP_PANIC)/EFI/BOOT/
+	cp $(ESP_TEST)/STELA/kernel.elf $(ESP_PANIC)/STELA/
+	python3 tools/qemu_test.py --timeout 60 --screendump $(BUILD)/panic.ppm \
+		--expect "STELA kernel panic" --expect "the panic screen test" \
+		--expect "the panic screen is up" \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_PANIC) -display none -serial stdio
+	python3 tools/fb_check.py $(BUILD)/panic.ppm --expect-rect 0,0,300,300,\#5c1a14 \
+		--expect-rect $(PANIC_FACE),\#c8763c
+
 $(BUILD)/OVMF_VARS.fd:
 	mkdir -p $(BUILD)
 	cp $(OVMF_VARS) $@
@@ -133,7 +154,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux test-usb
+test: test-host test-qemu test-qemu-min test-window test-storage test-shell test-shutdown test-linux test-usb test-panic
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:

@@ -11,6 +11,7 @@
 //! screen draws again. Pixels are 32 bits in the order the GOP reported
 //! (`Rgb32` or `Bgr32`).
 
+use super::art;
 use super::font::{self, Font};
 use super::text::{Canvas, Rgb, TextConsole, draw_char};
 use crate::mm::device::DeviceRange;
@@ -145,6 +146,52 @@ pub(crate) fn init(info: &'static BootInfo) {
 
 /// Set once user space owns the screen.
 static HANDED_OVER: AtomicBool = AtomicBool::new(false);
+/// Set while the boot screen is up: the console does not draw.
+static SPLASH: AtomicBool = AtomicBool::new(false);
+
+/// Draws the boot screen: the stela, centred, with "STELA" under it; the
+/// text console stops drawing until [`end_boot_screen`] (or the window
+/// server takes the screen). Messages still go to the serial port.
+pub fn boot_screen() {
+    let Some(mut console) = CONSOLE.try_lock() else {
+        return;
+    };
+    let Some(FbConsole { canvas, .. }) = console.as_mut() else {
+        return;
+    };
+    let (w, h) = canvas.size();
+    canvas.fill(0, 0, w, h, CONSOLE_BG);
+    let scale = art::scale_for(w);
+    let side = art::STELA.size as usize * scale;
+    let (x, y) = (
+        w.saturating_sub(side) / 2,
+        h.saturating_sub(side) / 2 - h / 10,
+    );
+    art::draw(canvas, x, y, &art::STELA, scale);
+    let font = font::for_width(w);
+    draw_centered(
+        canvas,
+        font,
+        y + side + font.height,
+        "S T E L A",
+        PANIC_FG,
+        CONSOLE_BG,
+    );
+    SPLASH.store(true, Ordering::Release);
+}
+
+/// Takes the boot screen away (text mode: nothing took the screen): the
+/// console starts over on a clear screen.
+pub fn end_boot_screen() {
+    if !SPLASH.swap(false, Ordering::AcqRel) || handed_over() {
+        return;
+    }
+    if let Some(mut console) = CONSOLE.try_lock()
+        && let Some(FbConsole { canvas, text }) = console.as_mut()
+    {
+        text.clear(canvas);
+    }
+}
 
 /// The boot framebuffer as user space sees it.
 #[derive(Clone, Debug)]
@@ -190,7 +237,7 @@ pub fn handed_over() -> bool {
 /// Writes to the framebuffer console, if it exists, is not busy (a panic
 /// while printing must not deadlock) and still owns the screen.
 pub(crate) fn write_str(s: &str) {
-    if handed_over() {
+    if handed_over() || SPLASH.load(Ordering::Acquire) {
         return;
     }
     if let Some(mut console) = CONSOLE.try_lock()
@@ -259,9 +306,10 @@ fn draw_centered(canvas: &mut FbCanvas, font: &Font, y: usize, s: &str, fg: Rgb,
 }
 
 /// Paints the panic screen: the whole framebuffer in the panic colour,
-/// "STELA" and "kernel panic" centred, and the message as a left-aligned
-/// block centred on the screen. Uses its own canvas, so it works even if
-/// the panic happened while the console was locked.
+/// the cracked stela, "STELA" and "kernel panic" centred, and the message
+/// as a left-aligned block centred below. Uses its own canvas, so it
+/// works even if the panic happened while the console was locked, and
+/// draws whoever owned the screen.
 pub(crate) fn panic_screen(message: fmt::Arguments) {
     let Some(info) = PANIC_INFO.try_lock().and_then(|i| *i) else {
         return;
@@ -283,7 +331,8 @@ pub(crate) fn panic_screen(message: fmt::Arguments) {
     let font = font::for_width(canvas.width);
     let (w, h) = canvas.size();
     canvas.fill(0, 0, w, h, PANIC_BG);
-
+    let scale = art::scale_for(w);
+    let side = art::STELA_CRACKED.size as usize * scale;
     let lines = message.lines().count();
     let block_width = message
         .lines()
@@ -291,9 +340,17 @@ pub(crate) fn panic_screen(message: fmt::Arguments) {
         .max()
         .unwrap_or(0)
         * font.width;
-    // Title, blank line, subtitle, two blank lines, message.
-    let total_rows = 5 + lines;
-    let mut y = h.saturating_sub(total_rows * font.height) / 2;
+    // Stela, blank, title, blank, subtitle, two blank lines, message.
+    let total = side + (6 + lines) * font.height;
+    let mut y = h.saturating_sub(total) / 2;
+    art::draw(
+        &mut canvas,
+        w.saturating_sub(side) / 2,
+        y,
+        &art::STELA_CRACKED,
+        scale,
+    );
+    y += side + font.height;
     draw_centered(&mut canvas, font, y, "S T E L A", PANIC_FG, PANIC_BG);
     y += 2 * font.height;
     draw_centered(&mut canvas, font, y, "kernel panic", PANIC_FG, PANIC_BG);

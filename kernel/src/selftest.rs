@@ -22,6 +22,15 @@ use frame::trap::{Report, TrapFrame};
 use frame::{cpu, irq, kprintln, time};
 use kernel::task;
 
+/// Set by the panic screen test: the panic handler halts instead of
+/// leaving QEMU.
+static PANIC_TEST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Whether this is the panic screen test.
+pub fn panic_test() -> bool {
+    PANIC_TEST.load(Ordering::Acquire)
+}
+
 /// A named test; it panics on failure.
 type Test = (&'static str, fn(&'static BootInfo));
 
@@ -65,6 +74,15 @@ pub fn run(info: &'static BootInfo) -> ! {
     // Let the service threads (console) reach their first wait, so that
     // their start-up allocations do not land in the middle of a test.
     task::sleep_ms(1);
+    // The boot screen stays a second, then the text console comes back.
+    task::sleep_ms(1000);
+    frame::console::end_boot_screen();
+    // `make test-panic` puts a file `panic-test` in the initrd: panic on
+    // purpose and leave the panic screen up.
+    if kernel::vfs::find("Initrd").is_some_and(|v| v.fs.lookup(v.fs.root(), "panic-test").is_ok()) {
+        PANIC_TEST.store(true, Ordering::Release);
+        panic!("selftest: the panic screen test (a deliberate panic)");
+    }
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
         test(info);

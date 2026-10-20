@@ -28,6 +28,9 @@ fn kernel_main(info: &'static BootInfo) -> ! {
         frame::halt();
     }
     frame::init(info);
+    // The stela, until the window server takes the screen (or, in text
+    // mode, for a moment); boot messages go on to the serial port.
+    frame::console::boot_screen();
     kernel::task::init();
     kernel::syscall::init();
     kernel::console::start();
@@ -80,11 +83,27 @@ fn kernel_main(info: &'static BootInfo) -> ! {
 #[cfg(not(feature = "selftest"))]
 fn init() {
     kernel::input::start();
+    if let Err(e) = kernel::task::spawn("boot-screen", end_boot_screen) {
+        kprintln!("kernel: no boot screen watcher: {e:?}");
+    }
     loop {
         run("init");
         // init never ends on its own; start it again if it was killed.
         kernel::task::sleep_ms(1000);
     }
+}
+
+/// Text mode: when nothing took the screen within 5 seconds, the boot
+/// screen gives way to the text console.
+#[cfg(not(feature = "selftest"))]
+fn end_boot_screen() {
+    for _ in 0..50 {
+        if frame::console::handed_over() {
+            return;
+        }
+        kernel::task::sleep_ms(100);
+    }
+    frame::console::end_boot_screen();
 }
 
 /// Runs program `name` from the `Initrd` volume and waits for it to end.
@@ -112,8 +131,11 @@ fn run(name: &str) {
 #[panic_handler]
 fn panic(panic: &core::panic::PanicInfo) -> ! {
     frame::report_panic(panic);
+    // The panic screen test keeps QEMU running so that the screen can be
+    // saved (`make test-panic`).
     #[cfg(feature = "selftest")]
-    frame::qemu::exit(frame::qemu::ExitCode::Failure);
-    #[cfg(not(feature = "selftest"))]
+    if !selftest::panic_test() {
+        frame::qemu::exit(frame::qemu::ExitCode::Failure);
+    }
     frame::halt();
 }

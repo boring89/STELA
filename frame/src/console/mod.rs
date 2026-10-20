@@ -4,13 +4,17 @@
 //! The kernel console: `kprint!` and `kprintln!` write to the serial port
 //! and, once [`init`](crate::init) has found a framebuffer, to the screen.
 
+pub mod art;
 #[cfg(target_os = "none")]
 pub(crate) mod fb;
 pub mod font;
 pub mod text;
 
 #[cfg(target_os = "none")]
-pub use fb::{FramebufferDevice, device as framebuffer, hand_over, handed_over, ink_rows};
+pub use fb::{
+    FramebufferDevice, boot_screen, device as framebuffer, end_boot_screen, hand_over, handed_over,
+    ink_rows,
+};
 
 #[cfg(target_os = "none")]
 use core::fmt;

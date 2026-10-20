@@ -1,7 +1,12 @@
 // Copyright (C) 2026 YuanChi Hsieh
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Entry stubs for the 32 exception vectors and the Rust dispatcher.
+//! Entry stubs for all 256 vectors and the Rust dispatcher.
+//!
+//! Vectors 0-31 are exceptions; 32-255 are interrupts (device IRQs, the
+//! APIC timer, IPIs, the spurious vector), whose stubs are generated with
+//! `.rept` and go through the same common routine; [`trap_dispatch`] hands
+//! them to `crate::irq`.
 //!
 //! The processor pushes SS, RSP, RFLAGS, CS, RIP and, for some vectors, an
 //! error code (Intel SDM Vol. 3A 6.13 "Error Code", Table 6-1). Each stub
@@ -71,6 +76,23 @@ stela_exception_\vec:
     STELA_EXC_ERR   30
     STELA_EXC_NOERR 31
 
+// Interrupt stubs 32..255. The processor pushes no error code for them.
+// Each stub is placed at a 16-byte boundary and is at most 12 bytes
+// (push imm8 2, push imm32 5, jmp rel32 5), so stub n starts at
+// stela_irq_stubs + (n - 32) * 16; stubs() checks the total size at boot.
+    .p2align 4
+stela_irq_stubs:
+.set stela_vec, 32
+.rept 224
+    .p2align 4
+    push 0
+    push stela_vec
+    jmp stela_exception_common
+.set stela_vec, stela_vec + 1
+.endr
+    .p2align 4
+stela_irq_stubs_end:
+
 stela_exception_common:
     push rax
     push rbx
@@ -121,17 +143,36 @@ stela_exception_stubs:
     .quad stela_exception_28, stela_exception_29, stela_exception_30, stela_exception_31
 .text
 "#,
-    dispatch = sym exception_dispatch,
+    dispatch = sym trap_dispatch,
 );
 
-/// The addresses of the 32 stubs, in vector order.
-pub(crate) fn stubs() -> &'static [u64; 32] {
+/// Size reserved for each interrupt stub.
+const IRQ_STUB_SIZE: u64 = 16;
+
+/// The addresses of the 256 stubs, in vector order.
+pub(crate) fn stubs() -> [u64; 256] {
     unsafe extern "C" {
         static stela_exception_stubs: [u64; 32];
+        static stela_irq_stubs: u8;
+        static stela_irq_stubs_end: u8;
     }
     // SAFETY: the table is defined above in read-only data, fully
     // initialised by the assembler and never written.
-    unsafe { &*core::ptr::addr_of!(stela_exception_stubs) }
+    let exceptions = unsafe { &*core::ptr::addr_of!(stela_exception_stubs) };
+    let first = core::ptr::addr_of!(stela_irq_stubs) as u64;
+    let end = core::ptr::addr_of!(stela_irq_stubs_end) as u64;
+    // Every stub must have kept to its 16 bytes (the assembler only pads).
+    assert_eq!(
+        end - first,
+        224 * IRQ_STUB_SIZE,
+        "irq stubs are not 16 bytes each"
+    );
+    let mut stubs = [0; 256];
+    stubs[..32].copy_from_slice(exceptions);
+    for (i, stub) in stubs[32..].iter_mut().enumerate() {
+        *stub = first + i as u64 * IRQ_STUB_SIZE;
+    }
+    stubs
 }
 
 /// Number of breakpoint (`int3`) exceptions handled so far.
@@ -153,9 +194,14 @@ fn read_cr2() -> u64 {
 
 /// Called by the common stub with the saved registers.
 ///
-/// A breakpoint is counted and execution resumes after the `int3`. Every
-/// other exception is fatal: it panics with a register dump.
-extern "C" fn exception_dispatch(frame: &mut TrapFrame) {
+/// Interrupts (vector 32 and up) go to `crate::irq`. A breakpoint is counted
+/// and execution resumes after the `int3`. Every other exception is fatal:
+/// it panics with a register dump.
+extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
+    if frame.vector >= 32 {
+        crate::irq::dispatch(frame);
+        return;
+    }
     if frame.vector == 3 {
         BREAKPOINTS.fetch_add(1, Ordering::Relaxed);
         return;

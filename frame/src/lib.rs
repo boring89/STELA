@@ -17,6 +17,10 @@ pub mod acpi;
 #[cfg(target_os = "none")]
 pub mod arch;
 pub mod console;
+#[cfg(target_os = "none")]
+pub mod cpu;
+#[cfg(target_os = "none")]
+pub mod irq;
 pub mod mm;
 #[cfg(target_os = "none")]
 pub mod qemu;
@@ -25,10 +29,11 @@ pub mod serial;
 pub mod sync;
 pub mod trap;
 
-/// Brings up what the kernel relies on: serial console, GDT, TSS and IDT
-/// (exceptions), the frame allocator, the page tables, the heap, the
-/// framebuffer console and the ACPI MADT. Call once, first thing in the
-/// kernel.
+/// Brings up what the kernel relies on: serial console, GDT, TSS and IDT,
+/// the frame allocator, the page tables, the heap, the framebuffer console,
+/// the ACPI MADT, the interrupt controllers (8259s masked, local APIC, I/O
+/// APICs) and the per-CPU area. Interrupts are enabled on return. Call
+/// once, first thing in the kernel.
 #[cfg(target_os = "none")]
 pub fn init(info: &'static bootinfo::BootInfo) {
     serial::init();
@@ -36,6 +41,17 @@ pub fn init(info: &'static bootinfo::BootInfo) {
     mm::init(info);
     console::fb::init(info);
     acpi::init(info);
+    irq::init(acpi::madt());
+    irq::enable();
+}
+
+/// Enables interrupts and waits for the next one (`sti; hlt`: `sti` takes
+/// effect after the next instruction, so an interrupt cannot slip in
+/// between and be missed by the `hlt`). Returns after that interrupt's
+/// handler has run, with interrupts enabled.
+#[cfg(target_os = "none")]
+pub fn halt_until_interrupt() {
+    arch::x86_64::halt_until_interrupt();
 }
 
 /// Executes `int3`. The breakpoint handler counts it and returns, so this

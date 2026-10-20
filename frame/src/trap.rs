@@ -31,7 +31,7 @@ pub struct TrapFrame {
     pub rcx: u64,
     pub rbx: u64,
     pub rax: u64,
-    /// Exception vector (0–31).
+    /// Vector: 0–31 for exceptions, 32–255 for interrupts.
     pub vector: u64,
     /// The error code the processor pushed, or 0 for vectors without one.
     pub error_code: u64,

@@ -11,12 +11,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::{self, Write};
 use core::hint::black_box;
+use core::sync::atomic::{AtomicU64, Ordering};
 use frame::bootinfo::BootInfo;
-use frame::kprintln;
 use frame::mm::paging::{self, Flags};
 use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, MMIO_BASE, heap, mmio, pmm};
 use frame::sync::{IrqGuard, SpinLock, interrupts_enabled};
 use frame::trap::{Report, TrapFrame};
+use frame::{cpu, irq, kprintln};
 
 /// A named test; it panics on failure.
 type Test = (&'static str, fn(&'static BootInfo));
@@ -33,6 +34,8 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("locks and interrupts", locks),
         ("mmio mapping", mmio_mapping),
         ("acpi madt", acpi_madt),
+        ("interrupt controllers", interrupt_controllers),
+        ("interrupt dispatch", interrupt_dispatch),
     ];
     for (name, test) in tests {
         kprintln!("selftest: {name} ...");
@@ -195,8 +198,9 @@ fn heap(_: &'static BootInfo) {
 }
 
 fn locks(_: &'static BootInfo) {
-    // Interrupts are still off here (the loader ran `cli`); guards must keep
-    // them off and must not turn them on when dropped.
+    // frame::init enabled interrupts; guards turn them off and the
+    // outermost one turns them back on.
+    assert!(interrupts_enabled());
     let before = interrupts_enabled();
     {
         let _outer = IrqGuard::new();
@@ -297,4 +301,69 @@ fn acpi_madt(_: &'static BootInfo) {
     // QEMU wires the PIT (IRQ 0) to I/O APIC input 2.
     let (gsi, _, _) = madt.isa_irq(0);
     kprintln!("selftest:   ISA IRQ 0 arrives at GSI {gsi}");
+}
+
+fn interrupt_controllers(_: &'static BootInfo) {
+    assert_eq!(irq::legacy_pic_masks(), 0xFFFF, "8259 not fully masked");
+    let cpu = cpu::current();
+    assert_eq!(cpu.id(), 0);
+    assert_eq!(cpu::online(), 1);
+    // CPUID.01H:EBX[31:24]: initial APIC id of this processor.
+    let initial = core::arch::x86_64::__cpuid(1).ebx >> 24;
+    assert_eq!(cpu.apic_id(), initial);
+    kprintln!("selftest:   BSP APIC id {}", cpu.apic_id());
+    assert!(interrupts_enabled());
+}
+
+/// Test vectors in the free range.
+const TEST_VECTOR: u8 = 0x50;
+const UNHANDLED_VECTOR: u8 = 0x51;
+
+static TEST_HITS: AtomicU64 = AtomicU64::new(0);
+
+fn test_handler(frame: &TrapFrame) {
+    assert_eq!(frame.vector, u64::from(TEST_VECTOR));
+    // Handlers run with interrupts off (interrupt gate).
+    assert!(!interrupts_enabled());
+    TEST_HITS.fetch_add(1, Ordering::Relaxed);
+}
+
+fn interrupt_dispatch(_: &'static BootInfo) {
+    assert_eq!(irq::register(3, test_handler), Err(irq::IrqError::Reserved));
+    assert_eq!(
+        irq::register(irq::SPURIOUS_VECTOR, test_handler),
+        Err(irq::IrqError::Reserved)
+    );
+    irq::register(TEST_VECTOR, test_handler).expect("register failed");
+    assert_eq!(
+        irq::register(TEST_VECTOR, test_handler),
+        Err(irq::IrqError::Busy)
+    );
+
+    // A self-IPI with interrupts on arrives at once; the handler runs and
+    // the EOI lets the next one in.
+    let before = TEST_HITS.load(Ordering::Relaxed);
+    for _ in 0..3 {
+        irq::self_ipi(TEST_VECTOR);
+    }
+    assert_eq!(TEST_HITS.load(Ordering::Relaxed), before + 3);
+    assert_eq!(irq::count(TEST_VECTOR), 3);
+
+    // With interrupts off it stays pending; `sti; hlt` then wakes up for
+    // it. The guard is forgotten so interrupts stay off until the `sti`.
+    let guard = IrqGuard::new();
+    irq::self_ipi(TEST_VECTOR);
+    assert_eq!(TEST_HITS.load(Ordering::Relaxed), before + 3);
+    core::mem::forget(guard);
+    frame::halt_until_interrupt();
+    assert_eq!(TEST_HITS.load(Ordering::Relaxed), before + 4);
+    assert!(interrupts_enabled());
+
+    // A vector without a handler is reported and acknowledged.
+    irq::self_ipi(UNHANDLED_VECTOR);
+    irq::self_ipi(UNHANDLED_VECTOR);
+    assert_eq!(irq::count(UNHANDLED_VECTOR), 2);
+    irq::unregister(TEST_VECTOR);
+    irq::self_ipi(TEST_VECTOR);
+    assert_eq!(TEST_HITS.load(Ordering::Relaxed), before + 4);
 }

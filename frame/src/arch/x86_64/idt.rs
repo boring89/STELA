@@ -5,9 +5,9 @@
 //! (Intel SDM Vol. 3A 6.10 "Interrupt Descriptor Table", 6.14.1 "64-Bit Mode
 //! IDT", Figure 6-8 "64-Bit IDT Gate Descriptors").
 //!
-//! Only the 32 exception vectors are filled; the rest are not present, so
-//! an unexpected interrupt raises #GP and ends in a panic instead of jumping
-//! somewhere random. Interrupts stay disabled in P1.
+//! Every vector has a gate: 0-31 lead to the exception handlers, 32-255 to
+//! the interrupt stubs, which hand the vector to `crate::irq`. All are
+//! interrupt gates, so IF is clear while a handler runs.
 
 use super::gdt::{DOUBLE_FAULT_IST, DescriptorTablePointer, KERNEL_CODE};
 use crate::sync::RacyCell;
@@ -63,14 +63,14 @@ struct Idt([Gate; 256]);
 
 static IDT: RacyCell<Idt> = RacyCell::new(Idt([Gate::MISSING; 256]));
 
-/// Fills the exception gates from `stubs` and loads the IDT.
+/// Fills the 256 gates from `stubs` and loads the IDT.
 ///
 /// # Safety
 ///
 /// Must be called once, on the boot processor, after the GDT is loaded and
 /// before interrupts are enabled. `stubs` must be the entry points of
 /// handlers that follow the interrupt-gate calling convention.
-pub(crate) unsafe fn init(stubs: &[u64; 32]) {
+pub(crate) unsafe fn init(stubs: &[u64; 256]) {
     let idt = IDT.get();
     // SAFETY: single-threaded first use (caller's guarantee); no other
     // reference to IDT exists.

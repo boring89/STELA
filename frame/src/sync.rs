@@ -15,8 +15,9 @@
 
 use core::cell::UnsafeCell;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 /// Disables maskable interrupts and reports whether they were enabled
 /// (RFLAGS.IF, bit 9; Intel SDM Vol. 1 3.4.3.3 "System Flags and IOPL
@@ -167,6 +168,77 @@ impl<T> Drop for SpinLockGuard<'_, T> {
     }
 }
 
+/// A value that is set once (typically during boot) and then only read,
+/// without a lock: the device registers of the local APIC, the MADT, the
+/// per-CPU areas.
+pub struct Once<T> {
+    /// [`EMPTY`], [`WRITING`] or [`READY`].
+    state: AtomicU8,
+    value: UnsafeCell<MaybeUninit<T>>,
+}
+
+const EMPTY: u8 = 0;
+const WRITING: u8 = 1;
+const READY: u8 = 2;
+
+// SAFETY: the value is written once, before `state` becomes READY (Release),
+// and afterwards only shared references are handed out (after an Acquire
+// load), so sharing a Once is like sharing a `&T` plus moving a `T` in.
+unsafe impl<T: Send + Sync> Sync for Once<T> {}
+
+impl<T> Once<T> {
+    /// An empty cell.
+    pub const fn new() -> Once<T> {
+        Once {
+            state: AtomicU8::new(EMPTY),
+            value: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    /// Stores `value` if the cell is empty; otherwise gives it back.
+    pub fn set(&self, value: T) -> Result<(), T> {
+        if self
+            .state
+            .compare_exchange(EMPTY, WRITING, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err(value);
+        }
+        // SAFETY: the EMPTY -> WRITING transition succeeded here only, so
+        // this is the only access to `value` until READY is published;
+        // readers do not look at it before then.
+        unsafe { (*self.value.get()).write(value) };
+        self.state.store(READY, Ordering::Release);
+        Ok(())
+    }
+
+    /// The value, once [`set`](Self::set) has completed.
+    pub fn get(&self) -> Option<&T> {
+        if self.state.load(Ordering::Acquire) == READY {
+            // SAFETY: READY means the value was fully written (the Acquire
+            // pairs with the Release in `set`) and is never written again.
+            Some(unsafe { (*self.value.get()).assume_init_ref() })
+        } else {
+            None
+        }
+    }
+}
+
+impl<T> Default for Once<T> {
+    fn default() -> Once<T> {
+        Once::new()
+    }
+}
+
+impl<T> Drop for Once<T> {
+    fn drop(&mut self) {
+        if *self.state.get_mut() == READY {
+            // SAFETY: READY means initialised; `&mut self` means no reader.
+            unsafe { self.value.get_mut().assume_init_drop() };
+        }
+    }
+}
+
 /// A cell for statics that are written only during single-threaded boot
 /// (descriptor tables, the TSS) and handed to the hardware by address.
 ///
@@ -207,6 +279,15 @@ mod tests {
             assert!(lock.try_lock().is_none());
         }
         assert_eq!(*lock.try_lock().unwrap(), 6);
+    }
+
+    #[test]
+    fn once_sets_once() {
+        let once = Once::new();
+        assert_eq!(once.get(), None);
+        assert_eq!(once.set(String::from("a")), Ok(()));
+        assert_eq!(once.set(String::from("b")), Err(String::from("b")));
+        assert_eq!(once.get().map(String::as_str), Some("a"));
     }
 
     #[test]

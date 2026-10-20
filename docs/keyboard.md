@@ -145,7 +145,7 @@ P2–P3 時 kernel 的 `init` 執行緒每 4 ms 輪詢佇列並 echo。P4 起：
 | host `input::keyboard` | make/break、"stela\n"、Shift／右 Shift／Caps Lock、Ctrl 字母、E0 鍵、PrintScreen 與 Pause、回覆位元組、Enter/Tab/Backspace/Escape |
 | host `input::queue` | FIFO、滿了丟最舊、與 `VecDeque` 模型比對 1000 輪 |
 | selftest "keyboard" | IRQ 1 的 I/O APIC 項目 = 向量 33 且沒遮蔽；印 `input: waiting`；5 秒內收到 `stela\n`、沒有丟事件；印 `key: S 's'` … `input: OK` |
-| `make test-fb` | 一般 kernel 的 `echo` 印 `echo: ready` 後打 `h i ret`，等 `uptime:` 再 screendump |
+| `make test-fb` | 一般 kernel：P6 起看到 `STELA shell` 後打 `uptime`（`qemu_test.py --type`），等 `uptime:` 再 screendump；`make test-shell` 打一整串 shell 指令 |
 
 `tools/qemu_test.py --send-keys TRIGGER KEYS`：在 QEMU 命令加上 `-qmp unix:build/qmp-<pid>.sock,server=on,wait=off`；serial 出現 TRIGGER 那一行時，連上 QMP（QEMU Machine Protocol，JSON）、送 `qmp_capabilities`，再對每個鍵送 `send-key`（QKeyCode 名稱，例如 `s`、`ret`；按住 50 ms、間隔 150 ms）。腳本讀 serial 改用 `select` 加逾時，guest 卡住不印字時也會在時限內失敗。
 

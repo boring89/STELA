@@ -258,7 +258,7 @@ kprintln!  ──►  serial（無鎖）
 | host（`cargo test -p frame`） | bitmap、FrameAllocator（含 double free）、SpinLock（多執行緒）、IrqGuard、Once、`overlaps_ram`、TrapFrame 位移與報告格式、字型、TextConsole 換行／捲動／tab；P2 的 ACPI、時間換算、鍵盤解碼、事件佇列（見各文件） |
 | selftest（`make test-qemu`） | BootInfo 合理、`int3` 兩次被接到並返回、例外報告格式、頁框配置／釋放／連續配置、map/translate/unmap、identity map 已移除、Vec/String/Box 與 heap 統計；P2：鎖與 IF、MMIO、MADT、中斷控制器、中斷分派、tick、sleep、鍵盤（QMP 打字）；P3：執行緒、搶佔、睡眠、ring 3 例外、syscall、ELF 載入、initrd 程式（`docs/process.md` §13） |
 | `make test-qemu-min` | 同上，`-cpu Conroe,-nx -m 256M`（硬體基準、無 NX、無 invariant TSC） |
-| `make test-fb` | 一般 kernel 開機、QMP 打 `h i ret`、看到 `uptime:` 後 QEMU `screendump`，`tools/fb_check.py` 檢查畫面不是全黑、有至少 3 行字 |
+| `make test-fb` | 一般 kernel 開機、QMP 在 shell 打 `uptime`、看到 `uptime:` 後 QEMU `screendump`，`tools/fb_check.py` 檢查畫面不是全黑、有至少 3 行字 |
 
 selftest 結束時寫 `0x10` 到 `isa-debug-exit`（port `0xF4`），QEMU 以 `(0x10 << 1) | 1 = 33` 結束；panic 時寫 `0x11`（35）。
 

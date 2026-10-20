@@ -449,7 +449,8 @@ static TABLE: SpinLock<BTreeMap<ProcessId, Status>>;   // Running { waiters } | 
 ```
 
 - `process::create(name)`、`spawn_user(&process, entry, rsp, arg)`（行程正在結束就拒絕）。
-- `process::create_with(name, bootstrap)`（P4）：建立時放好初始 handle `[0]` 主 port、`[1]` console、`[2]` bootstrap。
+- `process::create_with(name, initial)`（P4，P6 改成給 `[1]`–`[3]`）：建立時放好初始 handle `[0]` 主 port 與 `[1]`–`[3]`（`standard_initial(bootstrap)`：console、bootstrap、Data 的根）。
+- P6：行程表的每一筆另外記名稱與 `Weak<Process>`（`find(id)`、`list()` 給 `ProcessKill` 與 `SysInfo`）；`wait_until(id, deadline)` 可逾時、等待者被 kill 時放棄（`docs/userland.md` §2）。
 - 最後一個執行緒被回收 → `release()`（放掉所有 handle、close 它建立的 port）→ `finish(id, code)`：表裡改成 `Exited`、叫醒所有 waiter。
 - `wait_process(id) -> Option<i64>`：kernel 內部的（不是 syscall）；`Exited` 就回傳，否則登記成 waiter 後 `block()`，醒來再檢查。狀態會留著，再等一次還是同一個值。未知 id 回 `None`。
 - `exit_status(id)`：不等待，只看。
@@ -506,8 +507,10 @@ kernel 端 `frame::mm::initrd()` 檢查範圍落在某個 KernelAndBoot 區段�
      [vaddr, 結尾向上取頁) 每頁配清零頁框、依 flags 映射（W、NX）
      AddressSpace::load 複製檔案內容（.bss 已經是 0）
    映射 1 MiB 堆疊
+   參數訊息（BOOTSTRAP_ARGS）放進主 port（P6）
    spawn_user(process, entry, STACK_TOP − 8, 0)
- spawn_from_initrd(name) = initrd::find(frame::mm::initrd(), name) → spawn
+ spawn_path(volume, path, bootstrap)（P6）= VFS 讀檔 → spawn_process
+ （P3–P5 的 spawn_from_initrd 已刪除：initrd 是 Initrd 卷宗）
 ```
 
 錯誤：`NotFound`、`BadElf(elfload::Error)`、`BadSegment`、`OutOfMemory`。失敗時行程沒有執行緒，drop 時把已映射的都還回去（selftest 檢查失敗的載入不漏頁框）。
@@ -515,19 +518,17 @@ kernel 端 `frame::mm::initrd()` 檢查範圍落在某個 KernelAndBoot 區段�
 ### 12.5 `make run` 的開機流程
 
 ```
- kernel_main（boot 執行緒）→ task::init → syscall::init → console::start → spawn("init") → exit()
- init：hello（等它結束、印 exit code）→ input::start（input-router）→ echo（等它，永遠）
+ kernel_main（boot 執行緒）→ task::init → syscall::init → console::start → PCI → 磁碟 → 掛載 → spawn("init") → exit()
+ init 執行緒：input::start（input-router）→ Initrd:/init（等它，永遠）→ init 啟動 shell
 ```
 
 ```
-hello from user mode
-hello from a second thread (argument 7)
-hello: thread 6 finished within 2000 us
-kernel: hello (process 1) exited with code 0
-echo: ready; type to echo, Enter prints the uptime
+vfs: mounted Initrd (initrd, ro, 380 KiB)
+STELA shell; type help for the commands
+Initrd:/> 
 ```
 
-P4 起 echo 是使用者程式（`user/echo`，`docs/ipc.md` §8），kernel 的 echo 迴圈刪除。
+P4 起 echo 是使用者程式（`user/echo`，`docs/ipc.md` §8），kernel 的 echo 迴圈刪除。P6 起開機後是 shell（`docs/userland.md`）；程式一律經 VFS 從檔案載入（initrd 是 `Initrd` 卷宗），`spawn_from_initrd` 刪除。
 
 ## 13. 測試
 
@@ -544,7 +545,7 @@ P4 起 echo 是使用者程式（`user/echo`，`docs/ipc.md` §8），kernel 的
 | selftest "user mode faults" | 內建機器碼：`ud2`→134、讀 0→142、讀 kernel 位址→142（error code 0x5：保護違規、使用者）、`hlt`→141、`jmp $` 被搶佔、`kill`→99；`AddressSpace` 的 check／write 拒絕；結束後 PMM 回到原值 |
 | selftest "system calls"／"elf loading" | 見 `docs/syscall.md` |
 | selftest "initrd programs" | hello→0（`make test-qemu` 檢查兩個執行緒的輸出）、fault→142、spin→0 且主執行緒 5 次 `sleep_ms(10)` 都 < 100 tick；之後沒有 Zombie、PMM 回到原值 |
-| `make test-fb` | 一般 kernel：serial 依序出現 `hello from user mode`、`exited with code 0`、`echo: ready`，打 `h i ret` 後 `uptime:`，畫面檢查 |
+| `make test-fb` | 一般 kernel：P6 起看到 `STELA shell` 後打 `uptime`、看到 `uptime:`，畫面檢查（P3–P5 是 hello 與 echo） |
 | P4 的測試 | 見 `docs/ipc.md` §11（"ports"、"ipc programs"） |
 | `make test-qemu-min` | 同 selftest，`-cpu Conroe,-nx -m 256M`（沒有 NX：程式段全部可執行，W^X 只剩 W） |
 

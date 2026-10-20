@@ -220,7 +220,7 @@ libstela 的 `ipc::Mapping` 包住映射：`read(offset, buf)`／`write(offset, 
 | `[1]` | `CONSOLE` = `0x0100_0001` | console 服務的 `SEND|DUPLICATE|TRANSFER` |
 | `[2]` | `BOOTSTRAP` = `0x0100_0002` | 啟動者給的 handle（`program::spawn_process(.., Some(entry))`）；沒有就空（`BadHandle`） |
 
-P5 會加 `[3]`（工作目錄）。
+P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessSpawn` 由父行程指定 `[1]`–`[3]`（`docs/userland.md` §2），主 port 的第一則訊息是 `BOOTSTRAP_ARGS`（參數）。
 
 ## 7. console 服務（`kernel/src/console.rs`）
 
@@ -241,8 +241,8 @@ P5 會加 `[3]`（工作目錄）。
 - 中斷處理程式不碰 port（不必在中斷裡拿 port 的鎖），只叫醒 `input-router` 執行緒；它取出事件、編成 `KeyEvent::encode()`（4 bytes：KeyCode u16 LE、pressed、modifiers 位元）送到目前的目標。
 - `InputAttach(h)`：h 要 `SEND`；一次一個訂閱者，後者取代前者；送滿就丟；目標 port 關閉就清掉。
 - `KeyCode`／`Modifiers`／`KeyEvent`／`key_to_char` 搬到 `abi::key`（frame 的解碼器與 libstela 共用）；KeyCode 的編碼是 `KeyCode::NAMED` 的索引（只能往後加），未命名的鍵 = `0x8000 | 掃描碼`。
-- `user/echo`：attach 主 port、印 `echo: ready…`、收事件、`key_to_char`、印字（控制字元以 `^X`），Enter 印 `uptime:`。`make run` 的 init 先跑 `hello` 再跑 `echo`；kernel 的 echo 迴圈與 `kernel: ready` 刪除。
-- selftest 不啟動 input-router（鍵盤測試直接讀 `frame::input`）；`echo` 由 `make test-fb` 經 QMP 打字測。
+- `user/echo`：attach 主 port、印 `echo: ready…`、收事件、`key_to_char`、印字（控制字元以 `^X`），Enter 印 `uptime:`。kernel 的 echo 迴圈與 `kernel: ready` 刪除。P6 起開機後是 shell（`docs/userland.md`），echo 用 `run echo` 跑、Escape 結束。
+- selftest 不啟動 input-router（鍵盤測試直接讀 `frame::input`）；鍵盤事件的投遞由 `make test-fb` 與 `make test-shell` 經 QMP 打字測（P4–P5 是 echo，P6 起是 shell）。
 
 ## 9. 等待與喚醒
 
@@ -293,7 +293,7 @@ P5 會加 `[3]`（工作目錄）。
 | selftest "system calls" | 重新組譯的內建程式：經 `PortSend` 到 `[1]` 印字（kernel 指標、未映射指標 → `BadAddress`）、編號 6 與 999 → `InvalidSyscall`、`HandleClose(0)` → `BadHandle` |
 | selftest "ports" | kernel 內：送滿 64 → `Full`、FIFO、不等與 5 ms 逾時（至少 5 ms）、永遠等與長 deadline 的收方都被送方提早叫醒、close 叫醒收方（`PeerClosed`）、關閉後先收完剩下的 |
 | selftest "ipc programs" | `ipc_server` + `ipc_client`（bootstrap = server 主 port 的 SEND）：請求／回覆（夾回覆 port）、送出的 handle 失效、權限（沒有 SEND → `AccessDenied`、duplicate 不能加權限、壞 handle）、送滿 → `Full`、逾時（0 與 10 ms）、共享記憶體 3 頁往返（server map、加總、寫回最後一個 byte）、記憶體的錯誤參數、server 結束後送 → `PeerClosed`；跑兩次，第二次前後 PMM 頁框數相同；再對停在 `PortReceive` 的 server 做 kill |
-| `make test-fb` | 一般 kernel：hello → echo，打 `h i ret`，看到 `uptime:`，畫面檢查 |
+| `make test-fb` | 一般 kernel：P4–P5 是 hello → echo，打 `h i ret`，看到 `uptime:`；P6 起打進 shell（`docs/userland.md` §8） |
 
 ## 12. 已知限制與待辦
 

@@ -54,6 +54,7 @@
 | 14 | `MemoryUnmap` | addr | 0 | |
 | 15 | `InputAttach` | port | 0 | 鍵盤事件送到 port |
 | 16–26 | `DirOpen`…`VolumeOpenById` | | | 檔案與卷宗，見 `docs/vfs.md` §4（P5，**使用者尚未審核**） |
+| 27–31 | `ProcessSpawn`、`ProcessWait`、`ProcessKill`、`ProcessSelf`、`SysInfo` | | | 行程，見 `docs/userland.md` §2（P6，**使用者尚未審核**） |
 
 編號就是 ABI：`abi` 的 host 測試把每個值鎖住。未知編號 → `InvalidSyscall`。
 
@@ -187,6 +188,7 @@ fn handle(frame: &mut SyscallFrame) {
 | `ThreadStack<N>` + `spawn(entry: fn(u64), arg, &'static ThreadStack<N>) -> Result<u64, Error>` | 放在 `static` 的堆疊，只能用一次（第二次 `InvalidArgument`）。`(entry, arg)` 存在 ThreadStack 開頭，`ThreadCreate` 的 arg 是 ThreadStack 的位址；新執行緒從 libstela 的 `thread_start` 開始，讀出來呼叫 `entry(arg)`，回來就 `thread_exit()` |
 | `sys::syscall0..4`、`syscall6` | 原始呼叫：`inlateout("rax")`、`in("rdi"/"rsi"/"r10"/"r8"/"r9")`、`inlateout("rdx")`、`lateout("rcx"/"r11")` |
 | `fs::*` | 檔案與卷宗（`docs/vfs.md`） |
+| `process::*`、`heap`、`path`、`line`、`print!`／`println!` | 行程、參數、heap、路徑、行編輯（`docs/userland.md`）；`entry!` 在 `main` 前收下參數訊息 |
 | panic handler | `debug_println!("panic: {info}")` → `exit(101)` |
 
 ### 5.1 程式的建置
@@ -216,7 +218,7 @@ fn handle(frame: &mut SyscallFrame) {
 
 ## 7. 已知限制與待辦
 
-- 沒有行程（P6）類的 syscall。
+- 行程 syscall 見 `docs/userland.md`；沒有 Thread 物件。
 - `ThreadCreate` 不檢查 stack_top 是否已映射（用到才 page fault → 行程被殺）；沒有 join，程式自己用共享記憶體同步（hello 用 atomic）。
 - 沒有 SMAP；kernel 不直接解參考使用者指標，所以目前不需要。沒有 32 位元相容（`int 0x80`、compat mode）的進入點。
 - syscall 進入點與 NMI 的交互（`swapgs` 之前、`sysret` 之前的 NMI）見 `docs/process.md` §14。

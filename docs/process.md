@@ -82,7 +82,7 @@ frame 不知道「下一個該誰」，kernel 不碰暫存器與分頁表。kern
 | `user_start` | 使用者執行緒的 (entry, rsp, arg) |
 | `process` | `Option<Arc<Process>>`，kernel 執行緒是 `None` |
 
-每顆 CPU 一個 `Scheduler`（`CPUS[cpu id]`，現在只有 BSP 用）：`current`、`ready`（RunQueue）、`sleeping`（SleepList）、`blocked`、`idle`、`zombies`。TCB 全部是 `Box<Thread>`，在容器之間搬只是搬一個指標。
+每顆 CPU 一個 `Scheduler`（`CPUS[cpu id]`；P10 起 AP 也用，行程親和與跨 CPU 的 wake/kill 見 `docs/smp.md`）：`current`、`ready`（RunQueue）、`sleeping`（SleepList）、`blocked`、`idle`、`zombies`。TCB 全部是 `Box<Thread>`，在容器之間搬只是搬一個指標。
 
 ```
             spawn / wake / 睡醒 / 被搶佔 / yield
@@ -215,7 +215,7 @@ kernel 的編譯目標 `x86_64-unknown-none` 是 soft-float，**kernel 自己從
  （回來之後）reap()
 ```
 
-呼叫點：`yield_now`、`sleep_ns`、`block`、`exit`、`exit_process`、使用者例外，以及搶佔（§6.2）。切換本身在放鎖之後、中斷仍關著時做；單顆 CPU 上這樣就沒有別的東西能插進來。
+呼叫點：`yield_now`、`sleep_ns`、`block`、`exit`、`exit_process`、使用者例外，以及搶佔（§6.2）。切換本身在放鎖之後、中斷仍關著時做；單顆 CPU 上這樣就沒有別的東西能插進來。P10（SMP）：執行緒只在自己的 CPU 跑，別顆 CPU 就算在這個空檔把它改成 ready 也不會去跑它，所以仍然正確（`docs/smp.md` §4）。
 
 kernel 執行緒不寫 CR3，沿用上一個行程的位址空間——kernel 半部在每個位址空間都一樣，所以沒差；只是那個位址空間被釋放時要先換掉（§7.4）。
 
@@ -251,7 +251,7 @@ QEMU 實測：一個從不讓出的 spinner 旁邊，主執行緒 `sleep_ms(10)`
  block() → 睡著，永遠沒人叫醒   ← 錯
 ```
 
-  解法：`wake` 對一個還在跑（或在 ready 裡）的執行緒設 `wake_pending`；`block` 看到 `wake_pending` 就清掉、直接返回；`wait_process` 迴圈重新檢查。`block` 的「決定要睡」與 `schedule` 之間關著中斷，所以單顆 CPU 上 `wake` 不會插在中間；SMP 時要改成持排程器的鎖跨過切換。
+  解法：`wake` 對一個還在跑（或在 ready 裡）的執行緒設 `wake_pending`；`block` 看到 `wake_pending` 就清掉、直接返回；`wait_process` 迴圈重新檢查。`block` 的「決定要睡」與 `schedule` 之間關著中斷，所以單顆 CPU 上 `wake` 不會插在中間；SMP（P10）下別顆 CPU 的 `wake` 可以插在中間，但它拿的是同一把排程器鎖、看到的是「目前執行緒、狀態 Blocked」，改回 Running，`schedule` 就把它放回 ready（`docs/smp.md` §4）。
 - `block_until(deadline)`（P4）：可逾時的 `block`。執行緒以 `Sleeping(deadline)` + `wakeable` 進睡眠清單；tick 到期時標 `timed_out`，`wake(id)` 也會到睡眠清單找 wakeable 的那個提早放回 ready。回傳是否被叫醒。port 的收方用它（`docs/ipc.md` §9）；`WaitQueue`（`queue.rs`）記錄在某個物件上等的執行緒 id。
 - `current_killed()`（P4）：阻塞點醒來後先看自己的行程是否被 kill，是就放棄等待（§14）。
 
@@ -553,7 +553,7 @@ P4 起 echo 是使用者程式（`user/echo`，`docs/ipc.md` §8），kernel 的
 
 ## 14. 已知限制與待辦
 
-- 只有 BSP；排程器結構上是 per-CPU，但 `block`/`wake` 的競賽只靠「單顆 CPU + 關中斷」處理，SMP 時要重做（持鎖跨切換或 per-thread 狀態 atomic）。
+- P10 起有 SMP（`docs/smp.md`）：行程親和、沒有遷移與負載平衡；kernel 執行緒都在 BSP。
 - 單一等級 round-robin；`priority` 只存不用。沒有 tickless：idle 時計時器仍每 1 ms 響。
 - 睡眠的解析度是 tick（1 ms）；wake-up 在 tick 才檢查。
 - kernel 堆疊固定 32 KiB；slot 的虛擬位址不回收到 PMM 以外（slot 會重用）。kernel 堆疊配置失敗時已映射的頁框會還回去，但 `paging::map` 失敗時那一個頁框會漏掉（只在記憶體用盡時）。

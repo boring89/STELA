@@ -1,6 +1,6 @@
 # 開機：UEFI loader 與 bootinfo
 
-> P1 由自動排程一次做完，**使用者尚未審核**。修改前請先帶使用者過一遍這份文件。
+> P1 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 這份文件說明 STELA 從按下電源到 kernel 第一行程式碼之間發生的事：`boot/`（loader）、`elfload/`（ELF 解析）、`bootinfo/`（loader 交給 kernel 的資料）。
 
@@ -242,3 +242,5 @@ framebuffer：loader **不切換模式**，用 GOP 目前的模式（OVMF 預設
 - loader 自己（`LOADER_CODE`）與它讀進來又釋放的暫存不會被 kernel 回收（`KernelAndBoot` 一律視為使用中）。
 - identity map 用掉的分頁表頁框（約 5 頁）在 kernel 移除映射後沒有回收。
 - 只看 `ACPI2_GUID`／`ACPI_GUID`，RSDP 不驗證 checksum（P1 不解析 ACPI）。
+- HHDM 只涵蓋 RAM（最少 4 GiB）：4 GiB 以上的 MMIO（例如 GPU 的 64 位元 BAR）不在 HHDM 裡，驅動要用動態區的 MMIO 映射 API（尚未有，見 frame.md §12）。
+- 實機的解析度由韌體的 GOP 模式決定；要 2560x1440 得自己列舉並切換 GOP 模式（P8 顯示階段）。

@@ -1,6 +1,6 @@
 # frame：kernel 與硬體之間的那一層
 
-> P1 由自動排程一次做完，**使用者尚未審核**。修改前請先帶使用者過一遍這份文件。
+> P1 由自動排程一次做完，使用者已於 2026-10-20 審核。
 
 `frame/` 是 STELA 唯一可以寫 `unsafe` 的 kernel crate（framekernel 架構）。kernel 與之後的驅動都是 `#![forbid(unsafe_code)]`，只能透過 frame 提供的 safe API 碰硬體。
 

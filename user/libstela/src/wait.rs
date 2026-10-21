@@ -5,7 +5,8 @@
 //! sockets, terminals, processes, the sound output.
 
 use crate::sys::{syscall0, syscall2, syscall4};
-use abi::wait::{READY_SIZE, Ready};
+use abi::wait::READY_SIZE;
+pub use abi::wait::Ready;
 use abi::{Error, Handle, Syscall};
 
 pub use abi::wait::{ALL, CLOSED, CONNECTED, EXITED, READABLE, WRITABLE};
@@ -50,7 +51,7 @@ impl WaitSet {
     /// until some member is ready; fills `out` with the ready ones and
     /// returns how many. `TimedOut` when none became ready.
     pub fn wait(&self, out: &mut [Ready], timeout_ns: u64) -> Result<usize, Error> {
-        let mut raw = [[0u8; READY_SIZE]; abi::wait::MAX_MEMBERS];
+        let mut raw = [[0u8; READY_SIZE]; abi::wait::MAX_READY];
         let max = out.len().min(raw.len());
         if max == 0 {
             return Err(Error::InvalidArgument);

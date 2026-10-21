@@ -22,8 +22,8 @@ use super::KernelObject;
 use super::port::Port;
 use super::tty::Tty;
 use crate::task::{self, ProcessId};
-use abi::Error;
 use abi::wait::{self, Ready};
+use abi::{Error, Rights};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use frame::sync::SpinLock;
@@ -156,15 +156,30 @@ impl WaitSet {
         })
     }
 
-    /// Adds `object` (or updates its key and mask if it is a member);
-    /// `mask` 0 means every event. `WrongType` for objects that cannot be
-    /// waited on, `Full` past `wait::MAX_MEMBERS`, `InvalidArgument` for
-    /// undefined event bits.
-    pub fn add(&self, object: &KernelObject, key: u64, mask: u32) -> Result<(), Error> {
+    /// Adds `object` (held with `rights`), or updates its key and mask if
+    /// it is a member; `mask` 0 means every event. A port without
+    /// `RECEIVE` can only be watched for `CLOSED` (its owner ending).
+    /// `WrongType` for objects that cannot be waited on, `Full` past
+    /// `wait::MAX_MEMBERS`, `InvalidArgument` for undefined event bits,
+    /// `AccessDenied` for events the handle may not see.
+    pub fn add(
+        &self,
+        object: &KernelObject,
+        rights: Rights,
+        key: u64,
+        mask: u32,
+    ) -> Result<(), Error> {
         if mask & !wait::ALL != 0 {
             return Err(Error::InvalidArgument);
         }
-        let mask = if mask == 0 { wait::ALL } else { mask };
+        let allowed = match object {
+            KernelObject::Port(_) if !rights.contains(Rights::RECEIVE) => wait::CLOSED,
+            _ => wait::ALL,
+        };
+        let mask = if mask == 0 { allowed } else { mask };
+        if mask & !allowed != 0 {
+            return Err(Error::AccessDenied);
+        }
         let target = Target::of(object)?;
         let mut members = self.members.lock();
         if let Some(m) = members.iter_mut().find(|m| m.target.same(&target)) {

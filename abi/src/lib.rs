@@ -755,7 +755,9 @@ pub mod wait {
     /// Every defined event.
     pub const ALL: u32 = READABLE | WRITABLE | CONNECTED | CLOSED | EXITED;
     /// Most members a set holds.
-    pub const MAX_MEMBERS: usize = 64;
+    pub const MAX_MEMBERS: usize = 256;
+    /// Most records one `WaitSetWait` writes.
+    pub const MAX_READY: usize = 64;
     /// Bytes of a [`Ready`] record.
     pub const READY_SIZE: usize = 16;
 

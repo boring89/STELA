@@ -33,7 +33,7 @@ loop {
 }
 ```
 
-- `Connection::open()`／`open_with(handle)`：送 `CONNECT`（夾帶主 port 的 SEND）、等 `CONNECTED`（5 秒）；等回覆時收到的其他訊息存起來，之後由 `next_event` 依序交出；`PING` 直接略過。
+- `Connection::open()`／`open_with(handle)`：送 `CONNECT`（版本 2，夾帶主 port 的 SEND）到伺服器主 port、等 `CONNECTED`（5 秒），之後的請求都送到 `CONNECTED` 夾帶的這個 client 自己的請求 port（P11，`docs/window.md` §3）；等回覆時收到的其他訊息存起來，之後由 `next_event` 依序交出（`has_pending()` 告訴自己用 WaitSet 等主 port 的程式先處理它們）。
 - `create_window`、`resize`（等 `WINDOW_CREATED`／`WINDOW_RESIZED`）、`damage`、`damage_all`、`set_title`、`move_window`、`focus`、`close`、`set_menubar(text)`（建 Memory、寫入、夾帶送出）。
 - `Window::canvas()`：`ipc::Mapping::words_mut()` 直接給 `&mut [u32]`——libstela 裡唯一的那處 `unsafe`（SAFETY：這塊 Memory 只有這個程式寫，伺服器只讀；別的行程讀到的最多是畫到一半的像素）。toolbox 本身 `#![forbid(unsafe_code)]`（計畫 D4 原本允許 toolbox 一處 unsafe，改放在 libstela，和其他 unsafe 放一起）。
 - 視窗的 Memory handle 在映射後就關掉（映射本身留住頁框）。

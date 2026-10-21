@@ -6,9 +6,11 @@
 //!
 //! ```text
 //!  client                                   server (its main port is the
-//!    │ CONNECT (carries the reply port)       client's bootstrap [2])
-//!    │──────────────────────────────────────►│
-//!    │◄──────────────── CONNECTED (client id, screen size)
+//!    │ CONNECT (version; carries the reply    client's bootstrap [2])
+//!    │          port)                         │
+//!    │──────────────────────────────────────►│ makes a port for the client
+//!    │◄──────── CONNECTED (client id, screen size; carries that port)
+//!    │ (every request now goes to that port)  │
 //!    │ CREATE_WINDOW (size, flags, title)    │
 //!    │──────────────────────────────────────►│ makes a Memory w*h*4
 //!    │◄──────── WINDOW_CREATED (carries the Memory)
@@ -18,41 +20,47 @@
 //!    │◄──────── KEY / MOUSE / WINDOW_EVENT / MENU_SELECTED
 //! ```
 //!
-//! Every request starts with the client id (u32) the server gave in
-//! CONNECTED. Numbers are little endian; coordinates are i32 in screen
+//! Protocol version 2 (P11): each client has its own request port, and
+//! the server knows the client by the port a request came on; the first
+//! word of every request is reserved (0). Numbers are little endian; coordinates are i32 in screen
 //! pixels, window positions name the top-left corner of the content (the
 //! server draws the frame around it). Pixels are u32 `0x00RRGGBB`.
 
 use crate::key::{KEY_EVENT_SIZE, KeyEvent};
 use crate::{MESSAGE_DATA, Message};
 
+/// The protocol version a client gives in `CONNECT`.
+pub const VERSION: u32 = 2;
+
 /// Client to server.
 pub mod request {
-    /// Carries a SEND handle to the client's reply port.
+    /// To the server's main port: the protocol `VERSION`; carries a SEND
+    /// handle to the client's reply port.
     pub const CONNECT: u32 = 0x100;
-    /// client, width, height, flags, x, y (`AUTO` = server decides),
-    /// title (UTF-8, the rest of the data).
+    /// 0, width, height, flags, x, y (`AUTO` = server decides), title
+    /// (UTF-8, the rest of the data).
     pub const CREATE_WINDOW: u32 = 0x101;
-    /// client, window, x, y, width, height: show that part again.
+    /// 0, window, x, y, width, height: show that part again.
     pub const DAMAGE: u32 = 0x102;
-    /// client, window, x, y.
+    /// 0, window, x, y.
     pub const MOVE_WINDOW: u32 = 0x103;
-    /// client, window, width, height (a new Memory comes back).
+    /// 0, window, width, height (a new Memory comes back).
     pub const RESIZE_WINDOW: u32 = 0x104;
-    /// client, window, title.
+    /// 0, window, title.
     pub const SET_TITLE: u32 = 0x105;
-    /// client, length; carries a Memory with the menus as text: one menu
-    /// per line, `Title\tItem\tItem...`; an item `-` is a separator.
+    /// 0, length; carries a Memory with the menus as text: one menu per
+    /// line, `Title\tItem\tItem...`; an item `-` is a separator.
     pub const SET_MENUBAR: u32 = 0x106;
-    /// client, window.
+    /// 0, window.
     pub const CLOSE_WINDOW: u32 = 0x107;
-    /// client, window: bring it to the front and give it the keyboard.
+    /// 0, window: bring it to the front and give it the keyboard.
     pub const FOCUS_WINDOW: u32 = 0x108;
 }
 
 /// Server to client.
 pub mod event {
-    /// client id, screen width, screen height, scale, menu bar height.
+    /// client id, screen width, screen height, scale, menu bar height;
+    /// carries a SEND handle to the client's own request port.
     pub const CONNECTED: u32 = 0x180;
     /// window, width, height; carries the window's Memory (width *
     /// height * 4 bytes, rows of `0x00RRGGBB`).
@@ -70,8 +78,8 @@ pub mod event {
     pub const MENU_SELECTED: u32 = 0x186;
     /// the request's tag, an `abi::Error` value.
     pub const ERROR: u32 = 0x187;
-    /// Nothing; the server checks that the client is still there.
-    pub const PING: u32 = 0x188;
+    // 0x188 was PING (version 1): the server now sees a client's reply
+    // port close at once.
 }
 
 /// `CREATE_WINDOW` flags.
@@ -163,67 +171,51 @@ fn title_bytes(title: &str) -> &[u8] {
 
 /// `CONNECT` (the caller adds the reply port handle).
 pub fn connect() -> Message {
-    build(request::CONNECT, &[], &[])
+    build(request::CONNECT, &[VERSION], &[])
 }
 
 /// `CREATE_WINDOW`.
-pub fn create_window(
-    client: u32,
-    w: u32,
-    h: u32,
-    flags: u32,
-    x: i32,
-    y: i32,
-    title: &str,
-) -> Message {
+pub fn create_window(w: u32, h: u32, flags: u32, x: i32, y: i32, title: &str) -> Message {
     build(
         request::CREATE_WINDOW,
-        &[client, w, h, flags, x as u32, y as u32],
+        &[0, w, h, flags, x as u32, y as u32],
         title_bytes(title),
     )
 }
 
 /// `DAMAGE`.
-pub fn damage(client: u32, window: u32, x: i32, y: i32, w: u32, h: u32) -> Message {
-    build(
-        request::DAMAGE,
-        &[client, window, x as u32, y as u32, w, h],
-        &[],
-    )
+pub fn damage(window: u32, x: i32, y: i32, w: u32, h: u32) -> Message {
+    build(request::DAMAGE, &[0, window, x as u32, y as u32, w, h], &[])
 }
 
 /// `MOVE_WINDOW`.
-pub fn move_window(client: u32, window: u32, x: i32, y: i32) -> Message {
-    build(
-        request::MOVE_WINDOW,
-        &[client, window, x as u32, y as u32],
-        &[],
-    )
+pub fn move_window(window: u32, x: i32, y: i32) -> Message {
+    build(request::MOVE_WINDOW, &[0, window, x as u32, y as u32], &[])
 }
 
 /// `RESIZE_WINDOW`.
-pub fn resize_window(client: u32, window: u32, w: u32, h: u32) -> Message {
-    build(request::RESIZE_WINDOW, &[client, window, w, h], &[])
+pub fn resize_window(window: u32, w: u32, h: u32) -> Message {
+    build(request::RESIZE_WINDOW, &[0, window, w, h], &[])
 }
 
 /// `SET_TITLE`.
-pub fn set_title(client: u32, window: u32, title: &str) -> Message {
-    build(request::SET_TITLE, &[client, window], title_bytes(title))
+pub fn set_title(window: u32, title: &str) -> Message {
+    build(request::SET_TITLE, &[0, window], title_bytes(title))
 }
 
 /// `SET_MENUBAR` (the caller adds the Memory handle).
-pub fn set_menubar(client: u32, len: u32) -> Message {
-    build(request::SET_MENUBAR, &[client, len], &[])
+pub fn set_menubar(len: u32) -> Message {
+    build(request::SET_MENUBAR, &[0, len], &[])
 }
 
 /// `CLOSE_WINDOW`.
-pub fn close_window(client: u32, window: u32) -> Message {
-    build(request::CLOSE_WINDOW, &[client, window], &[])
+pub fn close_window(window: u32) -> Message {
+    build(request::CLOSE_WINDOW, &[0, window], &[])
 }
 
 /// `FOCUS_WINDOW`.
-pub fn focus_window(client: u32, window: u32) -> Message {
-    build(request::FOCUS_WINDOW, &[client, window], &[])
+pub fn focus_window(window: u32) -> Message {
+    build(request::FOCUS_WINDOW, &[0, window], &[])
 }
 
 /// `CONNECTED`.
@@ -275,11 +267,6 @@ pub fn error(request: u32, error: u64) -> Message {
     build(event::ERROR, &[request, error as u32], &[])
 }
 
-/// `PING`.
-pub fn ping() -> Message {
-    build(event::PING, &[], &[])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,7 +275,9 @@ mod tests {
     #[test]
     fn values_are_fixed() {
         assert_eq!((request::CONNECT, request::FOCUS_WINDOW), (0x100, 0x108));
-        assert_eq!((event::CONNECTED, event::PING), (0x180, 0x188));
+        assert_eq!((event::CONNECTED, event::ERROR), (0x180, 0x187));
+        assert_eq!(VERSION, 2);
+        assert_eq!(word(&connect(), 0), VERSION);
         assert_eq!(flags::DOCUMENT, 7);
         assert_eq!(flags::ALL, 15);
         assert_eq!((mouse::MOVE, mouse::DOWN, mouse::UP), (1, 2, 3));
@@ -297,18 +286,18 @@ mod tests {
 
     #[test]
     fn requests_round_trip() {
-        let m = create_window(3, 640, 480, flags::DOCUMENT, AUTO, -20, "Terminal");
+        let m = create_window(640, 480, flags::DOCUMENT, AUTO, -20, "Terminal");
         assert_eq!(m.tag, request::CREATE_WINDOW);
         assert_eq!(
             (word(&m, 0), word(&m, 1), word(&m, 2), word(&m, 3)),
-            (3, 640, 480, 7)
+            (0, 640, 480, 7)
         );
         assert_eq!((signed(&m, 4), signed(&m, 5)), (AUTO, -20));
         assert_eq!(tail(&m, 6), b"Terminal");
-        let m = damage(1, 2, 10, 20, 30, 40);
+        let m = damage(2, 10, 20, 30, 40);
         assert_eq!(
             (0..6).map(|i| word(&m, i)).collect::<heapless_vec::V>(),
-            heapless_vec::V::from([1, 2, 10, 20, 30, 40])
+            heapless_vec::V::from([0, 2, 10, 20, 30, 40])
         );
         assert_eq!(word(&m, 9), 0);
     }
@@ -316,7 +305,7 @@ mod tests {
     #[test]
     fn long_titles_are_cut_at_characters() {
         let long = "é".repeat(100);
-        let m = set_title(1, 2, &long);
+        let m = set_title(2, &long);
         let t = tail(&m, 2);
         assert!(t.len() <= TITLE_MAX);
         assert!(core::str::from_utf8(t).is_ok());

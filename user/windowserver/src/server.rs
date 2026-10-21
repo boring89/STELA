@@ -11,8 +11,12 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use libstela::fs::{self, open};
-use libstela::ipc::{Mapping, handle_close, input_attach, memory_create, port_receive, port_send};
+use libstela::ipc::{
+    FOREVER, Mapping, handle_close, handle_duplicate, input_attach, memory_create, port_create,
+    port_receive, port_send,
+};
 use libstela::process::{self, pass};
+use libstela::wait::{self, WaitSet};
 use libstela::{Error, Handle, Message, Rights, bootstrap, println, tag};
 use toolbox::draw::{Canvas, Font, Rect, color, font_for};
 use windowserver::compose::{
@@ -42,15 +46,19 @@ const ARROW: [&str; 17] = [
     "      XX   ",
 ];
 
-/// How often clients are checked for having gone away.
-const PING_NS: u64 = 1_000_000_000;
+/// Wait-set keys: 0 is the main port, a client id its request port, the
+/// id with this bit its reply port (watched for closing).
+const REPLY_KEY: u64 = 1 << 32;
 /// The label at the left of the menu bar.
 const LABEL: &str = "STELA";
 
 /// A connected application.
 struct Client {
     id: u32,
+    /// SEND to the client's main port (replies and events).
     reply: Handle,
+    /// The client's own request port (we receive; it has a SEND).
+    port: Handle,
     menus: Vec<Menu>,
 }
 
@@ -93,6 +101,7 @@ struct Server {
     stack: Stack,
     surfaces: BTreeMap<u32, Surface>,
     clients: Vec<Client>,
+    set: WaitSet,
     next_client: u32,
     next_window: u32,
     focus: Option<u32>,
@@ -154,6 +163,10 @@ impl Server {
             return;
         };
         let client = self.clients.remove(at);
+        let _ = self.set.remove(client.port);
+        let _ = self.set.remove(client.reply);
+        // Requests still queued go with the port (and what they carry).
+        let _ = handle_close(client.port);
         let _ = handle_close(client.reply);
         for w in self.stack.remove_client(id) {
             let frame = w.frame(&self.m);
@@ -668,12 +681,27 @@ impl Server {
         self.send(client, &proto::error(request, e.raw()));
     }
 
-    fn request(&mut self, msg: &Message) {
-        if msg.tag == request::CONNECT {
-            self.connect(msg);
-            return;
+    /// A message on the main port: input, or a new client.
+    fn main_message(&mut self, msg: &Message) {
+        match msg.tag {
+            tag::INPUT_KEY => {
+                if let Some(key) = KeyEvent::decode(msg.payload()) {
+                    self.key(key);
+                }
+            }
+            tag::INPUT_MOUSE => {
+                if let Some(e) = MouseEvent::decode(msg.payload()) {
+                    self.pointer(e);
+                }
+            }
+            request::CONNECT => self.connect(msg),
+            // Requests belong on the client's own port.
+            _ => release(msg),
         }
-        let client = proto::word(msg, 0);
+    }
+
+    /// A request from `client` (known by the port it came on).
+    fn request(&mut self, client: u32, msg: &Message) {
         if self.client(client).is_none() {
             release(msg);
             return;
@@ -688,6 +716,7 @@ impl Server {
             request::CLOSE_WINDOW => self.close_window(client, msg),
             request::FOCUS_WINDOW => self.focus_window(client, msg),
             _ => {
+                // CONNECT again, or something unknown.
                 release(msg);
                 Ok(())
             }
@@ -697,25 +726,59 @@ impl Server {
         }
     }
 
+    /// `CONNECT`: a request port for the new client, watched with its
+    /// reply port.
     fn connect(&mut self, msg: &Message) {
         let Some(&reply) = msg.carried().first() else {
+            release(msg);
             return;
         };
+        if proto::word(msg, 0) != proto::VERSION {
+            let _ = port_send(
+                reply,
+                &proto::error(request::CONNECT, Error::NotSupported.raw()),
+            );
+            release(msg);
+            return;
+        }
+        let Ok(port) = port_create() else {
+            release(msg);
+            return;
+        };
+        // TRANSFER: it travels in CONNECTED.
+        let give = handle_duplicate(port, Rights::SEND | Rights::TRANSFER);
         let id = self.next_client;
+        let added = give.is_ok()
+            && self.set.add(port, u64::from(id), wait::READABLE).is_ok()
+            && self
+                .set
+                .add(reply, u64::from(id) | REPLY_KEY, wait::CLOSED)
+                .is_ok();
+        let Ok(give) = give.and_then(|g| if added { Ok(g) } else { Err(Error::Full) }) else {
+            let _ = self.set.remove(port);
+            let _ = handle_close(port);
+            release(msg);
+            return;
+        };
         self.next_client += 1;
         self.clients.push(Client {
             id,
             reply,
+            port,
             menus: Vec::new(),
         });
-        let m = proto::connected(
+        let mut m = proto::connected(
             id,
             self.width as u32,
             self.height as u32,
             self.scale as u32,
             self.m.menubar as u32,
         );
-        self.send(id, &m);
+        m.push_handle(give);
+        if port_send(reply, &m).is_err() {
+            let _ = handle_close(give);
+            self.drop_client(id);
+        }
     }
 
     /// The window `id` if `client` owns it.
@@ -912,11 +975,27 @@ impl Server {
         Ok(())
     }
 
-    fn ping(&mut self) {
-        let ids: Vec<u32> = self.clients.iter().map(|c| c.id).collect();
-        for id in ids {
-            self.send(id, &proto::ping());
+    /// Handles up to `max` messages from `port` (the main port, or
+    /// client `client`'s).
+    fn drain(&mut self, port: Handle, client: Option<u32>, max: usize) -> Result<(), Error> {
+        let mut msg = Message::new();
+        for _ in 0..max {
+            match port_receive(port, &mut msg, 0) {
+                Ok(()) => {}
+                Err(Error::TimedOut) => return Ok(()),
+                Err(e) => return Err(e),
+            }
+            match client {
+                None => self.main_message(&msg),
+                Some(id) => {
+                    self.request(id, &msg);
+                    if self.client(id).is_none() {
+                        return Ok(());
+                    }
+                }
+            }
         }
+        Ok(())
     }
 }
 
@@ -1132,6 +1211,17 @@ pub fn main() -> i64 {
             return 1;
         }
     };
+    let set = match WaitSet::new() {
+        Ok(set) => set,
+        Err(e) => {
+            println!("windowserver: no wait set: {}", e.name());
+            return 1;
+        }
+    };
+    if let Err(e) = set.add(bootstrap::MAIN_PORT, 0, wait::READABLE) {
+        println!("windowserver: cannot wait on the main port: {}", e.name());
+        return 1;
+    }
     let font = font_for(width);
     let mut server = Server {
         fb,
@@ -1146,6 +1236,7 @@ pub fn main() -> i64 {
         stack: Stack::new(),
         surfaces: BTreeMap::new(),
         clients: Vec::new(),
+        set,
         next_client: 1,
         next_window: 1,
         focus: None,
@@ -1167,38 +1258,31 @@ pub fn main() -> i64 {
     println!("windowserver: {width}x{height}, ready");
     let args = process::args();
     start_programs(args.get(1..).unwrap_or(&[]));
-    let mut msg = Message::new();
-    let mut last_ping = libstela::now_ns();
+    let mut ready = [wait::Ready::default(); 16];
     loop {
-        let wait = if server.damage.is_empty() { PING_NS } else { 0 };
-        let mut handled = 0;
-        let mut timeout = wait;
-        while handled < 64 {
-            match port_receive(bootstrap::MAIN_PORT, &mut msg, timeout) {
-                Ok(()) => {}
-                Err(Error::TimedOut) => break,
-                Err(_) => return 1,
+        let timeout = if server.damage.is_empty() { FOREVER } else { 0 };
+        let n = match server.set.wait(&mut ready, timeout) {
+            Ok(n) => n,
+            Err(Error::TimedOut) => 0,
+            Err(e) => {
+                println!("windowserver: wait failed: {}", e.name());
+                return 1;
             }
-            timeout = 0;
-            handled += 1;
-            match msg.tag {
-                tag::INPUT_KEY => {
-                    if let Some(key) = KeyEvent::decode(msg.payload()) {
-                        server.key(key);
-                    }
+        };
+        for r in &ready[..n] {
+            if r.key == 0 {
+                if server.drain(bootstrap::MAIN_PORT, None, 64).is_err() {
+                    return 1;
                 }
-                tag::INPUT_MOUSE => {
-                    if let Some(e) = MouseEvent::decode(msg.payload()) {
-                        server.pointer(e);
-                    }
-                }
-                _ => server.request(&msg),
+                continue;
             }
-        }
-        let now = libstela::now_ns();
-        if now.saturating_sub(last_ping) >= PING_NS {
-            last_ping = now;
-            server.ping();
+            let id = (r.key & 0xFFFF_FFFF) as u32;
+            if r.key & REPLY_KEY != 0 {
+                // The client's main port closed: it ended.
+                server.drop_client(id);
+            } else if let Some(port) = server.client(id).map(|c| c.port) {
+                let _ = server.drain(port, Some(id), 64);
+            }
         }
         server.flush();
     }

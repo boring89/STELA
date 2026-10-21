@@ -485,12 +485,13 @@ fn wait_set_create() -> Result<u64, Error> {
     Ok(process.handles().lock().insert(entry)?.raw())
 }
 
-/// The set behind `set` (needs `WAIT`) and the object behind `member`.
+/// The set behind `set` (needs `WAIT`) and the object behind `member`
+/// with its rights.
 fn set_and_member(
     process: &Process,
     set: u64,
     member: u64,
-) -> Result<(Arc<WaitSet>, KernelObject), Error> {
+) -> Result<(Arc<WaitSet>, KernelObject, Rights), Error> {
     let handles = process.handles().lock();
     let entry = handles.get(Handle::from_raw(set))?;
     let KernelObject::WaitSet(ws) = &entry.object else {
@@ -499,31 +500,31 @@ fn set_and_member(
     if !entry.rights.contains(Rights::WAIT) {
         return Err(Error::AccessDenied);
     }
-    let object = handles.get(Handle::from_raw(member))?.object.clone();
-    Ok((Arc::clone(ws), object))
+    let member = handles.get(Handle::from_raw(member))?;
+    Ok((Arc::clone(ws), member.object.clone(), member.rights))
 }
 
 /// `WaitSetAdd(set, handle, key, mask)`.
 fn wait_set_add(set: u64, member: u64, key: u64, mask: u64) -> Result<u64, Error> {
     let process = caller()?;
-    let (ws, object) = set_and_member(&process, set, member)?;
+    let (ws, object, rights) = set_and_member(&process, set, member)?;
     let mask = u32::try_from(mask).map_err(|_| Error::InvalidArgument)?;
     // A set inside itself (or another set) is refused by `add`.
-    ws.add(&object, key, mask)?;
+    ws.add(&object, rights, key, mask)?;
     Ok(0)
 }
 
 /// `WaitSetRemove(set, handle)`.
 fn wait_set_remove(set: u64, member: u64) -> Result<u64, Error> {
     let process = caller()?;
-    let (ws, object) = set_and_member(&process, set, member)?;
+    let (ws, object, _) = set_and_member(&process, set, member)?;
     ws.remove(&object)?;
     Ok(0)
 }
 
 /// `WaitSetWait(set, &mut [Ready], max, timeout_ns) -> count`.
 fn wait_set_wait(set: u64, buf: u64, max: u64, timeout: u64) -> Result<u64, Error> {
-    use abi::wait::{MAX_MEMBERS, READY_SIZE};
+    use abi::wait::{MAX_READY, READY_SIZE};
     let process = caller()?;
     let ws = {
         let handles = process.handles().lock();
@@ -539,7 +540,7 @@ fn wait_set_wait(set: u64, buf: u64, max: u64, timeout: u64) -> Result<u64, Erro
     if max == 0 {
         return Err(Error::InvalidArgument);
     }
-    let max = (max as usize).min(MAX_MEMBERS);
+    let max = (max as usize).min(MAX_READY);
     if !process.space().check(buf, max * READY_SIZE, true) {
         return Err(Error::BadAddress);
     }

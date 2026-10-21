@@ -323,7 +323,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 | 51 | `WaitSetRemove` | set, handle | 0；不在集合裡 → `NotFound` |
 | 52 | `WaitSetWait` | set, &mut [Ready], max, timeout_ns | 就緒的個數（≥ 1）；逾時 → `TimedOut` |
 
-`Ready` 是 16 bytes：key（u64）、events（u32）、0（u32）。`max` 最多 64；集合最多 `wait::MAX_MEMBERS` = 64 個成員（`Full`）。`mask` 0 = 該物件允許的全部事件；未定義的位元 → `InvalidArgument`。
+`Ready` 是 16 bytes：key（u64）、events（u32）、0（u32）。`max` 最多 `wait::MAX_READY` = 64；集合最多 `wait::MAX_MEMBERS` = 256 個成員（`Full`）。`mask` 0 = 該物件允許的全部事件；未定義的位元 → `InvalidArgument`。
 
 ### 13.3 事件（`abi::wait`）
 
@@ -332,10 +332,10 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 | 1 | `READABLE` | port 有訊息；socket 有資料（或串流結束）、listener 有連線；tty 的程式端有一行（或 Ctrl-C）；tty master 有輸出 |
 | 2 | `WRITABLE` | socket 可以送；tty master（永遠）；音效的環至少一半是空的 |
 | 4 | `CONNECTED` | TCP 連線已建立 |
-| 8 | `CLOSED` | port 已關閉而且佇列空了；連線結束、被 reset 或失敗 |
+| 8 | `CLOSED` | port 已關閉（擁有者結束；佇列裡還有訊息也算）；連線結束、被 reset 或失敗 |
 | 16 | `EXITED` | 行程已結束 |
 
-可以加入的物件：Port、Socket、Tty、TtyMaster、Process、Audio；其他（包括 WaitSet 自己）→ `WrongType`。
+可以加入的物件：Port、Socket、Tty、TtyMaster、Process、Audio；其他（包括 WaitSet 自己）→ `WrongType`。**只有 `SEND` 的 port 只能等 `CLOSED`**（mask 有別的位元 → `AccessDenied`）：用來發現對方行程結束（視窗伺服器用它看 client 的回覆 port，`docs/window.md` §3），但看不到別人信箱裡有沒有信。
 
 ### 13.4 kernel 端（`kernel/src/object/waitset.rs`）
 

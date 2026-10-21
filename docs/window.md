@@ -44,19 +44,31 @@ P9 起 init 啟動的是 `windowserver mouseion`：Mouseion 畫桌面（`DESKTOP
 
 ## 3. 協定（`abi::window`，經 port 的訊息）
 
-client 的 `[2]` 是伺服器主 port 的 `SEND`。回覆與事件送到 client 的**主 port**（`CONNECT` 夾帶它的 `SEND`）。每個請求的第一個 word 是 `CONNECTED` 給的 client id。數字一律 little endian；座標是 i32 螢幕像素；視窗位置指**內容區**的左上角（框與標題列由伺服器畫在外面）；像素是 u32 `0x00RRGGBB`。
+**版本 2（P11，使用者尚未審核）**：每個 client 有自己的請求 port，伺服器**從訊息來的 port 認出 client**，不再看訊息內容（版本 1 的 client id 可以被冒用）。
+
+```
+ client                                     server
+   │ CONNECT（word 0 = VERSION 2，夾帶回覆 port 的 SEND）
+   │ ──────────────► 伺服器主 port（client 的 [2]）
+   │                 建一個新 port P，WaitSet 加入 P（key = id）
+   │                 與回覆 port（key = id | 1<<32，只等 CLOSED）
+   │ ◄────────────── CONNECTED（client id、螢幕…，夾帶 P 的 SEND）
+   │ 之後的請求都送到 P
+```
+
+client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與 kernel 的輸入事件（送到主 port 的其他請求被丟掉）。回覆與事件送到 client 的**主 port**。每個請求的第一個 word 保留（0）；版本不符的 `CONNECT` 得到 `ERROR`（`NotSupported`）。client 結束時它的主 port 關閉，伺服器的 WaitSet 立刻看到回覆 port 的 `CLOSED`（`docs/ipc.md` §13.3），移除它的視窗——**`PING` 拿掉了**（0x188 不再使用）。數字一律 little endian；座標是 i32 螢幕像素；視窗位置指**內容區**的左上角（框與標題列由伺服器畫在外面）；像素是 u32 `0x00RRGGBB`。
 
 | 請求（client → server） | 內容 | 回覆 |
 |---|---|---|
-| `CONNECT` 0x100 | 夾帶回覆 port 的 SEND | `CONNECTED`：client id、螢幕寬高、scale、選單列高度 |
-| `CREATE_WINDOW` 0x101 | client、w、h、flags、x、y（`AUTO` = 伺服器決定）、標題（≤ 88 bytes UTF-8） | `WINDOW_CREATED`：window id、w、h，夾帶 Memory（w×h×4） |
-| `DAMAGE` 0x102 | client、window、x、y、w、h（視窗座標） | — |
-| `MOVE_WINDOW` 0x103 | client、window、x、y | — |
-| `RESIZE_WINDOW` 0x104 | client、window、w、h | `WINDOW_RESIZED`（新的 Memory） |
-| `SET_TITLE` 0x105 | client、window、標題 | — |
-| `SET_MENUBAR` 0x106 | client、長度，夾帶 Memory：每行一個選單 `Title\tItem\tItem…`，`-` 是分隔線 | — |
-| `CLOSE_WINDOW` 0x107 | client、window | — |
-| `FOCUS_WINDOW` 0x108 | client、window | — |
+| `CONNECT` 0x100 | `VERSION`；夾帶回覆 port 的 SEND（送到伺服器主 port） | `CONNECTED`：client id、螢幕寬高、scale、選單列高度；夾帶這個 client 的請求 port 的 SEND |
+| `CREATE_WINDOW` 0x101 | 0、w、h、flags、x、y（`AUTO` = 伺服器決定）、標題（≤ 88 bytes UTF-8） | `WINDOW_CREATED`：window id、w、h，夾帶 Memory（w×h×4） |
+| `DAMAGE` 0x102 | 0、window、x、y、w、h（視窗座標） | — |
+| `MOVE_WINDOW` 0x103 | 0、window、x、y | — |
+| `RESIZE_WINDOW` 0x104 | 0、window、w、h | `WINDOW_RESIZED`（新的 Memory） |
+| `SET_TITLE` 0x105 | 0、window、標題 | — |
+| `SET_MENUBAR` 0x106 | 0、長度，夾帶 Memory：每行一個選單 `Title\tItem\tItem…`，`-` 是分隔線 | — |
+| `CLOSE_WINDOW` 0x107 | 0、window | — |
+| `FOCUS_WINDOW` 0x108 | 0、window | — |
 
 | 事件（server → client） | 內容 |
 |---|---|
@@ -65,7 +77,6 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`。回覆與事件送到 client 
 | `WINDOW_EVENT` 0x185 | window、kind（1 FOCUS、2 BLUR、3 MOVED、4 RESIZE_REQUESTED、5 CLOSE_REQUESTED）、x、y、w、h |
 | `MENU_SELECTED` 0x186 | 選單 index、項目 index |
 | `ERROR` 0x187 | 請求的 tag、`abi::Error` |
-| `PING` 0x188 | 伺服器每秒一次：送不到（`PeerClosed`）就當 client 已結束，移除它的視窗 |
 
 旗標：`TITLE_BAR` 1、`CLOSE_BOX` 2、`RESIZABLE` 4、`DESKTOP` 8（沒有框、永遠在最後面、蓋滿選單列以下的整個畫面：給 P9 的 Mouseion 畫桌面圖示）；`DOCUMENT` = 1|2|4。
 
@@ -88,6 +99,18 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`。回覆與事件送到 client 
 - 不讀 framebuffer（WC 讀很慢）：back buffer 就是「存底圖」，游標移動只要把舊位置與新位置當髒矩形。
 - 游標：11×17 的箭頭（自己畫的 1-bit 圖，黑框白底），16x32 字型時放大 2 倍。
 - client 的 Memory 伺服器以唯讀映射、用 `Mapping::read_words` 複製（client 隨時可能在寫）。
+
+### 4.1 主迴圈（P11）
+
+```
+ WaitSet：主 port（key 0，READABLE）＋ 每個 client 的請求 port（key = id）＋ 回覆 port（key = id | 1<<32，CLOSED）
+ loop：
+   wait（有髒矩形時不等，否則永遠）
+   key 0     → 主 port 最多 64 則：INPUT_KEY／INPUT_MOUSE／CONNECT
+   key id    → 那個 client 的 port 最多 64 則請求
+   CLOSED    → 移除 client（它的視窗、port、選單）
+   flush（合成、顯示）
+```
 
 ## 5. 輸入
 
@@ -141,7 +164,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`。回覆與事件送到 client 
 
 | 測試 | 內容 |
 |---|---|
-| host `abi::window` | 編號固定、請求的編碼往返、標題在字元邊界截斷、KEY／MOUSE |
+| host `abi::window` | 編號固定、`VERSION` = 2 在 `CONNECT` 的 word 0、請求的編碼往返（word 0 = 0）、標題在字元邊界截斷、KEY／MOUSE |
 | host `abi::key` | `MouseEvent` 編碼往返 |
 | host `frame::input::mouse` | 封包、負值、重新同步、overflow |
 | host `windowserver::compose` | 框的幾何、堆疊與命中測試（關閉鈕、grow box、標題列、邊框、桌面視窗留在後面）、髒矩形合併與上限、選單解析與配置、雙擊、自動放置 |
@@ -154,10 +177,8 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`。回覆與事件送到 client 
 
 ## 10. 已知限制
 
-- 請求以 client id 辨識，沒有驗證（一個 client 可以冒用別人的 id）；沒有 port set，所以不能每個 client 一個 port。
 - 只有拖外框，不即時移動；沒有視窗最小化、縮放動畫、透明、陰影（選單除外）。
 - 選單只有一層，沒有快捷鍵；STELA 字樣不是選單。
 - 只有單一滑鼠按鍵（左鍵）有意義；滾輪不處理；沒有加速度。
-- client 結束最多 1 秒後才被發現（PING）。
 - terminal 不支援 ANSI 顏色與游標移動（只略過 ESC 序列）；沒有捲回歷史；選字複製沒有。
 - 每次合成都把整個髒矩形重畫（沒有遮擋剔除）；TCG 下大矩形會慢。

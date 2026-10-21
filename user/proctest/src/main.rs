@@ -225,6 +225,22 @@ fn wait_sets(me: Handle) -> Result<(), i64> {
         set.add(master, 4, 1 << 20) == Err(Error::InvalidArgument),
         "bad mask",
     )?;
+    // A port held only to send to can be watched for closing only.
+    let other = port_create().map_err(|_| 23i64)?;
+    let send_only =
+        libstela::ipc::handle_duplicate(other, libstela::Rights::SEND).map_err(|_| 23i64)?;
+    check(
+        23,
+        set.add(send_only, 5, wait::READABLE) == Err(Error::AccessDenied),
+        "send-only port readable",
+    )?;
+    check(23, set.add(send_only, 5, 0).is_ok(), "send-only port")?;
+    port_send(send_only, &msg).map_err(|_| 23i64)?;
+    check(
+        23,
+        set.wait(&mut ready, 0) == Err(Error::TimedOut),
+        "send-only port sees no messages",
+    )?;
     Ok(())
 }
 

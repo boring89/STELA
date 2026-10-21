@@ -189,16 +189,18 @@ impl Port {
     }
 
     /// The `abi::wait` events that hold: `READABLE` with a message
-    /// queued, `CLOSED` once closed and empty.
+    /// queued, `CLOSED` once closed (its owner ended), even with
+    /// messages left.
     pub fn events(&self) -> u32 {
         let inner = self.inner.lock();
+        let mut e = 0;
         if !inner.queue.is_empty() {
-            abi::wait::READABLE
-        } else if inner.closed {
-            abi::wait::CLOSED
-        } else {
-            0
+            e |= abi::wait::READABLE;
         }
+        if inner.closed {
+            e |= abi::wait::CLOSED;
+        }
+        e
     }
 
     /// Thread `id` (in a `WaitSet` wait) is woken by the next change.

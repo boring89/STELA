@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The connection to the window server and windows (the toolbox's Window
-//! Manager). Replies and events arrive on the program's main port; events
-//! that come while the toolbox waits for a reply are kept for
-//! [`Connection::next_event`].
+//! Manager). `CONNECT` goes to the server's main port and gives this
+//! client its own request port (protocol version 2); replies and events
+//! arrive on the program's main port; events that come while the toolbox
+//! waits for a reply are kept for [`Connection::next_event`].
 
 use crate::draw::{Canvas, Rect};
 use crate::event::Event;
@@ -20,6 +21,7 @@ const REPLY_TIMEOUT: u64 = 5_000_000_000;
 
 /// A connection to the window server.
 pub struct Connection {
+    /// This client's request port (from `CONNECTED`).
     server: Handle,
     client: u32,
     /// The screen's size.
@@ -47,13 +49,17 @@ impl Connection {
             return Err(e);
         }
         let mut conn = Connection {
-            server,
+            server: Handle::NONE,
             client: 0,
             screen: (0, 0),
             menubar: 0,
             pending: VecDeque::new(),
         };
         let m = conn.wait_for(event::CONNECTED)?;
+        let Some(&port) = m.carried().first() else {
+            return Err(Error::InvalidArgument);
+        };
+        conn.server = port;
         conn.client = proto::word(&m, 0);
         conn.screen = (proto::word(&m, 1), proto::word(&m, 2));
         conn.menubar = proto::word(&m, 4);
@@ -93,37 +99,25 @@ impl Connection {
                 let code = u64::from(proto::word(&msg, 1));
                 return Err(Error::from_raw(code).unwrap_or(Error::InvalidArgument));
             }
-            if msg.tag != event::PING {
-                self.pending.push_back(msg);
-            }
+            self.pending.push_back(msg);
         }
     }
 
     /// The next event, waiting up to `timeout_ns` (`FOREVER`); `None` when
-    /// the time is up. Pings are answered here and not returned.
+    /// the time is up.
     pub fn next_event(&mut self, timeout_ns: u64) -> Option<Event> {
         if let Some(msg) = self.pending.pop_front() {
             return Some(Event::from_message(msg));
         }
-        let deadline = libstela::now_ns().saturating_add(timeout_ns);
-        loop {
-            let left = if timeout_ns == FOREVER {
-                FOREVER
-            } else {
-                deadline.saturating_sub(libstela::now_ns())
-            };
-            let mut msg = Message::new();
-            if port_receive(bootstrap::MAIN_PORT, &mut msg, left).is_err() {
-                return None;
-            }
-            if msg.tag == event::PING {
-                if left == 0 {
-                    return None;
-                }
-                continue;
-            }
-            return Some(Event::from_message(msg));
-        }
+        let mut msg = Message::new();
+        port_receive(bootstrap::MAIN_PORT, &mut msg, timeout_ns).ok()?;
+        Some(Event::from_message(msg))
+    }
+
+    /// Whether an event is kept from waiting for a reply (a program that
+    /// waits on its main port with other objects checks this first).
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Creates a window of `w` x `h` content pixels at (x, y)
@@ -137,7 +131,7 @@ impl Connection {
         y: i32,
         title: &str,
     ) -> Result<Window, Error> {
-        self.send(&proto::create_window(self.client, w, h, flags, x, y, title))?;
+        self.send(&proto::create_window(w, h, flags, x, y, title))?;
         let reply = self.wait_for(event::WINDOW_CREATED)?;
         Window::from_reply(&reply)
     }
@@ -150,7 +144,7 @@ impl Connection {
             let map = Mapping::new(memory, size, true)?;
             map.write(0, text.as_bytes())?;
         }
-        let mut msg = proto::set_menubar(self.client, text.len() as u32);
+        let mut msg = proto::set_menubar(text.len() as u32);
         msg.push_handle(memory);
         self.send(&msg)
     }
@@ -161,14 +155,7 @@ impl Connection {
         if r.is_empty() {
             return Ok(());
         }
-        self.send(&proto::damage(
-            self.client,
-            window.id,
-            r.x,
-            r.y,
-            r.w as u32,
-            r.h as u32,
-        ))
+        self.send(&proto::damage(window.id, r.x, r.y, r.w as u32, r.h as u32))
     }
 
     /// Shows all of `window` again.
@@ -178,22 +165,22 @@ impl Connection {
 
     /// Gives `window` a new title.
     pub fn set_title(&self, window: &Window, title: &str) -> Result<(), Error> {
-        self.send(&proto::set_title(self.client, window.id, title))
+        self.send(&proto::set_title(window.id, title))
     }
 
     /// Moves `window`'s content to (x, y) on the screen.
     pub fn move_window(&self, window: &Window, x: i32, y: i32) -> Result<(), Error> {
-        self.send(&proto::move_window(self.client, window.id, x, y))
+        self.send(&proto::move_window(window.id, x, y))
     }
 
     /// Brings `window` to the front with the keyboard.
     pub fn focus(&self, window: &Window) -> Result<(), Error> {
-        self.send(&proto::focus_window(self.client, window.id))
+        self.send(&proto::focus_window(window.id))
     }
 
     /// Gives `window` a new size (and a new, blank buffer).
     pub fn resize(&mut self, window: &mut Window, w: u32, h: u32) -> Result<(), Error> {
-        self.send(&proto::resize_window(self.client, window.id, w, h))?;
+        self.send(&proto::resize_window(window.id, w, h))?;
         let reply = self.wait_for(event::WINDOW_RESIZED)?;
         *window = Window::from_reply(&reply)?;
         Ok(())
@@ -201,7 +188,7 @@ impl Connection {
 
     /// Closes `window`.
     pub fn close(&self, window: Window) -> Result<(), Error> {
-        self.send(&proto::close_window(self.client, window.id))
+        self.send(&proto::close_window(window.id))
     }
 }
 

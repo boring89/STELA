@@ -60,6 +60,7 @@
 | 37–38 | `FileGetInfo`、`FileSetInfo` | 檔案或資料夾, 32 bytes | 0 | Finder 資訊，見 `docs/vfs.md` §4.2（P9，使用者已於 2026-10-20 審核） |
 | 39–46 | `SocketCreate`、`SocketBind`、`SocketConnect`、`SocketListen`、`SocketAccept`、`SocketSend`、`SocketRecv`、`NetInfo` | | | 網路，見 `docs/net.md` §6（P10，使用者已於 2026-10-21 審核） |
 | 47–48 | `AudioOpen`、`AudioClose` | | | 音效，見 `docs/sound.md` §4（P10，使用者已於 2026-10-21 審核） |
+| 49–52 | `WaitSetCreate`、`WaitSetAdd`、`WaitSetRemove`、`WaitSetWait` | | | 同時等多個物件，見 `docs/ipc.md` §13（P11，使用者尚未審核） |
 
 P7 起沒有 STELA ELF note 的程式用 **Linux 人格**：同一個進入點，號碼與回傳慣例是 Linux 的（`docs/linux.md`）。
 

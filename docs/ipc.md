@@ -297,7 +297,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 
 ## 12. 已知限制與待辦
 
-- 沒有 port set／同時等多個 port；沒有「收到回覆才返回」的 call 語意（client 自己建回覆 port）。
+- P11 加了 WaitSet（§13）同時等多個物件；沒有「收到回覆才返回」的 call 語意（client 自己建回覆 port）。
 - 訊息夾帶自己所在 port 的 handle 會形成 `Arc` 循環：只要那則訊息沒被收，port 就不會被釋放（擁有者結束時只 close、不清佇列）。
 - §4.3 的兩個競爭邊界會放掉夾帶的 handle。
 - console 服務任何持有 `[1]` 的程式都能印；輸出是非同步的。
@@ -305,3 +305,66 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 - `InputAttach` 沒有權限控管以外的政策（任何有某個 port SEND 的程式都能搶走鍵盤）；P8 的視窗伺服器接手後要改成只有它能 attach。
 - 共享記憶體是 eager（建立時配好全部頁框），沒有需求分頁；映射區不回收空的中間分頁表。
 - 行程表的 `Exited` 狀態仍然永遠不清（P6 的 Process handle 再處理）。
+
+## 13. WaitSet：同時等多個物件（P11）
+
+> P11 由自動排程一次做完，**使用者尚未審核**。
+
+### 13.1 比喻：總機的燈板
+
+以前一個執行緒只能守著一個信箱（`PortReceive`）；要同時等鍵盤與 tty 輸出，只好多開一個執行緒（terminal 的輸出執行緒）。WaitSet 是**總機的燈板**：把幾個信箱、插座、終端機、行程登記到板子上，每個配一個號碼（key）；坐在板子前面等，任何一盞燈亮就醒來，看是哪幾個號碼亮了，再去處理。
+
+### 13.2 syscall
+
+| 編號 | 名稱 | 參數 | 回傳 |
+|---|---|---|---|
+| 49 | `WaitSetCreate` | — | handle（`WAIT|DUPLICATE|TRANSFER`） |
+| 50 | `WaitSetAdd` | set, handle, key, mask | 0；已在集合裡就更新 key 與 mask |
+| 51 | `WaitSetRemove` | set, handle | 0；不在集合裡 → `NotFound` |
+| 52 | `WaitSetWait` | set, &mut [Ready], max, timeout_ns | 就緒的個數（≥ 1）；逾時 → `TimedOut` |
+
+`Ready` 是 16 bytes：key（u64）、events（u32）、0（u32）。`max` 最多 64；集合最多 `wait::MAX_MEMBERS` = 64 個成員（`Full`）。`mask` 0 = 該物件允許的全部事件；未定義的位元 → `InvalidArgument`。
+
+### 13.3 事件（`abi::wait`）
+
+| 位元 | 名稱 | 誰會有 |
+|---|---|---|
+| 1 | `READABLE` | port 有訊息；socket 有資料（或串流結束）、listener 有連線；tty 的程式端有一行（或 Ctrl-C）；tty master 有輸出 |
+| 2 | `WRITABLE` | socket 可以送；tty master（永遠）；音效的環至少一半是空的 |
+| 4 | `CONNECTED` | TCP 連線已建立 |
+| 8 | `CLOSED` | port 已關閉而且佇列空了；連線結束、被 reset 或失敗 |
+| 16 | `EXITED` | 行程已結束 |
+
+可以加入的物件：Port、Socket、Tty、TtyMaster、Process、Audio；其他（包括 WaitSet 自己）→ `WrongType`。
+
+### 13.4 kernel 端（`kernel/src/object/waitset.rs`）
+
+```
+ WaitSetWait ─► loop：
+    被 kill 了？→ 放棄
+    複製成員清單
+    每個成員：watch(me)        ← 把自己加進物件的 watchers
+    每個成員：events() & mask  ← 現在成立的事件
+    有 → 每個成員 unwatch(me)，回傳
+    到期 → unwatch，TimedOut
+    block_until(deadline)      ← 任何成員一變就叫醒所有 watchers
+    每個成員 unwatch(me)，回到 loop
+```
+
+- **先 watch 再看**：看完到睡之間如果有事件發生，wake 會留下 `wake_pending`，`block_until` 立刻返回（§9.2），不會漏掉。
+- 每個物件的 watchers：Port 的 `Inner.watchers`（送信與關閉時全部叫醒；`waiters` 仍只叫醒一個收信的人）、Tty 的 `watchers`（輸出與可讀的輸入）、網路的 `net.waiters`（協定堆疊一有事件就全部叫醒，和 socket syscall 共用）、行程表的 `waiters`（結束時）、音效的 `WATCHERS`（餵資料的執行緒每 5 ms 看一次，環有一半空就叫醒）。
+- 成員以 **Weak** 參考：集合不會讓 socket 保持開著或讓 port 活著；物件消失的成員在下一次 wait 時自動移除。成員的身分用指標比較（`Weak::ptr_eq`；行程用 id），所以 `WaitSetRemove` 給同一個物件的任何 handle 都可以。
+- 單一物件的阻塞呼叫（`PortReceive`、`TtyRead`、socket 的 recv…）不變。
+- 一個執行緒一次只在一個 WaitSet 等（自然成立：它在 syscall 裡）。
+
+### 13.5 libstela
+
+`libstela::wait::WaitSet`：`new()`、`add(handle, key, mask)`、`remove(handle)`、`wait(&mut [Ready], timeout_ns) -> usize`，drop 時關閉 handle；事件常數 `wait::READABLE` 等。
+
+### 13.6 測試
+
+| 測試 | 內容 |
+|---|---|
+| host `abi` | 編號 49–52、`WAIT_SET` = 11、`wait::ALL` = 31、`Ready` 的編碼往返 |
+| host `net` | `Stack::readiness`：連線中、已連線可寫、listener 有連線、有資料可讀、對方關閉後 `readable + closed`、UDP 可寫 |
+| selftest（`proctest` 的第 15–22 步） | port + tty master（`READABLE`）+ 子行程一起等：不等 → `TimedOut`；送信 → key 1；印到 tty → key 2；kill 子行程 → key 3 `EXITED`；移除兩次 → `NotFound`；另一個執行緒 5 ms 後送信叫醒正在等的主執行緒（至少等了 4 ms）；關掉的 port 自動移出；WaitSet 放進自己 → `WrongType`；未定義的 mask → `InvalidArgument` |

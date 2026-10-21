@@ -950,6 +950,38 @@ impl Stack {
         }
     }
 
+    /// What the socket is ready for, as `abi::wait`-style flags
+    /// ([`Readiness`]): data (or a connection, or the end) to read, room
+    /// to send, established, closed or failed.
+    pub fn readiness(&mut self, id: SocketId) -> Readiness {
+        let mut r = Readiness::default();
+        let ready_conns = match self.sock(id) {
+            Ok(Sock::Conn(c, _)) => {
+                let handshake = matches!(c.state, State::SynSent | State::SynReceived);
+                r.readable = c.readable() > 0 || c.at_end() || c.is_closed();
+                r.writable = !handshake && c.can_send() && c.send_room() > 0;
+                r.connected = !handshake && c.error.is_none() && !c.is_closed();
+                r.closed = c.error.is_some() || c.is_closed() || c.at_end();
+                return r;
+            }
+            Ok(Sock::Udp { queue, .. } | Sock::Icmp { queue, .. }) => {
+                r.readable = !queue.is_empty();
+                r.writable = true;
+                return r;
+            }
+            Ok(Sock::TcpIdle { .. }) => return r,
+            Ok(Sock::Listen { ready, .. }) => ready.clone(),
+            Err(_) => {
+                r.closed = true;
+                return r;
+            }
+        };
+        r.readable = ready_conns
+            .iter()
+            .any(|&c| !matches!(self.connected(c), Ok(false)));
+        r
+    }
+
     /// Closes the socket: a TCP connection sends FIN (and lingers until
     /// it is done); everything else goes at once.
     pub fn close(&mut self, id: SocketId, now: u64) {
@@ -1020,6 +1052,19 @@ impl Stack {
             _ => None,
         }
     }
+}
+
+/// What a socket is ready for ([`Stack::readiness`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Readiness {
+    /// `recv` (or `accept`) would return at once.
+    pub readable: bool,
+    /// `send` would take some data.
+    pub writable: bool,
+    /// A TCP connection is established.
+    pub connected: bool,
+    /// The connection ended, was reset or failed.
+    pub closed: bool,
 }
 
 /// The TCP buffer size, for callers sizing their reads.

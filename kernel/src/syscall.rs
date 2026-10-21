@@ -7,6 +7,7 @@
 
 use crate::object::port::{Port, QueuedMessage};
 use crate::object::tty::Tty;
+use crate::object::waitset::WaitSet;
 use crate::object::{Entry, KernelObject};
 use crate::task::{self, Process};
 use abi::layout::USER_END;
@@ -63,6 +64,10 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::TtyRead) => tty_read(a0, a1, a2, args[3]),
         Some(Syscall::TtyWrite) => tty_write(a0, a1, a2),
         Some(Syscall::HandleKind) => handle_kind(a0),
+        Some(Syscall::WaitSetCreate) => wait_set_create(),
+        Some(Syscall::WaitSetAdd) => wait_set_add(a0, a1, a2, args[3]),
+        Some(Syscall::WaitSetRemove) => wait_set_remove(a0, a1),
+        Some(Syscall::WaitSetWait) => wait_set_wait(a0, a1, a2, args[3]),
         Some(call) => file_call(call, args),
         None => Err(Error::InvalidSyscall),
     };
@@ -466,7 +471,92 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::Framebuffer(_) => k::FRAMEBUFFER,
         KernelObject::Socket(_) => k::SOCKET,
         KernelObject::Audio(_) => k::AUDIO,
+        KernelObject::WaitSet(_) => k::WAIT_SET,
     })
+}
+
+/// `WaitSetCreate() -> handle`.
+fn wait_set_create() -> Result<u64, Error> {
+    let process = caller()?;
+    let entry = Entry {
+        object: KernelObject::WaitSet(WaitSet::new()),
+        rights: Rights::WAIT | Rights::DUPLICATE | Rights::TRANSFER,
+    };
+    Ok(process.handles().lock().insert(entry)?.raw())
+}
+
+/// The set behind `set` (needs `WAIT`) and the object behind `member`.
+fn set_and_member(
+    process: &Process,
+    set: u64,
+    member: u64,
+) -> Result<(Arc<WaitSet>, KernelObject), Error> {
+    let handles = process.handles().lock();
+    let entry = handles.get(Handle::from_raw(set))?;
+    let KernelObject::WaitSet(ws) = &entry.object else {
+        return Err(Error::WrongType);
+    };
+    if !entry.rights.contains(Rights::WAIT) {
+        return Err(Error::AccessDenied);
+    }
+    let object = handles.get(Handle::from_raw(member))?.object.clone();
+    Ok((Arc::clone(ws), object))
+}
+
+/// `WaitSetAdd(set, handle, key, mask)`.
+fn wait_set_add(set: u64, member: u64, key: u64, mask: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let (ws, object) = set_and_member(&process, set, member)?;
+    let mask = u32::try_from(mask).map_err(|_| Error::InvalidArgument)?;
+    // A set inside itself (or another set) is refused by `add`.
+    ws.add(&object, key, mask)?;
+    Ok(0)
+}
+
+/// `WaitSetRemove(set, handle)`.
+fn wait_set_remove(set: u64, member: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let (ws, object) = set_and_member(&process, set, member)?;
+    ws.remove(&object)?;
+    Ok(0)
+}
+
+/// `WaitSetWait(set, &mut [Ready], max, timeout_ns) -> count`.
+fn wait_set_wait(set: u64, buf: u64, max: u64, timeout: u64) -> Result<u64, Error> {
+    use abi::wait::{MAX_MEMBERS, READY_SIZE};
+    let process = caller()?;
+    let ws = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(set))?;
+        let KernelObject::WaitSet(ws) = &entry.object else {
+            return Err(Error::WrongType);
+        };
+        if !entry.rights.contains(Rights::WAIT) {
+            return Err(Error::AccessDenied);
+        }
+        Arc::clone(ws)
+    };
+    if max == 0 {
+        return Err(Error::InvalidArgument);
+    }
+    let max = (max as usize).min(MAX_MEMBERS);
+    if !process.space().check(buf, max * READY_SIZE, true) {
+        return Err(Error::BadAddress);
+    }
+    let deadline = match timeout {
+        u64::MAX => None,
+        t => Some(frame::time::now_ns().saturating_add(t)),
+    };
+    let ready = ws.wait(deadline, max)?;
+    let mut bytes = Vec::with_capacity(ready.len() * READY_SIZE);
+    for r in &ready {
+        bytes.extend_from_slice(&r.to_bytes());
+    }
+    process
+        .space()
+        .write(buf, &bytes)
+        .map_err(|_| Error::BadAddress)?;
+    Ok(ready.len() as u64)
 }
 
 /// The file system calls (`crate::fsyscall`).

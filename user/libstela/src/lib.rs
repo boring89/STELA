@@ -37,6 +37,7 @@ pub mod process;
 pub mod sync;
 pub mod sys;
 pub mod tty;
+pub mod wait;
 
 use core::cell::UnsafeCell;
 use core::fmt;

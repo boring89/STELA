@@ -41,6 +41,9 @@ struct Inner {
     readers: WaitQueue,
     /// Threads waiting in a master read.
     master_readers: WaitQueue,
+    /// Threads waiting in a `WaitSet` that holds either side: all woken
+    /// on output and on readable input.
+    watchers: WaitQueue,
     /// Linux processes that use the tty (interrupted by Ctrl-C).
     users: Vec<ProcessId>,
 }
@@ -63,6 +66,7 @@ impl Tty {
                 output: VecDeque::new(),
                 readers: WaitQueue::new(),
                 master_readers: WaitQueue::new(),
+                watchers: WaitQueue::new(),
                 users: Vec::new(),
             }),
         })
@@ -91,7 +95,9 @@ impl Tty {
             let mut inner = self.inner.lock();
             let room = OUTPUT_MAX.saturating_sub(inner.output.len());
             inner.output.extend(&data[..data.len().min(room)]);
-            inner.master_readers.drain()
+            let mut waiters = inner.master_readers.drain();
+            waiters.extend(inner.watchers.drain());
+            waiters
         };
         for id in waiters {
             task::wake(id);
@@ -104,7 +110,9 @@ impl Tty {
             let mut inner = self.inner.lock();
             let fed = inner.ldisc.feed(c);
             let readers = if fed.readable || fed.interrupt {
-                inner.readers.drain()
+                let mut readers = inner.readers.drain();
+                readers.extend(inner.watchers.drain());
+                readers
             } else {
                 Vec::new()
             };
@@ -193,6 +201,22 @@ impl Tty {
             task::block_until(deadline);
             self.inner.lock().master_readers.remove(me);
         }
+    }
+
+    /// Whether a master read would return at once.
+    pub fn master_readable(&self) -> bool {
+        !self.inner.lock().output.is_empty()
+    }
+
+    /// Thread `id` (in a `WaitSet` wait) is woken by the next output or
+    /// readable input.
+    pub fn watch(&self, id: task::ThreadId) {
+        self.inner.lock().watchers.add(id);
+    }
+
+    /// Undoes [`Tty::watch`].
+    pub fn unwatch(&self, id: task::ThreadId) {
+        self.inner.lock().watchers.remove(id);
     }
 
     /// The line discipline's mode: (canonical, echo, signals).

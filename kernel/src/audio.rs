@@ -13,6 +13,7 @@
 
 use crate::audiofeed::{Feeder, from_ring};
 use crate::object::{Entry, KernelObject};
+use crate::task::queue::WaitQueue;
 use crate::task::{self, Process};
 use abi::audio as ring;
 use abi::{Error, Handle, Rights};
@@ -34,6 +35,9 @@ struct Audio {
 }
 
 static AUDIO: SpinLock<Option<Audio>> = SpinLock::new(None);
+/// Threads waiting in a `WaitSet` that holds the output: woken by the
+/// feeding thread when the ring is at least half empty.
+static WATCHERS: SpinLock<WaitQueue> = SpinLock::new(WaitQueue::new());
 
 /// What an Audio handle refers to: the open output.
 pub struct AudioSession;
@@ -111,8 +115,39 @@ fn run() {
         if let Some(a) = AUDIO.lock().as_mut() {
             feed(a);
         }
+        if events() != 0 {
+            let woken = WATCHERS.lock().drain();
+            for id in woken {
+                task::wake(id);
+            }
+        }
         task::sleep_ms(5);
     }
+}
+
+/// The `abi::wait` events of the output: `WRITABLE` while the ring is
+/// at least half empty.
+pub fn events() -> u32 {
+    let guard = AUDIO.lock();
+    let Some(p) = guard.as_ref().and_then(|a| a.playing.as_ref()) else {
+        return 0;
+    };
+    let used = u32_at(&p.memory, ring::WRITE_POS).wrapping_sub(u32_at(&p.memory, ring::READ_POS));
+    if used <= ring::RING_BYTES / 2 {
+        abi::wait::WRITABLE
+    } else {
+        0
+    }
+}
+
+/// Thread `me` (in a `WaitSet` wait) is woken when the ring has room.
+pub fn watch(me: task::ThreadId) {
+    WATCHERS.lock().add(me);
+}
+
+/// Undoes [`watch`].
+pub fn unwatch(me: task::ThreadId) {
+    WATCHERS.lock().remove(me);
 }
 
 fn stop() {

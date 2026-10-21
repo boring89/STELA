@@ -294,3 +294,35 @@ fn tcp_shutdown_keeps_reading() {
     exchange(&mut a, &mut b, 2);
     assert_eq!(a.recv(c, &mut buf).expect("recv").map(|r| r.0), Some(6));
 }
+
+#[test]
+fn readiness_follows_the_connection() {
+    let (mut a, mut b) = pair();
+    let listener = b.socket(Kind::Tcp).expect("socket");
+    b.bind(listener, 80).expect("bind");
+    b.listen(listener, 4).expect("listen");
+    assert!(!b.readiness(listener).readable);
+    let c = a.socket(Kind::Tcp).expect("socket");
+    a.connect(c, B_IP, 80, 0).expect("connect");
+    let r = a.readiness(c);
+    assert!(!r.connected && !r.writable && !r.readable);
+    exchange(&mut a, &mut b, 1);
+    let r = a.readiness(c);
+    assert!(r.connected && r.writable && !r.readable && !r.closed);
+    assert!(b.readiness(listener).readable);
+    let s = b.accept(listener).expect("accept").expect("a connection");
+    assert!(!b.readiness(listener).readable);
+    b.send(s, b"hi", None, 2).expect("send");
+    exchange(&mut a, &mut b, 2);
+    assert!(a.readiness(c).readable);
+    let mut buf = [0u8; 16];
+    a.recv(c, &mut buf).expect("recv");
+    assert!(!a.readiness(c).readable);
+    b.close(s, 3);
+    exchange(&mut a, &mut b, 3);
+    let r = a.readiness(c);
+    assert!(r.readable && r.closed);
+    let u = a.socket(Kind::Udp).expect("socket");
+    let r = a.readiness(u);
+    assert!(r.writable && !r.readable);
+}

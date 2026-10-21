@@ -192,6 +192,45 @@ fn wait<T>(
     }
 }
 
+/// The `abi::wait` events of socket `s` (`CLOSED` without a card).
+pub fn events(s: &Socket) -> u32 {
+    use abi::wait;
+    let mut guard = NET.lock();
+    let Some(net) = guard.as_mut() else {
+        return wait::CLOSED;
+    };
+    let r = net.stack.readiness(s.id);
+    let mut e = 0;
+    if r.readable {
+        e |= wait::READABLE;
+    }
+    if r.writable {
+        e |= wait::WRITABLE;
+    }
+    if r.connected {
+        e |= wait::CONNECTED;
+    }
+    if r.closed {
+        e |= wait::CLOSED;
+    }
+    e
+}
+
+/// Thread `me` (in a `WaitSet` wait) is woken by the next change in the
+/// stack.
+pub fn watch(me: task::ThreadId) {
+    if let Some(net) = NET.lock().as_mut() {
+        net.waiters.add(me);
+    }
+}
+
+/// Undoes [`watch`].
+pub fn unwatch(me: task::ThreadId) {
+    if let Some(net) = NET.lock().as_mut() {
+        net.waiters.remove(me);
+    }
+}
+
 fn deadline(timeout: u64) -> Option<u64> {
     match timeout {
         u64::MAX => None,

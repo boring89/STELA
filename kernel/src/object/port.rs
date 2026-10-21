@@ -48,6 +48,9 @@ impl QueuedMessage {
 struct Inner {
     queue: VecDeque<QueuedMessage>,
     waiters: WaitQueue,
+    /// Threads waiting in a `WaitSet` that holds the port: all woken on
+    /// every change.
+    watchers: WaitQueue,
     closed: bool,
 }
 
@@ -69,6 +72,7 @@ impl Port {
             inner: SpinLock::new(Inner {
                 queue: VecDeque::new(),
                 waiters: WaitQueue::new(),
+                watchers: WaitQueue::new(),
                 closed: false,
             }),
         })
@@ -94,7 +98,7 @@ impl Port {
     /// Queues `msg` and wakes one receiver. Fails with `PeerClosed` or
     /// `Full`; the message (and what it carries) is then dropped.
     pub fn send(&self, msg: QueuedMessage) -> Result<(), Error> {
-        let waiter = {
+        let (waiter, watchers) = {
             let mut inner = self.inner.lock();
             if inner.closed {
                 Err(Error::PeerClosed)
@@ -102,10 +106,13 @@ impl Port {
                 Err(Error::Full)
             } else {
                 inner.queue.push_back(msg);
-                Ok(inner.waiters.pop())
+                Ok((inner.waiters.pop(), inner.watchers.drain()))
             }
         }?;
         if let Some(id) = waiter {
+            task::wake(id);
+        }
+        for id in watchers {
             task::wake(id);
         }
         Ok(())
@@ -153,12 +160,12 @@ impl Port {
     /// Closes the port: later sends fail, the receivers are woken. The
     /// queued messages stay to be received.
     pub fn close(&self) {
-        let waiters = {
+        let (waiters, watchers) = {
             let mut inner = self.inner.lock();
             inner.closed = true;
-            inner.waiters.drain()
+            (inner.waiters.drain(), inner.watchers.drain())
         };
-        for id in waiters {
+        for id in waiters.into_iter().chain(watchers) {
             task::wake(id);
         }
     }
@@ -179,5 +186,28 @@ impl Port {
     /// Messages waiting.
     pub fn queued(&self) -> usize {
         self.inner.lock().queue.len()
+    }
+
+    /// The `abi::wait` events that hold: `READABLE` with a message
+    /// queued, `CLOSED` once closed and empty.
+    pub fn events(&self) -> u32 {
+        let inner = self.inner.lock();
+        if !inner.queue.is_empty() {
+            abi::wait::READABLE
+        } else if inner.closed {
+            abi::wait::CLOSED
+        } else {
+            0
+        }
+    }
+
+    /// Thread `id` (in a `WaitSet` wait) is woken by the next change.
+    pub fn watch(&self, id: task::ThreadId) {
+        self.inner.lock().watchers.add(id);
+    }
+
+    /// Undoes [`Port::watch`].
+    pub fn unwatch(&self, id: task::ThreadId) {
+        self.inner.lock().watchers.remove(id);
     }
 }

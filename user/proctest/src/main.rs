@@ -8,6 +8,8 @@
 //!   fit in a message) and exits with 42;
 //! - `proctest wait`: waits on its main port for ever, until killed.
 //!
+//! Then it waits on a port, a terminal and a process with a wait set.
+//!
 //! Prints `proctest: OK` and exits with 0, or exits with the number of the
 //! failed check.
 
@@ -20,10 +22,14 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
+use libstela::abi::wait::Ready;
 use libstela::fs::{self, open};
-use libstela::ipc::{FOREVER, port_receive};
+use libstela::ipc::{FOREVER, port_create, port_receive, port_send};
 use libstela::process::{self, standard_handles};
+use libstela::wait::{self, WaitSet};
 use libstela::{Error, Handle, Message, bootstrap, debug_println};
+use libstela::{ThreadStack, tty};
 
 libstela::entry!(main);
 
@@ -128,6 +134,97 @@ fn parent() -> Result<(), i64> {
     )?;
     let (ns, _) = process::uptime().map_err(|_| 14i64)?;
     check(14, ns > 0, "uptime")?;
+    wait_sets(me)
+}
+
+/// The port the helper thread sends to (its raw handle).
+static SEND_TO: AtomicU32 = AtomicU32::new(0);
+static HELPER: ThreadStack<16384> = ThreadStack::new();
+
+fn helper(_: u64) {
+    libstela::sleep_ms(5);
+    let mut msg = Message::new();
+    msg.tag = 77;
+    let _ = port_send(
+        Handle::from_raw(u64::from(SEND_TO.load(Ordering::Acquire))),
+        &msg,
+    );
+}
+
+/// Wait sets: a port, a terminal's master and a process waited on
+/// together; a wake-up from another thread.
+fn wait_sets(me: Handle) -> Result<(), i64> {
+    let set = WaitSet::new().map_err(|_| 15i64)?;
+    let port = port_create().map_err(|_| 15i64)?;
+    let (tty, master) = tty::create_with_master().map_err(|_| 15i64)?;
+    let child = spawn(me, &["proctest", "wait"]).map_err(|_| 15i64)?;
+    set.add(port, 1, 0).map_err(|_| 15i64)?;
+    set.add(master, 2, wait::READABLE).map_err(|_| 15i64)?;
+    set.add(child, 3, 0).map_err(|_| 15i64)?;
+    let mut ready = [Ready::default(); 4];
+    check(
+        15,
+        set.wait(&mut ready, 0) == Err(Error::TimedOut),
+        "empty wait",
+    )?;
+    let mut msg = Message::new();
+    msg.tag = 5;
+    port_send(port, &msg).map_err(|_| 16i64)?;
+    let n = set.wait(&mut ready, FOREVER).map_err(|_| 16i64)?;
+    check(
+        16,
+        n == 1 && ready[0].key == 1 && ready[0].events == wait::READABLE,
+        "port ready",
+    )?;
+    port_receive(port, &mut msg, 0).map_err(|_| 16i64)?;
+    let text = Message::with_data(libstela::tag::CONSOLE_WRITE, b"x");
+    port_send(tty, &text).map_err(|_| 17i64)?;
+    let n = set.wait(&mut ready, FOREVER).map_err(|_| 17i64)?;
+    check(17, n == 1 && ready[0].key == 2, "terminal ready")?;
+    let mut buf = [0u8; 8];
+    check(17, tty::read(master, &mut buf, 0) == Ok(1), "terminal read")?;
+    process::kill(child).map_err(|_| 18i64)?;
+    let n = set.wait(&mut ready, 1_000_000_000).map_err(|_| 18i64)?;
+    check(
+        18,
+        n == 1 && ready[0].key == 3 && ready[0].events == wait::EXITED,
+        "process ended",
+    )?;
+    set.remove(child).map_err(|_| 19i64)?;
+    check(
+        19,
+        set.remove(child) == Err(Error::NotFound),
+        "remove twice",
+    )?;
+    // Blocked in the wait, woken by a send from another thread.
+    SEND_TO.store(port.raw() as u32, Ordering::Release);
+    libstela::spawn(helper, 0, &HELPER).map_err(|_| 20i64)?;
+    let start = libstela::now_ns();
+    let n = set.wait(&mut ready, 2_000_000_000).map_err(|_| 20i64)?;
+    check(
+        20,
+        n == 1 && ready[0].key == 1 && libstela::now_ns() - start >= 4_000_000,
+        "woken by another thread",
+    )?;
+    port_receive(port, &mut msg, 0).map_err(|_| 20i64)?;
+    check(20, msg.tag == 77, "helper's message")?;
+    // A closed member is dropped: the wait times out.
+    libstela::ipc::handle_close(port).map_err(|_| 21i64)?;
+    check(
+        21,
+        set.wait(&mut ready, 2_000_000) == Err(Error::TimedOut),
+        "closed member",
+    )?;
+    check(
+        22,
+        set.add(set.handle(), 4, 0) == Err(Error::WrongType),
+        "set in itself",
+    )?;
+    check(
+        22,
+        set.add(master, 4, 1 << 20) == Err(Error::InvalidArgument),
+        "bad mask",
+    )?;
     Ok(())
 }
 

@@ -15,6 +15,8 @@ pub mod port;
 pub mod regions;
 #[cfg(target_os = "none")]
 pub mod tty;
+#[cfg(target_os = "none")]
+pub mod waitset;
 
 #[cfg(target_os = "none")]
 pub use target::*;
@@ -53,6 +55,8 @@ mod target {
         Socket(Arc<crate::net::Socket>),
         /// The open sound output (`docs/sound.md`).
         Audio(Arc<crate::audio::AudioSession>),
+        /// Objects to wait on together (`docs/ipc.md` §13).
+        WaitSet(Arc<super::waitset::WaitSet>),
     }
 
     impl KernelObject {

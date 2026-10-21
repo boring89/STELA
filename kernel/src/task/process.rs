@@ -334,6 +334,29 @@ pub fn wait_process(id: ProcessId) -> Option<i64> {
     wait_until(id, None).ok()
 }
 
+/// Thread `me` (in a `WaitSet` wait) is woken when process `id` ends.
+pub fn watch(id: ProcessId, me: ThreadId) {
+    if let Some(Record {
+        status: Status::Running { waiters },
+        ..
+    }) = TABLE.lock().get_mut(&id)
+        && !waiters.contains(&me)
+    {
+        waiters.push(me);
+    }
+}
+
+/// Undoes [`watch`].
+pub fn unwatch(id: ProcessId, me: ThreadId) {
+    if let Some(Record {
+        status: Status::Running { waiters },
+        ..
+    }) = TABLE.lock().get_mut(&id)
+    {
+        waiters.retain(|&w| w != me);
+    }
+}
+
 /// The exit code of process `id` if it has ended.
 pub fn exit_status(id: ProcessId) -> Option<i64> {
     match TABLE.lock().get(&id)?.status {

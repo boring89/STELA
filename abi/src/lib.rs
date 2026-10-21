@@ -180,11 +180,23 @@ pub enum Syscall {
     AudioOpen = 47,
     /// `AudioClose(audio)`: stops the output and closes the handle.
     AudioClose = 48,
+    /// `WaitSetCreate() -> handle`: an empty set of objects to wait on
+    /// together (`docs/ipc.md` §13).
+    WaitSetCreate = 49,
+    /// `WaitSetAdd(set, handle, key, mask)`: adds (or updates) the object
+    /// `handle` refers to, reported with `key` for the `wait::` events in
+    /// `mask` (0: all).
+    WaitSetAdd = 50,
+    /// `WaitSetRemove(set, handle)`: removes the object.
+    WaitSetRemove = 51,
+    /// `WaitSetWait(set, &mut [wait::Ready], max, timeout_ns) -> count`:
+    /// waits until a member is ready and writes up to `max` records.
+    WaitSetWait = 52,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 48] = [
+    pub const ALL: [Syscall; 52] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -233,6 +245,10 @@ impl Syscall {
         Syscall::NetInfo,
         Syscall::AudioOpen,
         Syscall::AudioClose,
+        Syscall::WaitSetCreate,
+        Syscall::WaitSetAdd,
+        Syscall::WaitSetRemove,
+        Syscall::WaitSetWait,
     ];
 
     /// The call with number `raw`, if any.
@@ -717,6 +733,62 @@ pub mod object_kind {
     pub const SOCKET: u64 = 9;
     /// The sound output (`docs/sound.md`).
     pub const AUDIO: u64 = 10;
+    /// A set of objects to wait on (`wait`).
+    pub const WAIT_SET: u64 = 11;
+}
+
+/// Waiting on several objects (`WaitSetAdd`, `WaitSetWait`;
+/// `docs/ipc.md` §13): the events and the record `WaitSetWait` writes.
+pub mod wait {
+    /// A port has a message; a socket or terminal has data (or the end of
+    /// the stream); a listener has a connection.
+    pub const READABLE: u32 = 1;
+    /// A socket can take data; the sound ring is at least half empty.
+    pub const WRITABLE: u32 = 2;
+    /// A TCP connection is established.
+    pub const CONNECTED: u32 = 4;
+    /// The other side is gone: a port closed and empty, a connection
+    /// reset or ended.
+    pub const CLOSED: u32 = 8;
+    /// A process has ended.
+    pub const EXITED: u32 = 16;
+    /// Every defined event.
+    pub const ALL: u32 = READABLE | WRITABLE | CONNECTED | CLOSED | EXITED;
+    /// Most members a set holds.
+    pub const MAX_MEMBERS: usize = 64;
+    /// Bytes of a [`Ready`] record.
+    pub const READY_SIZE: usize = 16;
+
+    /// One ready member: its key and the events (in its mask) that hold.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Ready {
+        /// The key given to `WaitSetAdd`.
+        pub key: u64,
+        /// The `wait::` events.
+        pub events: u32,
+    }
+
+    impl Ready {
+        /// The 16-byte record: key (u64 LE), events (u32 LE), 0 (u32).
+        pub fn to_bytes(&self) -> [u8; READY_SIZE] {
+            let mut b = [0u8; READY_SIZE];
+            b[..8].copy_from_slice(&self.key.to_le_bytes());
+            b[8..12].copy_from_slice(&self.events.to_le_bytes());
+            b
+        }
+
+        /// The record from its bytes.
+        pub fn from_bytes(b: &[u8; READY_SIZE]) -> Ready {
+            let mut key = [0u8; 8];
+            key.copy_from_slice(&b[..8]);
+            let mut events = [0u8; 4];
+            events.copy_from_slice(&b[8..12]);
+            Ready {
+                key: u64::from_le_bytes(key),
+                events: u32::from_le_bytes(events),
+            }
+        }
+    }
 }
 
 /// `SystemPower` kinds.
@@ -1445,7 +1517,7 @@ mod tests {
         assert_eq!(Syscall::FileGetInfo.raw(), 37);
         assert_eq!(Syscall::FileSetInfo.raw(), 38);
         assert_eq!(FINDER_INFO_SIZE, 32);
-        assert_eq!(Syscall::from_raw(49), None);
+        assert_eq!(Syscall::from_raw(999), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }
 
@@ -1641,5 +1713,24 @@ mod tests {
         };
         assert_eq!(net::NetInfo::from_bytes(&info.to_bytes()), Some(info));
         assert_eq!(info.driver_name(), "e1000");
+    }
+
+    #[test]
+    fn wait_abi() {
+        assert_eq!(Syscall::WaitSetCreate.raw(), 49);
+        assert_eq!(Syscall::WaitSetAdd.raw(), 50);
+        assert_eq!(Syscall::WaitSetRemove.raw(), 51);
+        assert_eq!(Syscall::WaitSetWait.raw(), 52);
+        assert_eq!(object_kind::WAIT_SET, 11);
+        assert_eq!(wait::ALL, 31);
+        let r = wait::Ready {
+            key: 0x1122_3344_5566_7788,
+            events: wait::READABLE | wait::CLOSED,
+        };
+        let b = r.to_bytes();
+        assert_eq!(b[0], 0x88);
+        assert_eq!(b[8], 9);
+        assert_eq!(&b[12..], &[0, 0, 0, 0]);
+        assert_eq!(wait::Ready::from_bytes(&b), r);
     }
 }

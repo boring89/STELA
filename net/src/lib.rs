@@ -18,7 +18,7 @@ pub mod stack;
 pub mod tcp;
 pub mod wire;
 
-pub use stack::{Config, Kind, NetError, SocketId, Stack};
+pub use stack::{Config, Kind, NetError, Readiness, SocketId, Stack};
 pub use wire::{Ip, Mac};
 
 #[cfg(test)]

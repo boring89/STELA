@@ -14,6 +14,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bin"
+version = "0.1.0"
+dependencies = [
+ "libstela",
+]
+
+[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -55,13 +62,6 @@ dependencies = [
  "abi",
  "block",
  "frame",
-]
-
-[[package]]
-name = "echo"
-version = "0.1.0"
-dependencies = [
- "libstela",
 ]
 
 [[package]]
@@ -175,6 +175,13 @@ dependencies = [
  "elfload",
  "frame",
  "net",
+]
+
+[[package]]
+name = "keyecho"
+version = "0.1.0"
+dependencies = [
+ "libstela",
 ]
 
 [[package]]
@@ -384,13 +391,6 @@ dependencies = [
  "abi",
  "libstela",
  "toolbox",
-]
-
-[[package]]
-name = "wc"
-version = "0.1.0"
-dependencies = [
- "libstela",
 ]
 
 [[package]]

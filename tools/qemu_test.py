@@ -122,7 +122,8 @@ class Qmp:
 
 
 SHIFTED = {":": "semicolon", "_": "minus", "!": "1", "?": "slash", "\"": "apostrophe",
-           "|": "backslash", ">": "dot", "<": "comma", "&": "7"}
+           "|": "backslash", ">": "dot", "<": "comma", "&": "7",
+           "*": "8"}
 PLAIN = {" ": "spc", "/": "slash", ".": "dot", "-": "minus", ";": "semicolon",
          ",": "comma", "=": "equal", "\n": "ret", "'": "apostrophe"}
 

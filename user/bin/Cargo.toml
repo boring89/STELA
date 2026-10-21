@@ -1,0 +1,135 @@
+[package]
+name = "bin"
+description = "STELA's command-line tools (Initrd:/bin/) and their shared library, cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+# Every tool is listed (no test harness: they are no_std programs).
+autobins = false
+
+[lib]
+name = "cli"
+path = "src/lib.rs"
+bench = false
+
+[[bin]]
+name = "echo"
+path = "src/bin/echo.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "cat"
+path = "src/bin/cat.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "grep"
+path = "src/bin/grep.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "wc"
+path = "src/bin/wc.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "head"
+path = "src/bin/head.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "tail"
+path = "src/bin/tail.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "sort"
+path = "src/bin/sort.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "uniq"
+path = "src/bin/uniq.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "find"
+path = "src/bin/find.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "du"
+path = "src/bin/du.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "df"
+path = "src/bin/df.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "date"
+path = "src/bin/date.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "sleep"
+path = "src/bin/sleep.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "touch"
+path = "src/bin/touch.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "stat"
+path = "src/bin/stat.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "hexdump"
+path = "src/bin/hexdump.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "tar"
+path = "src/bin/tar.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "true"
+path = "src/bin/true.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "false"
+path = "src/bin/false.rs"
+test = false
+bench = false
+
+[dependencies]
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

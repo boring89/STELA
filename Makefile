@@ -10,8 +10,11 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone wc hwinfo bench
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench
 USER_DIR    := $(BUILD)/user
+# The command-line tools (P11, docs/apps.md): one package, user/bin, with
+# a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
+BIN_TOOLS   := echo cat grep wc head tail sort uniq find du df date sleep touch stat hexdump tar true false
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
 # program at Name.app/exec with Name.app/info.txt; the rest sit in the
@@ -55,11 +58,11 @@ QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 # Crates that run on the host and have unit tests.
 HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox
 # Crates with a bare-metal binary whose library part has host unit tests.
-HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic
+HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic bin
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
-USER_CRATES := libstela toolbox $(USER_PROGRAMS)
+USER_CRATES := libstela toolbox bin $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
@@ -73,9 +76,10 @@ kernel:
 	cargo build --release -p kernel --target $(KERNEL_TARGET)
 
 user:
-	cargo build --release $(addprefix -p ,$(USER_PROGRAMS)) --target $(KERNEL_TARGET)
-	mkdir -p $(USER_DIR)
+	cargo build --release $(addprefix -p ,$(USER_PROGRAMS)) -p bin --target $(KERNEL_TARGET)
+	mkdir -p $(USER_DIR)/bin
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(USER_PROGRAMS)) $(USER_DIR)/
+	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(BIN_TOOLS)) $(USER_DIR)/bin/
 
 # The initial RAM disk: the user programs in a ustar archive (the Linux
 # test programs in its linux/ folder, the bundles as Name.app/ folders),
@@ -86,6 +90,7 @@ initrd: user linux-tests
 	mkdir -p $(INITRD_ROOT)
 	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED),$(USER_PROGRAMS))) $(INITRD_ROOT)/
 	cp -r $(LINUX_DIR) $(INITRD_ROOT)/linux
+	cp -r $(USER_DIR)/bin $(INITRD_ROOT)/bin
 	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
 		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
 		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
@@ -512,6 +517,11 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "uptime: " "{up}{up}\n" \
 		--type "memory: " "vls{left}{left}o{end}\n" \
 		--type "Initrd     initrd" "hwinfo\n" \
+		--type "hwinfo exited with code 0" "cat /welcome.txt | grep -i stela | wc -l\n" \
+		--type "wc exited with code 0" "grep -n -i stela /welcome.txt\n" \
+		--type "grep exited with code 0" "cp -r Initrd:/linux /lx\n" \
+		--type "bytes copied" "find /lx -name n*\n" \
+		--type "find exited with code 0" "date\n" \
 		--expect "smp: 2 processor(s) online" --expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
@@ -521,7 +531,9 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "cpu: " --expect "processors: 2 online" --expect "[acpi]" --expect "FACP" \
 		--expect "8086:29c0 class 06.00.00 host bridge" --expect "[disks] 2" --expect "2 \"Data\" " \
 		--expect "[network]" \
-		--expect "hwinfo exited with code 0" \
+		--expect "hwinfo exited with code 0" --expect "wc exited with code 0" \
+		--expect "1:Welcome to STELA's Data volume." --expect "file(s)," \
+		--expect "Data:/lx/nosys" --expect "find exited with code 0" --expect " UTC" \
 		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
 		-device ide-hd,drive=sata1,bus=ide.1

@@ -20,7 +20,7 @@
 //! The kernel gives init the capabilities `POWER`, `INPUT` and `NETWORK`
 //! (P11, `docs/userland.md` §2.3). The window server gets all three (it
 //! takes the input and passes `POWER` to Mouseion); the text-mode shell
-//! gets `INPUT` (for `run echo`). Everyone also gets `INIT`, a `SEND`
+//! gets `INPUT` (for `run keyecho`). Everyone also gets `INIT`, a `SEND`
 //! handle to init's main port: while it waits for its child, init answers
 //! `POWER_REQUEST`s there (the shell's `shutdown`).
 

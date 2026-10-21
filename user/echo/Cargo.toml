@@ -1,5 +1,5 @@
 [package]
-name = "echo"
+name = "keyecho"
 description = "STELA program: echoes typed keys, Enter prints the uptime"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ authors.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "echo"
+name = "keyecho"
 path = "src/main.rs"
 test = false
 bench = false

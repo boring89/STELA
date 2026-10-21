@@ -243,7 +243,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 - 中斷處理程式不碰 port（不必在中斷裡拿 port 的鎖），只叫醒 `input-router` 執行緒；它取出事件、編成 `KeyEvent::encode()`（4 bytes：KeyCode u16 LE、pressed、modifiers 位元）送到目前的目標。
 - `InputAttach(h)`：h 要 `SEND`；一次一個訂閱者，後者取代前者；送滿就丟；目標 port 關閉就清掉。
 - `KeyCode`／`Modifiers`／`KeyEvent`／`key_to_char` 搬到 `abi::key`（frame 的解碼器與 libstela 共用）；KeyCode 的編碼是 `KeyCode::NAMED` 的索引（只能往後加），未命名的鍵 = `0x8000 | 掃描碼`。
-- `user/echo`：attach 主 port、印 `echo: ready…`、收事件、`key_to_char`、印字（控制字元以 `^X`），Enter 印 `uptime:`。kernel 的 echo 迴圈與 `kernel: ready` 刪除。P6 起開機後是 shell（`docs/userland.md`），echo 用 `run echo` 跑、Escape 結束。
+- `user/echo`：attach 主 port、印 `echo: ready…`、收事件、`key_to_char`、印字（控制字元以 `^X`），Enter 印 `uptime:`。kernel 的 echo 迴圈與 `kernel: ready` 刪除。P6 起開機後是 shell（`docs/userland.md`），echo 用 `run echo` 跑、Escape 結束（P11 K33 起程式改名 `keyecho`：`echo` 是 `Initrd:/bin/echo`，印參數）。
 - selftest 不啟動 input-router（鍵盤測試直接讀 `frame::input`）；鍵盤事件的投遞由 `make test-fb` 與 `make test-shell` 經 QMP 打字測（P4–P5 是 echo，P6 起是 shell）。
 
 ## 9. 等待與喚醒

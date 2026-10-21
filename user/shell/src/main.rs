@@ -131,13 +131,12 @@ impl Shell {
             ("ls", [p]) => self.ls(p),
             ("cat", [p]) => self.cat(p),
             ("cp", [a, b]) => self.cp(a, b),
+            ("cp", ["-r", a, b]) => self.cp_tree(a, b),
             ("mv", [a, b]) => self.mv(a, b),
             ("mkdir", [p]) => self.mkdir(p),
             ("rm", [p]) => self.rm(p),
             ("run", [program, rest @ ..]) => self.run(program, rest),
-            // The network, sound and hardware tools are programs in the
-            // initrd (docs/net.md, docs/sound.md, docs/hwinfo.md).
-            ("ifconfig" | "ping" | "fetch" | "tone" | "hwinfo", rest) => self.run(command, rest),
+
             ("ps", []) => ps(),
             ("jobs", []) => {
                 self.list_jobs();
@@ -150,7 +149,13 @@ impl Shell {
             ("vols", []) => vols(),
             ("shutdown", []) => Err(String::from(describe(process::shutdown()))),
             ("reboot", []) => Err(String::from(describe(process::reboot()))),
-            _ => Err(String::from("unknown command or wrong arguments; try help")),
+            // Anything else is a program: in the working folder, in
+            // Initrd:/ (the network and sound tools, hwinfo) or in
+            // Initrd:/bin/ (P11: the command-line tools, docs/apps.md).
+            (name, rest) => match self.find_program(name) {
+                Ok(_) => self.run(name, rest),
+                Err(_) => Err(String::from("unknown command or wrong arguments; try help")),
+            },
         };
         if let Err(why) = result {
             println!("{command}: {why}");
@@ -236,6 +241,25 @@ impl Shell {
         Ok(())
     }
 
+    /// `cp -r`: a folder and everything in it (P11); a file as `cp`.
+    fn cp_tree(&self, from: &str, to: &str) -> Result<(), String> {
+        let a = self.resolve(from)?;
+        let b = self.resolve(to)?;
+        let src = open_at(&a, open::READ).map_err(|e| alloc::format!("{a}: {}", describe(e)))?;
+        let st = fs::stat(src.0).map_err(|e| String::from(describe(e)))?;
+        if st.kind != kind::DIRECTORY {
+            return self.cp(from, to);
+        }
+        if a.volume.eq_ignore_ascii_case(&b.volume) && b.parts.starts_with(&a.parts) {
+            return Err(alloc::format!("{b}: inside {a}"));
+        }
+        let parent = open_at(&b.parent(), open::READ | open::WRITE)
+            .map_err(|e| alloc::format!("{}: {}", b.parent(), describe(e)))?;
+        let (files, bytes) = copy_tree(src.0, parent.0, b.name(), 0)?;
+        println!("{files} file(s), {bytes} bytes copied");
+        Ok(())
+    }
+
     fn mv(&self, from: &str, to: &str) -> Result<(), String> {
         let a = self.resolve(from)?;
         let b = self.resolve(to)?;
@@ -297,6 +321,18 @@ impl Shell {
                         None => Some(initrd),
                     };
                     return Ok((h, folder));
+                }
+            }
+            // The search path's last stop (P11): Initrd:/bin/.
+            if !name.contains('/')
+                && let Ok(bin) = fs::open(initrd.0, "bin", open::READ)
+            {
+                let bin = Owned(bin);
+                if let Ok(h) = fs::open(bin.0, name, open::READ) {
+                    let h = Owned(h);
+                    if runnable(h.0) {
+                        return Ok((h, Some(bin)));
+                    }
                 }
             }
         }
@@ -660,7 +696,7 @@ impl Shell {
                 .as_ref()
                 .map_or(Handle::NONE, |f| process::pass_dir(f.0)),
         ];
-        // In text mode the shell has INPUT (for `run echo`) and passes it.
+        // In text mode the shell has INPUT (for `run keyecho`) and passes it.
         let mut caps = process::inherited();
         if let Some(input) = process::pass_capability(libstela::abi::capability::INPUT) {
             caps.push((libstela::abi::capability::INPUT, input));
@@ -709,7 +745,7 @@ fn help() {
     println!("commands:");
     println!("  ls [path]        list a folder");
     println!("  cat file         show a file");
-    println!("  cp from to       copy a file");
+    println!("  cp from to       copy a file (cp -r: a folder and what is in it)");
     println!("  mv from to       move or rename");
     println!("  mkdir path       make a folder");
     println!("  rm path          remove a file or an empty folder");
@@ -727,6 +763,9 @@ fn help() {
     println!("  fetch url [file] get http://host[:port]/path (print it or save it)");
     println!("  tone [Hz [ms]]   play a square wave (default 440 Hz, 1000 ms)");
     println!("  hwinfo           what hardware STELA found");
+    println!("  other names      programs here, in Initrd:/ or Initrd:/bin/: echo cat grep");
+    println!("                   wc head tail sort uniq find du df date sleep touch stat");
+    println!("                   hexdump tar true false (docs/apps.md)");
     println!("  shutdown, reboot turn the computer off, restart it");
     println!("  exit             leave the shell (init starts a new one)");
     println!("paths: Volume:/a/b, /a/b (this volume) or a/b, with . and ..");
@@ -913,4 +952,65 @@ fn main() -> i64 {
             }
         }
     }
+}
+
+/// Copies folder `src` into `dst_parent` as `name` (made if needed);
+/// returns the files and bytes copied.
+fn copy_tree(
+    src: Handle,
+    dst_parent: Handle,
+    name: &str,
+    depth: usize,
+) -> Result<(u64, u64), String> {
+    if depth > 64 {
+        return Err(String::from("folders nested too deep"));
+    }
+    let dst = fs::open(
+        dst_parent,
+        name,
+        open::READ | open::WRITE | open::CREATE | open::DIRECTORY,
+    )
+    .map(Owned)
+    .map_err(|e| alloc::format!("{name}: {}", describe(e)))?;
+    let (mut files, mut bytes) = (0, 0);
+    for e in fs::entries(src).map_err(|e| String::from(describe(e)))? {
+        let n = e.name();
+        let item = Owned(
+            fs::open(src, n, open::READ).map_err(|e| alloc::format!("{n}: {}", describe(e)))?,
+        );
+        if e.kind == kind::DIRECTORY {
+            let (f, b) = copy_tree(item.0, dst.0, n, depth + 1)?;
+            files += f;
+            bytes += b;
+            continue;
+        }
+        let out = Owned(
+            fs::open(
+                dst.0,
+                n,
+                open::READ | open::WRITE | open::CREATE | open::TRUNCATE,
+            )
+            .map_err(|e| alloc::format!("{n}: {}", describe(e)))?,
+        );
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut at = 0u64;
+        loop {
+            let got = fs::read(item.0, &mut buf, at)
+                .map_err(|e| alloc::format!("{n}: {}", describe(e)))?;
+            if got == 0 {
+                break;
+            }
+            let mut done = 0;
+            while done < got {
+                match fs::write(out.0, &buf[done..got], at + done as u64) {
+                    Ok(0) | Err(_) => return Err(alloc::format!("{n}: cannot write")),
+                    Ok(w) => done += w,
+                }
+            }
+            at += got as u64;
+        }
+        files += 1;
+        bytes += at;
+    }
+    Ok((files, bytes))
 }

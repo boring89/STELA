@@ -100,8 +100,7 @@ impl Store for DataStore {
     fn list(&mut self, dir: u64) -> Result<Vec<Node>, Error> {
         let d = self.open(dir)?;
         let mut out = Vec::new();
-        let mut i = 0;
-        while let Some(e) = fs::read_dir(d.0, i)? {
+        for e in fs::entries(d.0)? {
             out.push(Node {
                 id: e.id,
                 is_dir: e.kind == kind::DIRECTORY,
@@ -110,7 +109,6 @@ impl Store for DataStore {
                 mtime: e.mtime,
                 name: String::from(e.name()),
             });
-            i += 1;
         }
         Ok(out)
     }

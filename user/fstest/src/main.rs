@@ -154,11 +154,34 @@ fn run() -> Result<(), i64> {
     )?;
     fs::open(dir, "sub", open::CREATE | open::DIRECTORY | open::WRITE).map_err(|_| 16i64)?;
     let mut listed = 0;
-    while let Ok(Some(e)) = fs::read_dir(dir, listed) {
+    let mut cookie = 0;
+    while let Ok(Some((e, next))) = fs::read_dir(dir, cookie) {
         debug_println!("fstest:   {} ({} bytes)", e.name(), e.size);
         listed += 1;
+        cookie = next;
     }
     check(16, listed == 2, "list")?;
+    // A listing goes on after the item it stopped at is removed (the
+    // cookie remembers its name; P11). In key order "gone" comes first.
+    let gone = fs::open(dir, "gone", open::CREATE | open::WRITE).map_err(|_| 37i64)?;
+    let _ = libstela::ipc::handle_close(gone);
+    check(
+        37,
+        fs::entries(dir).map(|e| e.len()) == Ok(3),
+        "three entries",
+    )?;
+    let (first, cookie) = fs::read_dir(dir, 0).ok().flatten().ok_or(37i64)?;
+    check(37, first.name() == "gone", "key order")?;
+    fs::remove(dir, "gone").map_err(|_| 37i64)?;
+    let mut rest = 0;
+    let mut cookie = cookie;
+    while let Ok(Some((e, next))) = fs::read_dir(dir, cookie) {
+        let want = ["renamed.txt", "sub"].get(rest).copied();
+        check(37, Some(e.name()) == want, "listing after a removal")?;
+        rest += 1;
+        cookie = next;
+    }
+    check(37, rest == 2, "the rest of the listing")?;
     check(
         17,
         fs::set_size(file, 100).is_ok() && fs::stat(file).map(|s| s.size) == Ok(100),
@@ -208,7 +231,7 @@ fn run() -> Result<(), i64> {
 /// Removes what an interrupted earlier run left in `Data:/fstest`.
 fn remove_tree(data: Handle) -> Result<(), Error> {
     let dir = fs::open(data, "fstest", open::READ | open::WRITE)?;
-    while let Some(e) = fs::read_dir(dir, 0)? {
+    while let Some((e, _)) = fs::read_dir(dir, 0)? {
         fs::remove(dir, e.name())?;
     }
     fs::remove(data, "fstest")

@@ -50,7 +50,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 | 編號 | 名稱 | 參數 | 回傳 | 權限 |
 |---|---|---|---|---|
 | 16 | `DirOpen` | dir, path_ptr, path_len, flags | handle | dir 要 READ；建立要 WRITE |
-| 17 | `DirRead` | dir, index, &mut DirEntry | 1 = 有、0 = 到底 | READ |
+| 17 | `DirRead` | dir, cookie, &mut DirEntry | 下一個 cookie（≠ 0）、0 = 到底 | READ |
 | 18 | `DirRemove` | dir, name_ptr, name_len | 0 | WRITE |
 | 19 | `DirRename` | dir, old_ptr, old_len, new_dir, new_ptr, new_len | 0 | 兩個都 WRITE；同一卷宗 |
 | 20 | `FileRead` | file, buf, len, offset | 讀到的 bytes | READ |
@@ -66,7 +66,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 - 新 handle 的權限 = 要求的（沒有指定 READ/WRITE 時給 READ）∩ 父資料夾 handle 的；**唯讀卷宗上要 WRITE → `ReadOnly`**。另外一律有 `DUPLICATE|TRANSFER`（可以交給別的程式）。
 - 存在的是資料夾就給 Directory handle（不論有沒有 `DIRECTORY` 旗標）；有 `DIRECTORY` 旗標但是檔案 → `NotDir`。
 - `CREATE|EXCLUSIVE` 遇到已存在 → `Exists`；`TRUNCATE` 要 WRITE。
-- `DirRead` 以 index 列舉（每次呼叫都重新列出整個資料夾——簡單但大資料夾是 O(n²)）。
+- `DirRead` 以 **cookie** 列舉（P11，使用者尚未審核）：0 = 從頭，每次回傳下一個的 cookie，0 = 到底；cookie 對程式是不透明的。eHFS：cookie = 上一個項目的 CNID，kernel 記著它的名字（`EhfsFs::cursors`，最多 256 個），下一次從 B-tree 的下界（parent, 名字）往後走一個（`Volume::list_after`）——整個資料夾列完是 O(n)（以前每次重列整個資料夾，O(n²)）；上一個項目被刪掉了也能接下去。其他後端（FAT、Initrd、Tmp）用預設實作：cookie = 位置 + 1，每次仍重列（它們的資料夾小）。libstela：`fs::read_dir(dir, cookie) -> Option<(DirEntry, next)>`、`fs::entries(dir)`。
 - 名稱與資料一律經 `AddressSpace::read/write` 複製（`FileRead`／`FileWrite` 每次 64 KiB）。
 
 錯誤（接 P4 的 13）：14 `NotFound`、15 `Exists`、16 `NotDir`、17 `IsDir`、18 `NotEmpty`、19 `ReadOnly`、20 `NoSpace`、21 `IoError`（裝置錯誤或卷宗損壞）。
@@ -140,6 +140,8 @@ initrd 也是一個卷宗：`InitrdFs`，唯讀，ustar 的檔案都在根目錄
 |---|---|
 | host `abi` | 編號、錯誤值、`DirEntry`／`Stat`／`VolumeInfo` 的大小與位移、`CWD`、`open::ALL` |
 | fstest 第 35–36 步（P11） | `FilePath`：eHFS 的 `/fstest/hello.txt`、根是 `/`；FAT 的 `/EFI/BOOT/nested.txt`（預設的搜尋） |
+| host `ehfs`（P11） | `list_after`：300 個項目一次一個接著列，順序和 `list` 一樣；一次 10 個、從刪掉的名字之後接下去、最後一個之後是空的 |
+| fstest 第 37 步（P11） | cookie：列到 `gone`（key 順序第一個）後刪掉它，接著列出 `renamed.txt`、`sub` |
 | host `kernel::vfs::path` | 切分、`.`／空的、`..` 拒絕、非 UTF-8、太長、單一名稱 |
 | selftest "file systems" | 列出卷宗與空間；有 Boot 就直接用後端讀 `HELLO.TXT`、建立 → `ReadOnly`；有 Data 就跑 `fstest`（exit 0） |
 | `fstest`（使用者程式） | `VolumeList`；`Data:/fstest-boots` 開機計數（`fstest: boot N`，第二次開機看到 2 = 持久）；建資料夾（`EXCLUSIVE`）、建檔、寫 10000 bytes、讀回、stat、讀到結尾、不分大小寫開啟、`EXCLUSIVE` 失敗、不存在、唯讀 handle 不能寫、改名、by-id 開啟、列目錄、`set_size`、非空資料夾不能刪、刪除後 by-id 的 handle 失效；Boot：讀 `HELLO.TXT`、唯讀卷宗建立 → `ReadOnly`、巢狀路徑 `EFI/BOOT/nested.txt` |

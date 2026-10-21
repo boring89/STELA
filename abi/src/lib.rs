@@ -77,8 +77,9 @@ pub enum Syscall {
     /// `open::CREATE` makes) the file or folder at the relative path
     /// (components separated by `/`; no `..`).
     DirOpen = 16,
-    /// `DirRead(dir, index, &mut DirEntry) -> 1 | 0`: entry `index` of the
-    /// folder (0 past the last).
+    /// `DirRead(dir, cookie, &mut DirEntry) -> cookie`: the entry after
+    /// `cookie` (0: the first) and the cookie for the next call (never 0);
+    /// 0 past the last (P11; the cookie is opaque, `docs/vfs.md` §4).
     DirRead = 17,
     /// `DirRemove(dir, name_ptr, name_len)`: removes a file or an empty
     /// folder.

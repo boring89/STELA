@@ -141,13 +141,17 @@ impl Shell {
             println!("{:>10}  {}", st.size, loc.name());
             return Ok(());
         }
+        let mut cookie = 0;
         let mut index = 0;
-        while let Some(e) = fs::read_dir(dir.0, index).map_err(|e| String::from(describe(e)))? {
+        while let Some((e, next)) =
+            fs::read_dir(dir.0, cookie).map_err(|e| String::from(describe(e)))?
+        {
             if e.kind == kind::DIRECTORY {
                 println!("{:>10}  {}/", "", e.name());
             } else {
                 println!("{:>10}  {}", e.size, e.name());
             }
+            cookie = next;
             index += 1;
         }
         println!("{index} item(s)");

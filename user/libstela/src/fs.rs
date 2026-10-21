@@ -24,11 +24,13 @@ pub fn open(dir: Handle, path: &str, flags: u64) -> Result<Handle, Error> {
     .map(Handle::from_raw)
 }
 
-/// Entry `index` of folder `dir` (`None` past the last).
-pub fn read_dir(dir: Handle, index: u64) -> Result<Option<DirEntry>, Error> {
+/// The entry of folder `dir` after `cookie` (0: the first) and the
+/// cookie of the next one (`None` past the last). Cookies are opaque
+/// (eHFS: the last item's CNID).
+pub fn read_dir(dir: Handle, cookie: u64) -> Result<Option<(DirEntry, u64)>, Error> {
     let mut buf = [0u8; DIR_ENTRY_SIZE];
-    let more = syscall3(Syscall::DirRead, dir.raw(), index, buf.as_mut_ptr() as u64)?;
-    if more == 0 {
+    let next = syscall3(Syscall::DirRead, dir.raw(), cookie, buf.as_mut_ptr() as u64)?;
+    if next == 0 {
         return Ok(None);
     }
     let mut e = DirEntry::new();
@@ -38,7 +40,18 @@ pub fn read_dir(dir: Handle, index: u64) -> Result<Option<DirEntry>, Error> {
     e.kind = u32::from_le_bytes(buf[24..28].try_into().unwrap_or_default());
     e.name_len = u32::from_le_bytes(buf[28..32].try_into().unwrap_or_default());
     e.name.copy_from_slice(&buf[32..]);
-    Ok(Some(e))
+    Ok(Some((e, next)))
+}
+
+/// Every entry of folder `dir`.
+pub fn entries(dir: Handle) -> Result<alloc::vec::Vec<DirEntry>, Error> {
+    let mut out = alloc::vec::Vec::new();
+    let mut cookie = 0;
+    while let Some((e, next)) = read_dir(dir, cookie)? {
+        out.push(e);
+        cookie = next;
+    }
+    Ok(out)
 }
 
 /// Removes the file or empty folder `name` in `dir`.

@@ -132,13 +132,7 @@ fn describe(e: Error) -> &'static str {
 
 /// The entries of the folder `h`.
 fn list(h: Handle) -> Vec<DirEntry> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while let Ok(Some(e)) = fs::read_dir(h, i) {
-        out.push(e);
-        i += 1;
-    }
-    out
+    fs::entries(h).unwrap_or_default()
 }
 
 impl Mouseion {

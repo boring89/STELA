@@ -242,6 +242,42 @@ impl<D: BlockDevice> Volume<D> {
         Ok(out)
     }
 
+    /// Up to `max` items of folder `parent` that come after the name
+    /// `after` in key order (from the first when `None`): a B-tree walk
+    /// from the lower bound of (parent, after), so a long listing costs
+    /// O(n) in all instead of O(n) per item (P11). `after` need not exist
+    /// any more.
+    pub fn list_after(
+        &mut self,
+        parent: u64,
+        after: Option<&[u8]>,
+        max: usize,
+    ) -> Result<Vec<Entry>, Error> {
+        let start = match after {
+            Some(name) => make_key(parent, name)?,
+            None => be(parent).to_vec(),
+        };
+        let mut out = Vec::new();
+        let mut bad = false;
+        self.bt_walk(Special::Catalog, &start, |k, v| {
+            if k.len() < 8 || be64(k) != parent || out.len() >= max {
+                return true;
+            }
+            if k.len() == 8 || (after.is_some() && k == start.as_slice()) {
+                return false; // the folder's own thread, or `after` itself
+            }
+            match decode(v, parent) {
+                Ok(e) => out.push(e),
+                Err(_) => bad = true,
+            }
+            bad
+        })?;
+        if bad {
+            return Err(Error::Corrupt);
+        }
+        Ok(out)
+    }
+
     fn adjust_folder(&mut self, cnid: u64, delta: i64, now: u64) -> Result<(), Error> {
         let mut folder = self.get(cnid)?;
         if !folder.is_dir {

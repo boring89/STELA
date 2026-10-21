@@ -114,7 +114,7 @@ pub struct Volume<D: BlockDevice> {   // 卷宗 = D 的區塊 0 起（分割區�
 ## 7. 已知限制
 
 - 沒有 syscall 暴露資源 fork、Finder 資訊與延伸屬性（格式支援，API 只在 crate 與工具裡）。
-- `list` 一次讀出整個資料夾；`DirRead` 每次都重新列出（大資料夾是 O(n²)）。
+- `list` 一次讀出整個資料夾；P11 起 `list_after(parent, after, max)` 從某個名字之後走 B-tree（`DirRead` 的 cookie 用它，`docs/vfs.md` §4）。
 - 一個卷宗一次一個操作（`SleepMutex`）。
 - 沒有 RTC，時間戳是「2026-01-01 + 開機以來」。
 - 名稱轉換成 Mac Roman 31 字元（68k_HAL 的 FSM 端）與 System 卷宗、A/B 更新不在 STELA 的範圍內（之後）。

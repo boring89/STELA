@@ -375,3 +375,49 @@ fn random_operations_against_a_model() {
     }
     assert_eq!(v.list(ROOT).unwrap().len(), model.len());
 }
+
+#[test]
+fn listing_in_pieces_after_a_name() {
+    let disk = fresh(8192);
+    let mut v = Volume::mount(&disk, false).unwrap();
+    let dir = v.create(ROOT, b"many", true, NOW).unwrap();
+    let names: Vec<Vec<u8>> = (0..300)
+        .map(|i| format!("item {i:03}").into_bytes())
+        .collect();
+    for n in &names {
+        v.create(dir.cnid, n, false, NOW).unwrap();
+    }
+    let whole: Vec<Vec<u8>> = v
+        .list(dir.cnid)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    // One at a time, each after the previous name: the same order.
+    let mut pieces = Vec::new();
+    let mut after: Option<Vec<u8>> = None;
+    loop {
+        let next = v.list_after(dir.cnid, after.as_deref(), 1).unwrap();
+        let Some(e) = next.into_iter().next() else {
+            break;
+        };
+        after = Some(e.name.clone());
+        pieces.push(e.name);
+    }
+    assert_eq!(pieces, whole);
+    assert_eq!(pieces.len(), 300);
+    // In bigger pieces, and after a name that is gone.
+    let first = v.list_after(dir.cnid, None, 10).unwrap();
+    assert_eq!(first.len(), 10);
+    v.remove(dir.cnid, &first[9].name, NOW).unwrap();
+    let rest = v.list_after(dir.cnid, Some(&first[9].name), 1000).unwrap();
+    assert_eq!(rest.len(), 290);
+    assert_eq!(rest[0].name, whole[10]);
+    // Nothing after the last, nor from the folder's own thread.
+    assert!(
+        v.list_after(dir.cnid, Some(&whole[299]), 5)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(v.list_after(dir.cnid, Some(b"zzz"), 5).unwrap().is_empty());
+}

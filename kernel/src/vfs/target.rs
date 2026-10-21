@@ -74,6 +74,17 @@ pub trait FileSystem: Send + Sync {
     fn set_info(&self, _id: u64, _info: &[u8; 32]) -> Result<(), Error> {
         Err(Error::NotSupported)
     }
+    /// The item of folder `dir` after `cookie` (0: the first) and the
+    /// cookie for the next call (never 0), or `None` past the last
+    /// (`DirRead`, P11). The default counts positions in `list` (each call
+    /// lists the folder again); eHFS walks its B-tree from the last name.
+    fn list_after(&self, dir: u64, cookie: u64) -> Result<Option<(NodeInfo, u64)>, Error> {
+        let list = self.list(dir)?;
+        Ok(usize::try_from(cookie)
+            .ok()
+            .and_then(|i| list.into_iter().nth(i))
+            .map(|info| (info, cookie + 1)))
+    }
     /// The folder item `id` is in (`NotFound` for the root). Backends
     /// without parent links search from the root (P11, `FilePath`).
     fn parent(&self, id: u64) -> Result<u64, Error> {
@@ -225,7 +236,13 @@ fn ehfs_info(e: &ehfs::Entry) -> NodeInfo {
 pub struct EhfsFs {
     volume: SleepMutex<ehfs::Volume<VolumeDevice>>,
     read_only: bool,
+    /// The names of the items `list_after` returned last (cookie = CNID),
+    /// so that a listing goes on after its last item was removed.
+    cursors: SpinLock<BTreeMap<u64, Vec<u8>>>,
 }
+
+/// Names `EhfsFs` remembers for listings in progress.
+const CURSORS: usize = 256;
 
 impl EhfsFs {
     /// Mounts the eHFS volume on `device` (replaying its journal).
@@ -237,6 +254,7 @@ impl EhfsFs {
             EhfsFs {
                 volume: SleepMutex::new(v),
                 read_only,
+                cursors: SpinLock::new(BTreeMap::new()),
             },
             name,
         ))
@@ -279,6 +297,34 @@ impl FileSystem for EhfsFs {
             v.list(dir)
         })
         .map(|l| l.iter().map(ehfs_info).collect())
+    }
+
+    fn list_after(&self, dir: u64, cookie: u64) -> Result<Option<(NodeInfo, u64)>, Error> {
+        // The cookie is the CNID of the item returned last.
+        let after = if cookie == 0 {
+            None
+        } else {
+            let remembered = self.cursors.lock().get(&cookie).cloned();
+            match remembered {
+                Some(name) => Some(name),
+                None => Some(self.with(|v| v.get(cookie))?.name),
+            }
+        };
+        let items = self.with(|v| {
+            if !v.get(dir)?.is_dir {
+                return Err(ehfs::Error::NotDir);
+            }
+            v.list_after(dir, after.as_deref(), 1)
+        })?;
+        let Some(e) = items.into_iter().next() else {
+            return Ok(None);
+        };
+        let mut cursors = self.cursors.lock();
+        if cursors.len() >= CURSORS {
+            cursors.pop_first();
+        }
+        cursors.insert(e.cnid, e.name.clone());
+        Ok(Some((ehfs_info(&e), e.cnid)))
     }
 
     fn read(&self, id: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Error> {

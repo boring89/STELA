@@ -189,14 +189,13 @@ pub fn file_set_info(process: &Process, handle: u64, ptr: u64) -> Result<u64, Er
     Ok(0)
 }
 
-/// `DirRead(dir, index, &mut DirEntry) -> 1 | 0`.
-pub fn dir_read(process: &Process, dir: u64, index: u64, ptr: u64) -> Result<u64, Error> {
+/// `DirRead(dir, cookie, &mut DirEntry) -> next cookie | 0`.
+pub fn dir_read(process: &Process, dir: u64, cookie: u64, ptr: u64) -> Result<u64, Error> {
     let (node, _) = dir_of(process, dir, Rights::READ)?;
     if !process.space().check(ptr, abi::DIR_ENTRY_SIZE, true) {
         return Err(Error::BadAddress);
     }
-    let list = node.volume.fs.list(node.id)?;
-    let Some(info) = usize::try_from(index).ok().and_then(|i| list.get(i)) else {
+    let Some((info, next)) = node.volume.fs.list_after(node.id, cookie)? else {
         return Ok(0);
     };
     let mut e = DirEntry::new();
@@ -216,7 +215,7 @@ pub fn dir_read(process: &Process, dir: u64, index: u64, ptr: u64) -> Result<u64
         .space()
         .write(ptr, &e.to_bytes())
         .map_err(|_| Error::BadAddress)?;
-    Ok(1)
+    Ok(next)
 }
 
 /// `DirRemove(dir, name_ptr, name_len)`.

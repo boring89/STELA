@@ -205,7 +205,7 @@ Claude 依照上方工作規則直接實作。
 - Mouseion：拖曳沒有影子、不能多選、沒有刪除與改名、資料夾圖示位置不存、開機不重開上次的視窗；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
 - 視窗：拖外框不即時移動；選單一層；terminal 沒有 ANSI 顏色與捲回（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。
-- 儲存：一次一個請求（AHCI 一個 slot、NVMe 每次一個 4 KiB 區塊）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；`DirRead` 每次重新列出（O(n²)）；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。
+- 儲存：一個 port 一次一個請求（但一個請求一次發出多個命令；沒有 NCQ）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；FAT／Initrd／Tmp 的 `DirRead` 仍每次重新列出；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。
 - 實機：kernel 會把看到的任何 GPT 磁碟上的 eHFS 分割區掛成可寫，包括 P520 上 68k_HAL 磁碟（sda）的 Data 分割區（格式相容，不會損壞，但 Mouseion 會寫入 Finder 資訊）；實機測試時留意或先拔掉（docs/p520.md §1）。
 - 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；有 `INIT` 能力的程式（預設所有人）都能請 init 關機；關機前不通知程式（docs/acpi.md §9）。
 - Linux 人格：只有靜態非 PIE 的 musl 程式；單執行緒（沒有 clone、fork、execve、pipe、訊號遞送、epoll）；Linux 程式看得到 `[3]`、`[4]` 的整個卷宗（不只那個資料夾以下）；`getrandom` 不安全；`PROT_NONE` 可讀（docs/linux.md §13）。

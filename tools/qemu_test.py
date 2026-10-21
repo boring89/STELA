@@ -5,7 +5,7 @@
 
 Usage: qemu_test.py [--timeout S] [--exit-code N] [--screendump FILE]
                     [--send-keys TRIGGER KEYS] [--type TRIGGER TEXT]
-                    [--mouse TRIGGER DX DY BUTTON] [--log FILE]
+                    [--mouse TRIGGER DX DY BUTTON] [--log FILE] [--times]
                     --expect TEXT [--expect TEXT ...] -- <qemu command>
 
 The expected strings must appear on the serial console in the given order.
@@ -255,6 +255,9 @@ def main():
                     metavar=("TRIGGER", "X", "Y", "COUNT"))
     ap.add_argument("--expect", action="append", required=True)
     ap.add_argument("--log", help="also write the serial output to this file")
+    ap.add_argument("--times", action="store_true",
+                    help="start every logged line with the seconds since QEMU started "
+                         "(make bench)")
     ap.add_argument("qemu", nargs=argparse.REMAINDER)
     args = ap.parse_args()
     cmd = args.qemu[1:] if args.qemu and args.qemu[0] == "--" else args.qemu
@@ -294,14 +297,18 @@ def main():
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             stdin=subprocess.DEVNULL)
-    deadline = time.monotonic() + args.timeout
+    started = time.monotonic()
+    deadline = started + args.timeout
     pending = list(args.expect)
     log = []
     status = None
     try:
         state = {"eof": False}
         for text in serial_lines(proc, deadline, state):
-            log.append(text)
+            if args.times:
+                log.append(f"[{time.monotonic() - started:9.3f}] {text}")
+            else:
+                log.append(text)
             if qmp and typing and typing[0][0] in text:
                 action = typing.pop(0)[1]
                 if isinstance(action, tuple) and action[0] == "qmp":

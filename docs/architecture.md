@@ -57,7 +57,7 @@
 | 圖形 | 純軟體繪圖，無 GPU 加速 |
 | 韌體 | 只支援 UEFI |
 
-可量測目標：kernel 映像 ≤ 2 MiB；無 KVM 的 QEMU 開機到桌面 ≤ 5 秒；桌面閒置時 kernel + 視窗伺服器 + Mouseion ≤ 64 MiB；相依 crate 以「必要」為原則。`make test` 要加一條最小 CPU 模型（例如 QEMU `-cpu Conroe`）、不開 KVM、`-m 256M` 的開機測試。
+可量測目標：kernel 映像 ≤ 2 MiB；無 KVM 的 QEMU 開機到桌面 ≤ 5 秒；桌面閒置時 kernel + 視窗伺服器 + Mouseion ≤ 64 MiB；相依 crate 以「必要」為原則。`make test` 要加一條最小 CPU 模型（例如 QEMU `-cpu Conroe`）、不開 KVM、`-m 256M` 的開機測試。P11 起 `make bench` 量這些目標（`docs/bench.md`）。
 
 ## 4. 架構決定
 

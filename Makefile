@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone wc hwinfo
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone wc hwinfo bench
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
@@ -61,7 +61,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
 USER_CRATES := libstela toolbox $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run test test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
+.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
@@ -398,6 +398,25 @@ test-net: esp $(BUILD)/OVMF_VARS.fd
 	mkdir -p $(BUILD)/www
 	printf 'hello from the host over TCP\n' > $(BUILD)/www/hello.txt
 	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- $(MAKE) --no-print-directory test-net-cards
+
+# Measurements (P11, docs/bench.md): the normal kernel with the AHCI test
+# disk and user networking, no KVM; the shell runs bench (memory on the
+# idle desktop, system calls, thread switches, eHFS 16 MiB, TCP 4 MiB
+# from the host). bench_report.py turns the timed log into a table in
+# build/bench.md; the numbers worth keeping go to docs/bench.md by hand.
+bench: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-bench.img
+	mkdir -p $(BUILD)/www
+	head -c 4194304 /dev/zero > $(BUILD)/www/bench.bin
+	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- \
+		python3 tools/qemu_test.py --timeout 300 --times --log $(BUILD)/bench.log \
+		--type "STELA shell" "run bench http://10.0.2.2:$(NET_PORT)/bench.bin\n" \
+		--expect "mouseion: ready" --expect "bench: done" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-bench.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	python3 tools/bench_report.py $(BUILD)/bench.log $(ESP)/STELA/kernel.elf > $(BUILD)/bench.md
+	cat $(BUILD)/bench.md
 
 test-net-cards:
 	for card in $(NET_CARDS); do \

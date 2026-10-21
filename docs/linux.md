@@ -188,7 +188,7 @@ Linux 程式的 tty：kernel 在 `spawn_linux` 時看 `[1]`：是 Tty 就用它�
               AT_NULL 0
               AT_RANDOM ptr、AT_SECURE 0、AT_EGID 0 … AT_PAGESZ 4096、AT_PHNUM、AT_PHENT、AT_PHDR
               0
-              envp[]                         HOME=/Data、PATH=/Initrd/linux:/Initrd、TERM=dumb、PWD=<cwd>
+              envp[]                         HOME=/Data、PATH=（P12：每個套件的 /Data/Programs/名稱/bin，`docs/pkg.md`）:/Initrd/linux:/Initrd、TERM=dumb、PWD=<cwd>、TZ；execve 用呼叫者給的 envp
               0
               argv[]                         來自 BOOTSTRAP_ARGS（資料或 Memory 物件）
  rsp ───────► argc                           16 對齊

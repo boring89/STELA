@@ -12,7 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use libstela::fs::{self, open};
 use libstela::ipc::{
-    FOREVER, Mapping, handle_close, handle_duplicate, input_attach, memory_create, port_create,
+    Mapping, handle_close, handle_duplicate, input_attach, memory_create, port_create,
     port_receive, port_send,
 };
 use libstela::process::{self, pass};
@@ -112,6 +112,10 @@ struct Server {
     damage: Damage,
     /// The system clipboard (P11): UTF-8 text.
     clipboard: Vec<u8>,
+    /// The menu bar's clock (`HH:MM`, local time; P11 K40) and when it
+    /// changes next (`now_ns`).
+    clock: String,
+    next_clock: u64,
 }
 
 fn screen_rect(s: &Server) -> Rect {
@@ -179,6 +183,21 @@ impl Server {
             self.focus = None;
             let front = self.stack.front().map(|w| w.id);
             self.set_focus(front);
+        }
+        self.mark_menubar();
+    }
+
+    /// Reads the clock again and schedules the next change (the next
+    /// minute).
+    fn update_clock(&mut self) {
+        let now = libstela::now_ns();
+        match libstela::time::local_ns() {
+            Some(local) => {
+                self.clock = libstela::time::hours_minutes(local);
+                let into_minute = local.rem_euclid(60_000_000_000) as u64;
+                self.next_clock = now + (60_000_000_000 - into_minute) + 1_000_000;
+            }
+            None => self.next_clock = now + 60_000_000_000,
         }
         self.mark_menubar();
     }
@@ -323,6 +342,7 @@ impl Server {
             Some(Drag::Move { outline, .. } | Drag::Grow { outline, .. }) => Some(outline),
             _ => None,
         };
+        let clock = self.clock.clone();
         let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
         canvas.set_clip(r);
         if menubar.overlaps(&r) {
@@ -333,6 +353,16 @@ impl Server {
                 &menus,
                 open.map(|o| o.0),
                 label_width,
+            );
+            // The clock at the right end (P11 K40).
+            let x = w as i32 - font.text_width(&clock) - 2 * font.width;
+            canvas.text(
+                x,
+                (m.menubar - font.height) / 2,
+                &clock,
+                font,
+                color::BLACK,
+                None,
             );
         }
         if let (Some(area), Some((index, hover))) = (menu_area, open)
@@ -1325,6 +1355,8 @@ pub fn main() -> i64 {
         clicks: Clicks::default(),
         damage: Damage::new(),
         clipboard: Vec::new(),
+        clock: String::new(),
+        next_clock: 0,
     };
     if let Err(e) = input_attach(bootstrap::MAIN_PORT) {
         println!(
@@ -1340,7 +1372,15 @@ pub fn main() -> i64 {
     start_programs(args.get(1..).unwrap_or(&[]));
     let mut ready = [wait::Ready::default(); 16];
     loop {
-        let timeout = if server.damage.is_empty() { FOREVER } else { 0 };
+        let now = libstela::now_ns();
+        if now >= server.next_clock {
+            server.update_clock();
+        }
+        let timeout = if server.damage.is_empty() {
+            server.next_clock.saturating_sub(now)
+        } else {
+            0
+        };
         let n = match server.set.wait(&mut ready, timeout) {
             Ok(n) => n,
             Err(Error::TimedOut) => 0,

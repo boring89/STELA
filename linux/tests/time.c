@@ -5,6 +5,7 @@
  * Linux personality test: clocks and sleeping.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -34,6 +35,15 @@ int main(void)
     }
     printf("time: %04d-%02d-%02d %02d:%02d UTC\n", tm->tm_year + 1900, tm->tm_mon + 1,
            tm->tm_mday, tm->tm_hour, tm->tm_min);
+    /* P11 K40: the zone comes from TZ (Data:/.stela/timezone, +08:00 by
+     * default). */
+    tm = localtime(&now);
+    if (tm == NULL) {
+        printf("time: FAIL localtime\n");
+        return 1;
+    }
+    printf("time: TZ %s, %ld seconds east of UTC\n", getenv("TZ") ? getenv("TZ") : "(none)",
+           (long)tm->tm_gmtoff);
     printf("time: OK\n");
     return 0;
 }

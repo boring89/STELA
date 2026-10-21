@@ -525,7 +525,7 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "grep exited with code 0" "cp -r Initrd:/linux /lx\n" \
 		--type "bytes copied" "find /lx -name n*\n" \
 		--type "find exited with code 0" "date\n" \
-		--type " UTC" "Monitor.app &\n" \
+		--type " +08:00" "Monitor.app &\n" \
 		--expect "smp: 2 processor(s) online" --expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
@@ -538,7 +538,7 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "[network]" \
 		--expect "hwinfo exited with code 0" --expect "wc exited with code 0" \
 		--expect "1:Welcome to STELA's Data volume." --expect "file(s)," \
-		--expect "Data:/lx/nosys" --expect "find exited with code 0" --expect " UTC" \
+		--expect "Data:/lx/nosys" --expect "find exited with code 0" --expect " +08:00" \
 		--expect "monitor: showing" \
 		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
@@ -616,7 +616,7 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "files: working directory /Data/linuxdir" \
 		--expect "files: OK" --expect "files exited with code 0" \
 		--expect "memory: OK" --expect "memory exited with code 0" \
-		--expect "time: OK" --expect "time exited with code 0" \
+		--expect "time: TZ UTC-8, 28800 seconds east of UTC" --expect "time: OK" --expect "time exited with code 0" \
 		--expect "nosys: OK" --expect "nosys exited with code 0" \
 		--expect "tty: 25 rows, 80 columns" \
 		--expect "tty: you typed: stela rocks" --expect "tty exited with code 0" \

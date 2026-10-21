@@ -177,16 +177,35 @@ pub fn initial_stack(elf: &Elf, argv: &[Vec<u8>], state: Option<&super::State>) 
         |s| s.cwd.lock().clone(),
     );
     let pwd = alloc::format!("PWD={cwd}");
-    let env: [&[u8]; 4] = [
+    // The local time zone for the C library (P11 K40, docs/time.md §5.6).
+    let mut tz = [0u8; 12];
+    let n = abi::time::posix_tz(timezone_minutes(), &mut tz);
+    let mut tz_env = Vec::from(&b"TZ="[..]);
+    tz_env.extend_from_slice(&tz[..n]);
+    let env: [&[u8]; 5] = [
         b"HOME=/Data",
         b"PATH=/Initrd/linux:/Initrd",
         b"TERM=dumb",
         pwd.as_bytes(),
+        &tz_env,
     ];
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let mut random = [0u8; 16];
     fill_random(&mut random);
     stack::build(abi::layout::STACK_TOP, &args, &env, &aux, random)
+}
+
+/// Minutes east of UTC from `Data:/.stela/timezone` (+08:00 without it).
+fn timezone_minutes() -> i32 {
+    let read = || -> Option<i32> {
+        let v = crate::vfs::find("Data")?;
+        let dir = v.fs.lookup(v.fs.root(), ".stela").ok()?;
+        let file = v.fs.lookup(dir.id, "timezone").ok()?;
+        let mut buf = [0u8; 32];
+        let n = v.fs.read(file.id, 0, &mut buf).ok()?;
+        abi::time::parse_offset(core::str::from_utf8(&buf[..n]).ok()?)
+    };
+    read().unwrap_or(abi::time::DEFAULT_OFFSET_MINUTES)
 }
 
 /// The generator state of [`fill_random`].

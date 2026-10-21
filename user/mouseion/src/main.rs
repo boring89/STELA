@@ -67,6 +67,8 @@ struct Item {
     pos: (i32, i32),
     /// A volume on the desktop.
     volume: bool,
+    /// Last change (ns since 1970, UTC; 0 when unknown).
+    mtime: u64,
 }
 
 /// What a window shows.
@@ -450,6 +452,7 @@ impl Mouseion {
                 kind: Kind::of(e.name(), e.kind_is_dir()),
                 pos,
                 volume: false,
+                mtime: e.mtime,
             })
             .collect();
         let pane = &mut self.panes[index];
@@ -474,6 +477,7 @@ impl Mouseion {
                 kind: Kind::Folder,
                 pos: (0, 0),
                 volume: true,
+                mtime: 0,
             });
             i += 1;
         }
@@ -1293,6 +1297,17 @@ impl Mouseion {
                             format!("size:  {} bytes", item.size),
                             format!("where: {where_}"),
                             format!("id:    {}", item.id),
+                            if item.mtime == 0 {
+                                String::from("changed: -")
+                            } else {
+                                // Local time (P11 K40).
+                                let offset = libstela::time::offset_minutes();
+                                format!(
+                                    "changed: {} {}",
+                                    libstela::time::format(libstela::time::to_local(item.mtime)),
+                                    libstela::time::offset_text(offset)
+                                )
+                            },
                         ],
                     );
                 }

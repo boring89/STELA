@@ -846,6 +846,88 @@ pub mod object_kind {
     pub const THREAD: u64 = 15;
 }
 
+/// Local time (P11 K40, `docs/time.md` §5.6): the offset from UTC kept in
+/// `Data:/.stela/timezone` as `+08:00`.
+pub mod time {
+    /// The offset when there is no setting: Taiwan, +08:00.
+    pub const DEFAULT_OFFSET_MINUTES: i32 = 8 * 60;
+    /// Where the setting lives (on the `Data` volume).
+    pub const TIMEZONE_FILE: &str = ".stela/timezone";
+
+    /// Minutes east of UTC in text like `+08:00`, `-05:30`, `+0800` or
+    /// `+8` (blanks around are fine); `None` if it is not one (within
+    /// -14:00 to +14:00).
+    pub fn parse_offset(text: &str) -> Option<i32> {
+        let t = text.trim();
+        let (sign, rest) = match t.as_bytes().first()? {
+            b'+' => (1, &t[1..]),
+            b'-' => (-1, &t[1..]),
+            _ => return None,
+        };
+        let (h, m) = match rest.split_once(':') {
+            Some((h, m)) => (h, m),
+            None if rest.len() == 4 => (&rest[..2], &rest[2..]),
+            None => (rest, "0"),
+        };
+        if h.is_empty()
+            || h.len() > 2
+            || m.len() > 2
+            || !h.bytes().chain(m.bytes()).all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        let (h, m): (i32, i32) = (h.parse().ok()?, m.parse().ok()?);
+        if m >= 60 || h * 60 + m > 14 * 60 {
+            return None;
+        }
+        Some(sign * (h * 60 + m))
+    }
+
+    /// `+08:00` for an offset in minutes.
+    pub fn offset_text(minutes: i32) -> [u8; 6] {
+        let sign = if minutes < 0 { b'-' } else { b'+' };
+        let m = minutes.unsigned_abs();
+        let (h, m) = (m / 60, m % 60);
+        [
+            sign,
+            b'0' + (h / 10) as u8,
+            b'0' + (h % 10) as u8,
+            b':',
+            b'0' + (m / 10) as u8,
+            b'0' + (m % 10) as u8,
+        ]
+    }
+
+    /// The POSIX `TZ` value for the C library (`UTC-8` is eight hours
+    /// *east*: POSIX counts west), `UTC-5:30` with minutes.
+    pub fn posix_tz(minutes: i32, out: &mut [u8; 12]) -> usize {
+        let west = -minutes;
+        let sign = if west < 0 { b'-' } else { b'+' };
+        let m = west.unsigned_abs();
+        let (h, m) = (m / 60, m % 60);
+        let mut n = 0;
+        for &b in b"UTC" {
+            out[n] = b;
+            n += 1;
+        }
+        out[n] = sign;
+        n += 1;
+        if h >= 10 {
+            out[n] = b'0' + (h / 10) as u8;
+            n += 1;
+        }
+        out[n] = b'0' + (h % 10) as u8;
+        n += 1;
+        if m != 0 {
+            out[n] = b':';
+            out[n + 1] = b'0' + (m / 10) as u8;
+            out[n + 2] = b'0' + (m % 10) as u8;
+            n += 3;
+        }
+        n
+    }
+}
+
 /// Waiting on several objects (`WaitSetAdd`, `WaitSetWait`;
 /// `docs/ipc.md` §13): the events and the record `WaitSetWait` writes.
 pub mod wait {
@@ -1894,6 +1976,21 @@ mod tests {
         assert_eq!((ATTR_NAME_MAX, ATTR_VALUE_MAX), (255, 3072));
         assert_eq!(Syscall::ThreadJoin.raw(), 61);
         assert_eq!(Syscall::ProcessOpen.raw(), 62);
+        assert_eq!(time::parse_offset("+08:00"), Some(480));
+        assert_eq!(time::parse_offset(" -05:30\n"), Some(-330));
+        assert_eq!(time::parse_offset("+0800"), Some(480));
+        assert_eq!(time::parse_offset("+8"), Some(480));
+        assert_eq!(time::parse_offset("08:00"), None);
+        assert_eq!(time::parse_offset("+15:00"), None);
+        assert_eq!(time::parse_offset("+08:60"), None);
+        assert_eq!(&time::offset_text(-330), b"-05:30");
+        let mut tz = [0u8; 12];
+        let n = time::posix_tz(480, &mut tz);
+        assert_eq!(&tz[..n], b"UTC-8");
+        let n = time::posix_tz(-330, &mut tz);
+        assert_eq!(&tz[..n], b"UTC+5:30");
+        let n = time::posix_tz(-600, &mut tz);
+        assert_eq!(&tz[..n], b"UTC+10");
         assert_eq!(object_kind::THREAD, 15);
         assert_eq!((object_kind::PIPE_READ, object_kind::PIPE_WRITE), (13, 14));
         assert_eq!(PIPE_BUFFER, 65536);

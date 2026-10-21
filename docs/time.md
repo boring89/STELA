@@ -148,6 +148,16 @@ QEMU 的 TCG（純軟體模擬）**不支援** invariant TSC（`-cpu max`、`+in
 | `time::wall_clock_ns()` | 1970 起的奈秒（UTC），不倒退 |
 | `time::boot_time()` | 開機時 RTC 的 `DateTime`（讀不到是 `None`） |
 
+## 5.6 時區與本地時間（P11 K40，使用者尚未審核）
+
+**比喻**：RTC 是一只永遠走格林威治時間的錶；時區是手上另外記著的一句「我們這裡快 8 小時」。STELA 不改 RTC，只在要給人看的時候把那 8 小時加上去。
+
+- 設定：`Data:/.stela/timezone`，一行 `+08:00`（也接受 `-05:30`、`+0800`、`+8`；範圍 ±14:00）。**沒有檔案或看不懂時是 +08:00**（台灣）。改時區就是改這個檔（例如 `echo +09:00 > /.stela/timezone`，資料夾要先 `mkdir /.stela`）。沒有夏令時間、沒有時區名稱資料庫。
+- 純邏輯（`abi::time`，host 測試）：`parse_offset`、`offset_text`（`+08:00`）、`posix_tz`（給 C 函式庫的 `TZ`：POSIX 的符號相反，東八區是 `UTC-8`）。
+- libstela `time`：`civil`／`format`（年月日時分秒，Howard Hinnant 的演算法；host 測試含閏日與 1970 以前）、`hours_minutes`、`offset_minutes()`（每次讀設定檔）、`local_ns()`、`to_local(檔案時間)`。
+- 用到的地方：`date`（本地時間加 `+08:00`；`date -u` 是 UTC）、Mouseion 的 Get Info（`changed:` 本地時間）、**選單列右邊的時鐘**（視窗伺服器畫 `HH:MM`，在下一分鐘開始時更新：主迴圈的 WaitSet 逾時算到下一分鐘）、Linux 程式的環境變數 `TZ`（kernel 建初始堆疊時讀設定檔；musl 的 `localtime` 用它，`tm_gmtoff` = 28800）。kernel 自己的訊息仍是 UTC。
+- 測試：host（`abi::time`、`libstela::time`）；`make test-shell` 的 `date` 看到 `+08:00`；`make test-linux` 的 `linux/time` 印 `TZ UTC-8, 28800 seconds east of UTC`。
+
 ## 6. 測試
 
 | 測試 | 內容 |

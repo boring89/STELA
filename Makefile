@@ -70,7 +70,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox bin $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -871,6 +871,15 @@ test-storage: esp-test test-images $(BUILD)/OVMF_VARS.fd
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci.img
 	$(EHFS_TOOLS)/fsck.ehfs --offset 2048 $(IMAGES)/nvme.img
 	$(EHFS_TOOLS)/ehfs-ls --offset 83968 $(IMAGES)/ahci.img /
+
+# The ports (P12, docs/ports.md): build, package and test every port of
+# the ports repository (PORTS_DIR, default ~/stela-ports) in QEMU. Local
+# only (not in `make test` or CI): it needs the ports repository and
+# downloads or copies their sources.
+PORTS_DIR ?= $(HOME)/stela-ports
+test-ports: musl esp test-images ehfs-tools
+	STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py all all
+	STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py index
 
 clippy:
 	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings

@@ -309,7 +309,7 @@ kernel **從不直接解參考使用者位址**：壞指標在檢查時就變成
  0x0000_8000_0000_0000   USER_END（非 canonical 的開始）
 ```
 
-其他執行緒的堆疊由程式自己提供（`ThreadCreate(entry, stack_top, arg)`；libstela 用 static 的 `ThreadStack<N>`）。
+其他執行緒的堆疊由程式自己提供（`ThreadCreate(entry, stack_top, arg)`；libstela 用 static 的 `ThreadStack<N>`）。P12：Linux 的 `clone` 執行緒也一樣（堆疊由 musl 用 mmap 配置）；`fork` 用 `AddressSpace::clone_user()` 全部複製，`execve` 用 `swap_user()` 換掉整個使用者半部（`docs/linux.md` §11）。
 
 `hello` 一個行程實際用掉的頁框：程式段 8 頁（text 2、rodata 1、data 5——data 裡有 16 KiB 的子執行緒堆疊）、主堆疊 256 頁、分頁表 7 頁（PML4 + 程式那邊 PDPT/PD/PT + 堆疊那邊 PDPT/PD/PT），共 271 頁（約 1.06 MiB）；另外每個執行緒 8 頁 kernel 堆疊。
 
@@ -449,6 +449,8 @@ PerCpu 新增的欄位（`frame/src/cpu.rs`）：
 - 還沒進過 ring 3 的新執行緒在 `thread_entry`。
 
 這幾個點 kernel 堆疊上已經沒有 kernel 的物件，frame 呼叫 kernel 註冊的 `user_return`（`frame::task::set_user_return_hook`），被標記就 `exit()`。selftest：一個不斷 `SleepNs(1 ms)` 的程式在睡著時被 `kill`，以 77 結束，記憶體全部回來。
+
+P12（使用者尚未審核）：使用者例外的 handler 可以返回——Linux 執行緒有那個訊號的 handler 時，kernel 改寫 `TrapFrame` 轉去 handler（`docs/linux.md` §12.4），之後照樣經 user_return hook 回 ring 3；Linux 程式被例外結束時的 exit code 是 128 + 訊號（SIGSEGV 139）而不是 128 + 向量。
 
 ring 0 的例外照舊 panic。exit code 的慣例：`128 + 向量`（#UD 134、#GP 141、#PF 142），`ProcessExit(code)` 自己給，使用者程式 panic 是 101，執行緒全部自己結束是 0，載入失敗（從沒跑過）是 −1。
 

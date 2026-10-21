@@ -1,6 +1,6 @@
 # Classic 環境（Classic.app）
 
-> P10 由自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍這份文件。
+> P10 由自動排程一次做完，使用者已於 2026-10-21 審核。
 
 Classic 環境讓一台 **Macintosh IIci**（68030、25 MHz）在 STELA 的視窗裡執行使用者自己的 ROM 與 System 7。它是縮減版的 68k_HAL：68k 核心是 Musashi，機器模型是 68k_HAL 的 `emu/mac`，兩者都是 C，從 68k_HAL 複製進 `classic/`（使用者授權的唯一例外，`classic/README.md`）。外面包一層 Rust，透過一般的使用者空間 API（視窗、檔案、事件、時鐘）和 STELA 打交道。
 

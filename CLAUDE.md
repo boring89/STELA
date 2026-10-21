@@ -186,11 +186,11 @@ Claude 依照上方工作規則直接實作。
 - P7（自動排程一次做完，使用者已審核（2026-10-20））：Linux 相容層（`docs/linux.md`）
 - P8（自動排程一次做完，使用者已審核（2026-10-20））：USB、顯示、視窗伺服器、工具箱（`docs/usb.md`、`docs/display.md`、`docs/window.md`、`docs/toolbox.md`）
 - P9（自動排程一次做完，使用者已審核（2026-10-20））：Mouseion 與識別（`docs/mouseion.md`、`docs/identity.md`）
-- P10（自動排程一次做完，**使用者尚未審核**；之後修改前請先帶使用者過一遍對應的文件）：實機映像（`docs/p520.md`）、Classic 環境（`docs/classic.md`）、網路（`docs/net.md`）、音效（`docs/sound.md`）、SMP（`docs/smp.md`）
+- P10（自動排程一次做完，使用者已審核（2026-10-21））：實機映像（`docs/p520.md`）、Classic 環境（`docs/classic.md`）、網路（`docs/net.md`）、音效（`docs/sound.md`）、SMP（`docs/smp.md`）
 
 ## 已知問題（尚未修正）
 
-- SMP（P10）：行程親和、沒有遷移與負載平衡、裝置中斷與 kernel 執行緒都在 BSP、最多 16 顆；只支援 xAPIC，沒有 8259 退路（沒有 APIC 或 MADT 就 panic）；LINT1（NMI）遮蔽（docs/smp.md §9）。
+- SMP（P10）：行程親和、沒有遷移與負載平衡、裝置中斷與 kernel 執行緒都在 BSP、最多 16 顆；**排程器的正確性依賴「執行緒永遠不換 CPU」（沒有 finish_task_switch，docs/smp.md §4）——加入遷移或負載平衡前必須先改排程器的鎖**；只支援 xAPIC，沒有 8259 退路（沒有 APIC 或 MADT 就 panic）；LINT1（NMI）遮蔽（docs/smp.md §9）。
 - MMIO 映射的虛擬位址只增不減、不回收；中斷處理程式表用一把 SpinLock（SMP 時可改 atomic）。
 - 計時器只有週期模式 1000 Hz；依賴 8254 PIT 校準；沒有 invariant TSC 時 `now_ns()` 只有 1 ms 解析度，且長時間關中斷（例如主控台捲動）會少算 tick。
 - 鍵盤與滑鼠：PS/2（i8042，兩個 port）與 USB HID boot protocol；US 配置；沒有數字鍵台、LED、按住重複、滾輪的用途、滑鼠加速度（docs/keyboard.md、docs/usb.md §11）。
@@ -206,6 +206,7 @@ Claude 依照上方工作規則直接實作。
 - 視窗：client 以 id 辨識（可冒用）、沒有 port set；拖外框不即時移動；選單一層；client 結束最多 1 秒後才被發現；terminal 沒有 ANSI 顏色與捲回（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。
 - 儲存：一次一個請求（AHCI 一個 slot、NVMe 每次一個 4 KiB 區塊）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；`DirRead` 每次重新列出（O(n²)）；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。
+- 實機：kernel 會把看到的任何 GPT 磁碟上的 eHFS 分割區掛成可寫，包括 P520 上 68k_HAL 磁碟（sda）的 Data 分割區（格式相容，不會損壞，但 Mouseion 會寫入 Finder 資訊）；實機測試時留意或先拔掉（docs/p520.md §1）。
 - 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；`SystemPower` 任何程式都能呼叫；關機前不通知程式（docs/acpi.md §9）。
 - Linux 人格：只有靜態非 PIE 的 musl 程式；單執行緒（沒有 clone、fork、execve、pipe、訊號遞送、poll/select）；Linux 程式不受能力限制（看得到所有卷宗）；cwd 只從 `[3]` 的卷宗根開始；`getrandom` 不安全；`PROT_NONE` 可讀（docs/linux.md §13）。
 - 網路：一次一張網卡；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 沒有 poll（Linux 的 getaddrinfo 不能用）；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。

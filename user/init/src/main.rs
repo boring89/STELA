@@ -131,6 +131,29 @@ fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
 
 /// The window server and the program it starts first.
 const DESKTOP: &[&str] = &["windowserver", "mouseion"];
+/// The first start (P12, docs/setup.md): Setup.app instead of Mouseion;
+/// Setup starts Mouseion when it is done.
+const FIRST_START: &[&str] = &["windowserver", "Setup.app"];
+
+/// Whether to run Setup.app: the boot option `setup`, or a Data volume
+/// without `.stela/setup-done` (no Data at all: nothing to set up).
+fn needs_setup() -> bool {
+    if process::boot_flag("setup") {
+        return true;
+    }
+    let Ok(data) = fs::volume_open("Data") else {
+        return false;
+    };
+    let done = fs::open(data, ".stela/setup-done", open::READ);
+    let _ = handle_close(data);
+    match done {
+        Ok(h) => {
+            let _ = handle_close(h);
+            false
+        }
+        Err(_) => true,
+    }
+}
 
 /// Runs the window server for as long as it keeps running; returns if it
 /// cannot be started at all.
@@ -142,6 +165,12 @@ fn run_desktop(home: Handle) {
     let _ = handle_close(initrd);
     let Ok(program) = program else {
         return;
+    };
+    let mut programs = if needs_setup() {
+        println!("init: first start: Setup.app");
+        FIRST_START
+    } else {
+        DESKTOP
     };
     loop {
         let handles = [
@@ -155,7 +184,7 @@ fn run_desktop(home: Handle) {
         let mut caps = process::inherited();
         caps.extend(give(capability::POWER));
         caps.extend(give(capability::INPUT));
-        let server = match process::spawn_with(program, DESKTOP, &handles, &caps) {
+        let server = match process::spawn_with(program, programs, &handles, &caps) {
             Ok(h) => h,
             Err(e) => {
                 println!("init: cannot start the window server: {}", e.name());
@@ -165,6 +194,7 @@ fn run_desktop(home: Handle) {
         let code = wait_child(server);
         let _ = handle_close(server);
         println!("init: the window server ended with code {code}; starting it again");
+        programs = DESKTOP;
         libstela::sleep_ms(1000);
     }
 }

@@ -10,16 +10,19 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
 BIN_TOOLS   := echo cat grep wc head tail sort uniq find du df date sleep touch stat hexdump tar true false
+# Programs of their own packages that also go to Initrd:/bin/ (P12: pkg,
+# docs/pkg.md).
+BIN_PROGRAMS := pkg
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
 # program at Name.app/exec with Name.app/info.txt; the rest sit in the
 # initrd's root.
-BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic kalamos:Kalamos monitor:Monitor periplus:Periplus
+BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic kalamos:Kalamos monitor:Monitor periplus:Periplus setup:Setup
 BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
 INITRD_ROOT := $(BUILD)/initrd-root
 
@@ -61,19 +64,19 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox
+HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox pkgcore
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic bin periplus
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
-USER_CRATES := libstela toolbox bin $(USER_PACKAGES)
+USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 # The packages to give cargo: `spin` is also a crates.io crate (a TLS
 # dependency, P12), so the workspace's is named with its version.
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -84,10 +87,10 @@ kernel:
 	cargo build --release -p kernel --target $(KERNEL_TARGET)
 
 user:
-	cargo build --release $(addprefix -p ,$(USER_PACKAGES)) -p bin --target $(KERNEL_TARGET)
+	cargo build --release $(addprefix -p ,$(USER_PACKAGES)) -p bin $(addprefix -p ,$(BIN_PROGRAMS)) --target $(KERNEL_TARGET)
 	mkdir -p $(USER_DIR)/bin
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(USER_PROGRAMS)) $(USER_DIR)/
-	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(BIN_TOOLS)) $(USER_DIR)/bin/
+	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(BIN_TOOLS) $(BIN_PROGRAMS)) $(USER_DIR)/bin/
 
 # The initial RAM disk: the user programs in a ustar archive (the Linux
 # test programs in its linux/ folder, the bundles as Name.app/ folders),
@@ -103,6 +106,7 @@ initrd: user linux-tests
 	cp third_party/fusion-pixel/fusion-pixel-12-zh_tw.bin $(INITRD_ROOT)/fonts/
 	mkdir -p $(INITRD_ROOT)/certs
 	python3 tools/cacert_to_der.py third_party/mozilla-ca/cacert.pem $(INITRD_ROOT)/certs/cacert.der
+	cp tools/pkg.pub $(INITRD_ROOT)/certs/pkg.pub
 	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
 		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
 		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
@@ -193,7 +197,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-tls test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-browser
+test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-browser
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -288,7 +292,7 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	cp -r $(ESP) $(DISK_ESP)
 	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
 	mkdir -p $(IMAGES)
-	python3 tools/make_disk_image.py $(TEST_DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
+	python3 tools/make_disk_image.py --setup-done $(TEST_DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
 	python3 tools/qemu_test.py --exit-code 0 --timeout 90 \
 		--type "STELA shell" "mkdir from-the-disk-image\n" \
 		--type "> mkdir from-the-disk-image" "shutdown\n" \
@@ -348,7 +352,7 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	cp -r $(ESP) $(DISK_ESP)
 	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
 	mkdir -p $(IMAGES)
-	python3 tools/make_disk_image.py $(CLASSIC_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
+	python3 tools/make_disk_image.py --setup-done $(CLASSIC_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) mkdir /Classic
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_ROM)" /Classic/ROM
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_DISK)" /Classic/System.img
@@ -459,6 +463,82 @@ test-tls: esp test-images $(BUILD)/OVMF_VARS.fd
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-tls.img \
 		-device ide-hd,drive=sata1,bus=ide.1
+
+# Packages (P12, docs/pkg.md §5): two test packages (greet: the Linux hello, and
+# a data file depending on it) in the ports repository's format, an
+# index signed with the test key (tools/pkgsign.py; its public half is
+# Initrd:/certs/pkg.pub), served over HTTPS with the test root trusted
+# through Data:/.stela/pkg.conf. pkg updates, searches, installs with the
+# dependency, the shell runs the installed program, pkg removes one.
+test-pkg: esp test-images $(BUILD)/OVMF_VARS.fd
+	python3 tools/make_test_certs.py $(BUILD)/tls
+	python3 tools/pkgsign.py keygen $(BUILD)/pkg-signing.key $(BUILD)/pkg.pub
+	cmp $(BUILD)/pkg.pub tools/pkg.pub
+	rm -rf $(BUILD)/www/pkg
+	python3 tools/make_test_packages.py $(USER_DIR)/linux/hello $(BUILD)/www/pkg
+	python3 tools/pkgsign.py index $(BUILD)/pkg-signing.key $(BUILD)/www/pkg https://10.0.2.2:$(TLS_PORT)/pkg/
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-pkg.img
+	printf 'server = https://10.0.2.2:$(TLS_PORT)/pkg/\nca = Data:/test-ca.der\n' > $(BUILD)/pkg.conf
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-pkg.img in $(BUILD)/tls/ca.der /test-ca.der
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-pkg.img in $(BUILD)/pkg.conf /.stela/pkg.conf
+	python3 tools/with_https.py $(BUILD)/www $(BUILD)/tls $(TLS_PORT) -- \
+		python3 tools/qemu_test.py --timeout 240 --log $(BUILD)/test-pkg.log \
+		--type "STELA shell" "run pkg update\n" \
+		--type "pkg exited with code" "run pkg search greet\n" \
+		--type "pkg exited with code" "run pkg install greetdoc\n" \
+		--type "pkg exited with code" "run pkg list\n" \
+		--type "pkg exited with code" "run greet installed\n" \
+		--type "greet exited with code" "cat Data:/Programs/greetdoc/share/hello.txt\n" \
+		--type "hello from a package" "run pkg remove greetdoc\n" \
+		--type "pkg exited with code" "run pkg install nothere\n" \
+		--expect "pkg: the index lists 2 packages" --expect "pkg exited with code 0" \
+		--expect "greetdoc 1.0 - greetdoc (a test package)" \
+		--expect "pkg: installed greet 1.0" --expect "pkg: installed greetdoc 1.0" \
+		--expect "greetdoc 1.0" \
+		--expect "hello from linux: 2 args" --expect "argv[1] = installed" \
+		--expect "hello from a package" \
+		--expect "pkg: removed greetdoc" \
+		--expect "pkg: no package called nothere" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-pkg.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-pkg.img
+
+# The first start (P12, docs/setup.md §5): boot option `setup`, a disk
+# with one partition that was never formatted. Setup.app: 繁體中文, the
+# time zone as it is, the partition formatted as Data (its name typed to
+# confirm), the network page, no packages (no server configured on a new
+# Data volume; pkg's installing is test-pkg), no Classic images, done:
+# Mouseion starts. The host checks the new volume and what Setup wrote.
+ESP_SETUP := $(BUILD)/esp-setup
+test-setup: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
+	rm -rf $(ESP_SETUP)
+	cp -r $(ESP) $(ESP_SETUP)
+	printf 'setup\n' > $(ESP_SETUP)/STELA/boot.cfg
+	mkdir -p $(IMAGES)
+	python3 tools/make_test_images.py setup $(IMAGES)/setup.img
+	python3 tools/qemu_test.py --timeout 240 --log $(BUILD)/test-setup.log \
+		--send-keys "setup: page language" "down ret" \
+		--send-keys "setup: page timezone" "ret" \
+		--type "setup: can become Data: ahci0p1.1" "ahci0p1.1\n" \
+		--send-keys "is the Data volume" "ret" \
+		--send-keys "setup: page network" "ret" \
+		--send-keys "setup: page packages" "ret" \
+		--send-keys "setup: page classic" "ret" \
+		--send-keys "setup: page done" "ret" \
+		--expect "init: first start: Setup.app" --expect "setup: page language" \
+		--expect "setup: language zh-TW" --expect "setup: time zone +08:00" \
+		--expect "setup: page data" --expect "setup: formatting ahci0p1.1" \
+		--expect "vfs: ahci0p1.1 formatted as Data" --expect "setup: ahci0p1.1 is the Data volume" \
+		--expect "setup: 套件伺服器: 沒有設定" --expect "setup: page network" --expect "setup: page packages" \
+		--expect "setup: page classic" --expect "setup: page done" --expect "setup: done" \
+		--expect "mouseion: ready" \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SETUP) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/setup.img -device ide-hd,drive=sata1,bus=ide.1
+	$(EHFS_TOOLS)/fsck.ehfs --offset 2048 $(IMAGES)/setup.img
+	$(EHFS_TOOLS)/ehfs-cp --offset 2048 $(IMAGES)/setup.img out /.stela/language $(BUILD)/setup-language
+	grep -q zh-TW $(BUILD)/setup-language
+	$(EHFS_TOOLS)/ehfs-cp --offset 2048 $(IMAGES)/setup.img out /.stela/setup-done $(BUILD)/setup-done
 
 # Measurements (P11, docs/bench.md): the normal kernel with the AHCI test
 # disk and user networking, no KVM; the shell runs bench (memory on the
@@ -780,8 +860,9 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 # Mouseion (2560x1600, 16x32 font, 64-pixel icons in 160x112 cells; the
 # desktop's volume icons on the right: Boot, Data, Initrd, Tmp): double
 # click Data, then welcome.txt in Data's window (Kalamos opens it, P11),
-# then Initrd, then Terminal.app (the sixth icon, after Classic.app,
-# Echo.app, Kalamos.app, Monitor.app and Periplus.app; P11) in Initrd's
+# then Initrd, then Terminal.app (the seventh icon, first of the second row, after Classic.app,
+# Echo.app, Kalamos.app, Monitor.app, Periplus.app and Setup.app; P11,
+# P12) in Initrd's
 # window (a second terminal starts). The screen shows the volume icons
 # and the new terminal active.
 MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
@@ -798,7 +879,7 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--click "mouseion: opened Initrd:/" 296 274 1 \
 		--type "mouseion: selected Classic.app" "{delete}" \
 		--type "mouseion: asking" "\n" \
-		--click "mouseion: delete Classic.app" 1096 272 2 \
+		--click "mouseion: delete Classic.app" 296 386 2 \
 		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
 		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
 		--expect "mouseion: asking: Delete \"Classic.app\"?" \

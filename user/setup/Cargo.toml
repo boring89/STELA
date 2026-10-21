@@ -1,0 +1,23 @@
+[package]
+name = "setup"
+description = "Setup.app: the first start (language, time zone, Data volume, network, packages, Classic)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "setup"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+toolbox = { path = "../toolbox" }
+pkgcore = { path = "../pkgcore" }
+
+[lints]
+workspace = true

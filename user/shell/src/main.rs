@@ -437,7 +437,7 @@ impl Shell {
                     return Ok((h, folder));
                 }
             }
-            // The search path's last stop (P11): Initrd:/bin/.
+            // The search path's next stop (P11): Initrd:/bin/.
             if !name.contains('/')
                 && let Ok(bin) = fs::open(initrd.0, "bin", open::READ)
             {
@@ -448,6 +448,13 @@ impl Shell {
                         return Ok((h, Some(bin)));
                     }
                 }
+            }
+            // And last (P12): the installed packages' bin folders,
+            // Data:/Programs/NAME/bin/ (docs/pkg.md).
+            if !name.contains('/')
+                && let Some(found) = find_in_programs(name, &runnable)
+            {
+                return Ok(found);
             }
         }
         Err(alloc::format!("{name}: no such program"))
@@ -857,6 +864,36 @@ impl Shell {
         println!("{base} exited with code {code}");
         Ok(())
     }
+}
+
+/// `name` in one of the installed packages' `bin` folders
+/// (`Data:/Programs/*/bin/`, in name order).
+fn find_in_programs(
+    name: &str,
+    runnable: &dyn Fn(Handle) -> bool,
+) -> Option<(Owned, Option<Owned>)> {
+    let data = Owned(fs::volume_open("Data").ok()?);
+    let programs = Owned(fs::open(data.0, "Programs", open::READ).ok()?);
+    let mut packages: Vec<String> = fs::entries(programs.0)
+        .ok()?
+        .iter()
+        .filter(|e| e.kind == kind::DIRECTORY)
+        .map(|e| String::from(e.name()))
+        .collect();
+    packages.sort();
+    for p in packages {
+        let Ok(bin) = fs::open(programs.0, &alloc::format!("{p}/bin"), open::READ) else {
+            continue;
+        };
+        let bin = Owned(bin);
+        if let Ok(h) = fs::open(bin.0, name, open::READ) {
+            let h = Owned(h);
+            if runnable(h.0) {
+                return Some((h, Some(bin)));
+            }
+        }
+    }
+    None
 }
 
 /// Whether the program file has no STELA ELF note (so it runs as a Linux

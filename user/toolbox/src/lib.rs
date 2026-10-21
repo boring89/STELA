@@ -33,6 +33,7 @@ pub mod control;
 pub mod dialog;
 pub mod draw;
 pub mod event;
+pub mod i18n;
 pub mod icons;
 pub mod menu;
 pub mod text;

@@ -249,6 +249,13 @@ pub enum Syscall {
     /// kernel's generator (ChaCha20 keyed from RDSEED/RDRAND or timing
     /// jitter; P12, `docs/tls.md` §2); at most `RANDOM_MAX` at a time.
     Random = 64,
+    /// `VolumeFormat(op, buf, len, power) -> value` (P12, Setup.app,
+    /// `docs/setup.md` §4): op 0 writes the places that can become the
+    /// Data volume (`name size\n` lines: partitions or disks never
+    /// formatted, none while Data exists) into `buf` and returns the
+    /// bytes; op 1 formats the place named in `buf` as Data and mounts it
+    /// (needs the `POWER` capability `power`; refuses anything not empty).
+    VolumeFormat = 65,
 }
 
 /// Most bytes one `Random` call gives.
@@ -256,7 +263,7 @@ pub const RANDOM_MAX: u64 = 64 * 1024;
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 64] = [
+    pub const ALL: [Syscall; 65] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -321,6 +328,7 @@ impl Syscall {
         Syscall::ProcessOpen,
         Syscall::VolumeWatch,
         Syscall::Random,
+        Syscall::VolumeFormat,
     ];
 
     /// The call with number `raw`, if any.
@@ -2000,6 +2008,7 @@ mod tests {
         assert_eq!(Syscall::ProcessOpen.raw(), 62);
         assert_eq!((Syscall::VolumeWatch.raw(), tag::VOLUME_CHANGED), (63, 9));
         assert_eq!(Syscall::Random.raw(), 64);
+        assert_eq!(Syscall::VolumeFormat.raw(), 65);
         assert_eq!(time::parse_offset("+08:00"), Some(480));
         assert_eq!(time::parse_offset(" -05:30\n"), Some(-330));
         assert_eq!(time::parse_offset("+0800"), Some(480));

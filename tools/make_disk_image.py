@@ -4,7 +4,7 @@
 """Create a disk image that boots STELA on a real UEFI machine
 (docs/p520.md).
 
-Usage: make_disk_image.py OUT ESP_DIR EHFS_TOOLS [DATA_MIB]
+Usage: make_disk_image.py [--setup-done] OUT ESP_DIR EHFS_TOOLS [DATA_MIB]
 
     OUT         the image, a regular file under build/ (made fresh)
     ESP_DIR     a directory with the files of the EFI System Partition
@@ -57,10 +57,14 @@ def copy_tree(img, src, dest="::"):
 
 
 def main():
-    if len(sys.argv) not in (4, 5):
+    # --setup-done (P12, tests only): the Data volume says Setup.app has
+    # run, so the first boot goes straight to the desktop.
+    args = [a for a in sys.argv[1:] if a != "--setup-done"]
+    setup_done = len(args) != len(sys.argv) - 1
+    if len(args) not in (3, 4):
         sys.exit(__doc__)
-    out, esp_dir, tools = sys.argv[1:4]
-    data_mib = int(sys.argv[4]) if len(sys.argv) == 5 else 4096
+    out, esp_dir, tools = args[0:3]
+    data_mib = int(args[3]) if len(args) == 4 else 4096
     if data_mib < 16:
         sys.exit("make_disk_image: the Data volume needs at least 16 MiB")
     for f in ("EFI/BOOT/BOOTX64.EFI", "STELA/kernel.elf", "STELA/initrd.tar"):
@@ -105,6 +109,13 @@ def main():
         f.write(WELCOME)
     run(os.path.join(tools, "ehfs-cp"), "--offset", str(data_first), img, "in", welcome,
         "/Welcome.txt")
+    if setup_done:
+        done = os.path.join(work, "setup-done")
+        with open(done, "wb") as f:
+            f.write(b"1\n")
+        run(os.path.join(tools, "ehfs-cp"), "--offset", str(data_first), img, "mkdir", "/.stela")
+        run(os.path.join(tools, "ehfs-cp"), "--offset", str(data_first), img, "in", done,
+            "/.stela/setup-done")
     print(f"make_disk_image: {out}: {size // MIB} MiB (ESP {ESP_MIB} MiB at LBA {esp_first}, "
           f"Data {data_mib} MiB at LBA {data_first})")
 

@@ -318,3 +318,39 @@ pub fn read_all(file: Handle) -> Result<alloc::vec::Vec<u8>, Error> {
     data.truncate(at);
     Ok(data)
 }
+
+/// The places that can become the Data volume: (name, bytes)
+/// (`VolumeFormat` op 0; P12, Setup.app).
+pub fn format_candidates() -> Result<alloc::vec::Vec<(alloc::string::String, u64)>, Error> {
+    let mut buf = alloc::vec![0u8; 2048];
+    let n = syscall4(
+        Syscall::VolumeFormat,
+        0,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        0,
+    )?;
+    buf.truncate(n as usize);
+    let text = core::str::from_utf8(&buf).map_err(|_| Error::InvalidArgument)?;
+    Ok(text
+        .lines()
+        .filter_map(|l| {
+            let (name, size) = l.split_once(' ')?;
+            Some((alloc::string::String::from(name), size.parse().ok()?))
+        })
+        .collect())
+}
+
+/// Formats the place `name` as the Data volume and mounts it
+/// (`VolumeFormat` op 1; needs the `POWER` capability).
+pub fn format_volume(name: &str) -> Result<(), Error> {
+    let power = crate::process::capability(abi::capability::POWER).ok_or(Error::AccessDenied)?;
+    syscall4(
+        Syscall::VolumeFormat,
+        1,
+        name.as_ptr() as u64,
+        name.len() as u64,
+        power.raw(),
+    )
+    .map(|_| ())
+}

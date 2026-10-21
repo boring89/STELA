@@ -69,6 +69,7 @@
 | 62 | `ProcessOpen` | pid, power | 行程 handle（`WAIT | KILL | DUPLICATE`） | 用 pid 拿任何執行中的行程，要 `POWER` 能力；見 `docs/apps.md` §3（P11） |
 | 63 | `VolumeWatch` | port | 0 | 卷宗掛上或拿掉時 kernel 送 `tag::VOLUME_CHANGED` 給這個 port；見 `docs/vfs.md` §6.2（P11） |
 | 64 | `Random` | buf, len（≤ `RANDOM_MAX` 64 KiB） | len | kernel 產生器的亂數（`frame::random`：ChaCha20，金鑰來自 RDSEED／RDRAND 或 TSC 抖動）；`docs/tls.md` §2（P12） |
+| 65 | `VolumeFormat` | op, buf, len, power | 位元組數／0 | op 0：可以變成 Data 卷宗的地方（從沒格式化過的分割區或沒有分割表的整顆非卸除式磁碟；已有 Data 時沒有），`名稱 大小\n` 一行一個；op 1：把 buf 裡名稱的那個格式化成 eHFS「Data」並掛上，要 `POWER` 能力，不是全 0 的拒絕（`Busy`）；`docs/setup.md` §4（P12） |
 
 P7 起沒有 STELA ELF note 的程式用 **Linux 人格**：同一個進入點，號碼與回傳慣例是 Linux 的（`docs/linux.md`）。
 

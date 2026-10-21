@@ -225,3 +225,103 @@ fn mount_partition(
     }
     None
 }
+
+/// Whether a disk is removable (a USB disk): never offered for Data.
+fn removable(disk_name: &str) -> bool {
+    REMOVABLE.lock().iter().any(|(d, _)| d == disk_name) || disk_name.starts_with("usb")
+}
+
+/// The places that can become the Data volume (P12, Setup.app,
+/// `docs/setup.md` §4): partitions (named `disk.N`, N from 1 in table
+/// order) or whole disks without a table (named `disk`) whose first 4 KiB
+/// block is all zeros (never formatted), on disks that are not removable;
+/// with their size in bytes. Nothing while a Data volume is mounted.
+pub fn format_candidates() -> Vec<(String, u64)> {
+    if super::find("Data").is_some() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (disk_name, disk) in disks() {
+        if removable(&disk_name) {
+            continue;
+        }
+        let parts = partitions(&disk_name, &disk);
+        let whole = parts.len() == 1 && parts[0].1 == 0 && parts[0].0.is_none();
+        for (i, (kind, start, count)) in parts.into_iter().enumerate() {
+            if kind == Some(Guid::ESP) {
+                continue;
+            }
+            let Some(part) = Partition::new(Arc::clone(&disk), start, count, false) else {
+                continue;
+            };
+            let mut first = vec![0u8; BLOCK_SIZE];
+            if part.read(0, &mut first).is_err() || first.iter().any(|&b| b != 0) {
+                continue;
+            }
+            let name = if whole {
+                disk_name.clone()
+            } else {
+                alloc::format!("{disk_name}.{}", i + 1)
+            };
+            out.push((name, count * BLOCK_SIZE as u64));
+        }
+    }
+    out
+}
+
+/// Formats the place `name` (one of [`format_candidates`]) as an eHFS
+/// volume called Data and mounts it.
+pub fn format_data(name: &str) -> Result<(), abi::Error> {
+    if super::find("Data").is_some() {
+        return Err(abi::Error::Exists);
+    }
+    for (disk_name, disk) in disks() {
+        if removable(&disk_name) {
+            continue;
+        }
+        let parts = partitions(&disk_name, &disk);
+        let whole = parts.len() == 1 && parts[0].1 == 0 && parts[0].0.is_none();
+        for (i, (kind, start, count)) in parts.into_iter().enumerate() {
+            let this = if whole {
+                disk_name.clone()
+            } else {
+                alloc::format!("{disk_name}.{}", i + 1)
+            };
+            if this != name || kind == Some(Guid::ESP) {
+                continue;
+            }
+            let part = Partition::new(Arc::clone(&disk), start, count, false)
+                .ok_or(abi::Error::InvalidArgument)?;
+            let mut first = vec![0u8; BLOCK_SIZE];
+            part.read(0, &mut first).map_err(|_| abi::Error::IoError)?;
+            if first.iter().any(|&b| b != 0) {
+                // Not empty (any more): never erased here.
+                return Err(abi::Error::Busy);
+            }
+            let mut uuid = [0u8; 16];
+            frame::random::fill(&mut uuid);
+            let options = ehfs::FormatOptions {
+                name: "Data",
+                uuid,
+                now: frame::time::wall_clock_ns(),
+                journal_blocks: 0,
+            };
+            ehfs::format(part, &options).map_err(|e| {
+                frame::kprintln!("vfs: formatting {name} failed: {e:?}");
+                abi::Error::IoError
+            })?;
+            frame::kprintln!("vfs: {name} formatted as Data");
+            let part = Partition::new(Arc::clone(&disk), start, count, false)
+                .ok_or(abi::Error::InvalidArgument)?;
+            let mut have_data = false;
+            return match mount_partition(&disk_name, &disk, part, kind, &mut have_data) {
+                Some(line) => {
+                    frame::kprintln!("vfs: mounted {line}");
+                    Ok(())
+                }
+                None => Err(abi::Error::IoError),
+            };
+        }
+    }
+    Err(abi::Error::NotFound)
+}

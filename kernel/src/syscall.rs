@@ -38,6 +38,39 @@ fn random(buf: u64, len: u64) -> Result<u64, Error> {
     Ok(len)
 }
 
+/// `VolumeFormat(op, buf, len, power)` (P12).
+fn volume_format(op: u64, buf: u64, len: u64, power: u64) -> Result<u64, Error> {
+    let process = task::current_process().ok_or(Error::InvalidArgument)?;
+    match op {
+        0 => {
+            let mut text = alloc::string::String::new();
+            for (name, bytes) in crate::vfs::mount::format_candidates() {
+                text.push_str(&alloc::format!("{name} {bytes}\n"));
+            }
+            let n = text.len().min(len as usize);
+            process
+                .space()
+                .write(buf, &text.as_bytes()[..n])
+                .map_err(|_| Error::BadAddress)?;
+            Ok(n as u64)
+        }
+        1 => {
+            crate::object::check_capability(&process, power, abi::capability::POWER)?;
+            if len > 64 {
+                return Err(Error::InvalidArgument);
+            }
+            let mut name = alloc::vec![0u8; len as usize];
+            process
+                .space()
+                .read(buf, &mut name)
+                .map_err(|_| Error::BadAddress)?;
+            let name = core::str::from_utf8(&name).map_err(|_| Error::InvalidArgument)?;
+            crate::vfs::mount::format_data(name).map(|()| 0)
+        }
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
 /// Registers [`handle`] with frame. Call once at boot.
 pub fn init() {
     frame::syscall::set_handler(handle);
@@ -91,6 +124,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::PipeRead) => pipe_read(a0, a1, a2, args[3]),
         Some(Syscall::PipeWrite) => pipe_write(a0, a1, a2, args[3]),
         Some(Syscall::Random) => random(a0, a1),
+        Some(Syscall::VolumeFormat) => volume_format(a0, a1, a2, args[3]),
         Some(call) => file_call(call, args),
         None => Err(Error::InvalidSyscall),
     };

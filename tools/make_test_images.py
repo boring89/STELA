@@ -13,6 +13,8 @@ Usage: make_test_images.py host DIR
                           "Archive"
        Both start with the test-disk magic "STELATEST" (in the protective
        MBR's boot code area), which the self test looks for.
+       make_test_images.py setup IMG
+           64 MiB, a GPT with one partition never formatted (P12, Setup)
 
 Only regular files under build/ are created or written; anything else
 (a block device, a path outside build/) is refused. The tools run on the
@@ -164,6 +166,13 @@ def make_storage(out, tools):
     with open(chinese, "wb") as f:
         f.write("你好，STELA。這是中文。\n".encode("utf-8"))
     run(cp, "--offset", str(data_first), ahci, "in", chinese, "/中文.txt")
+    # P12: already set up (Setup.app does not start; make test-setup
+    # uses a disk of its own).
+    done = os.path.join(work, "setup-done")
+    with open(done, "wb") as f:
+        f.write(b"1\n")
+    run(cp, "--offset", str(data_first), ahci, "mkdir", "/.stela")
+    run(cp, "--offset", str(data_first), ahci, "in", done, "/.stela/setup-done")
 
     # NVMe: 64 MiB, 4096-byte sectors; one eHFS partition at 1 MiB.
     nvme = checked(os.path.join(out, "nvme.img"))
@@ -175,8 +184,21 @@ def make_storage(out, tools):
     run(mkfs, "-L", "Archive", "--offset", str(first * 8), "--sectors", str((last + 1 - first) * 8), nvme)
 
 
+def make_setup(img):
+    """P12 (make test-setup): 64 MiB, a GPT with one partition at 1 MiB
+    that was never formatted (all zeros): what Setup.app offers to make
+    the Data volume."""
+    img = checked(img)
+    size = 64 * MIB
+    with open(img, "wb") as f:
+        f.truncate(size)
+    write_gpt(img, 512, size, [(DATA_TYPE, 2048, size // 512 - 34 - 1, "Empty")])
+
+
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "host":
+    if len(sys.argv) == 3 and sys.argv[1] == "setup":
+        make_setup(sys.argv[2])
+    elif len(sys.argv) == 3 and sys.argv[1] == "host":
         out = sys.argv[2]
         os.makedirs(os.path.dirname(checked(os.path.join(out, "x"))), exist_ok=True)
         make_fat(os.path.join(out, "fat-test.img"), 64, "BOOT")

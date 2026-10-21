@@ -217,9 +217,13 @@ fn describe(e: Error) -> &'static str {
     }
 }
 
-/// The entries of the folder `h`.
+/// The entries of the folder `h`, without the hidden ones (P12: names
+/// starting with `.`, the system's own folders: `.Trash`, `.stela`,
+/// `.pkg`).
 fn list(h: Handle) -> Vec<DirEntry> {
-    fs::entries(h).unwrap_or_default()
+    let mut entries = fs::entries(h).unwrap_or_default();
+    entries.retain(|e| !e.name().starts_with('.'));
+    entries
 }
 
 impl Mouseion {
@@ -1699,15 +1703,22 @@ fn main() -> i64 {
     };
     let font = font_for(conn.screen.0);
     let icon_size = icons::size_for(conn.screen.0) as i32;
+    // The menus in the language Setup chose (P12, toolbox::i18n).
+    toolbox::i18n::load();
     let mut menus = MenuBar::new();
-    menus.add("Mouseion", &["About Mouseion", "About STELA"]);
-    menus.add(
+    let mut add = |title: &str, items: &[&str]| {
+        let items: Vec<String> = items.iter().map(|i| toolbox::i18n::tr_menu(i)).collect();
+        let refs: Vec<&str> = items.iter().map(String::as_str).collect();
+        menus.add(toolbox::i18n::tr(title), &refs);
+    };
+    add("Mouseion", &["About Mouseion", "About STELA"]);
+    add(
         "File",
         &["New Folder^N", "Open^O", "Get Info^I", "-", "Close^W"],
     );
-    menus.add("Edit", &[]);
-    menus.add("View", &["Icons", "List"]);
-    menus.add(
+    add("Edit", &[]);
+    add("View", &["Icons", "List"]);
+    add(
         "Special",
         &[
             "Terminal",

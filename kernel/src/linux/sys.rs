@@ -357,9 +357,17 @@ pub fn initial_stack(
     let n = abi::time::posix_tz(timezone_minutes(), &mut tz);
     let mut tz_env = Vec::from(&b"TZ="[..]);
     tz_env.extend_from_slice(&tz[..n]);
+    // PATH (P12): every installed package's bin folder
+    // (/Data/Programs/NAME/bin, docs/pkg.md), then the initrd's.
+    let mut path = alloc::string::String::from("PATH=");
+    for p in program_bins() {
+        path.push_str(&p);
+        path.push(':');
+    }
+    path.push_str("/Initrd/linux:/Initrd");
     let standard: [&[u8]; 5] = [
         b"HOME=/Data",
-        b"PATH=/Data/Programs/bin:/Initrd/linux:/Initrd",
+        path.as_bytes(),
         b"TERM=dumb",
         pwd.as_bytes(),
         &tz_env,
@@ -372,6 +380,26 @@ pub fn initial_stack(
     let mut random = [0u8; 16];
     fill_random(&mut random);
     stack::build(abi::layout::STACK_TOP, &args, &env, &aux, random)
+}
+
+/// The `bin` folders of the installed packages, as Linux paths, in name
+/// order.
+fn program_bins() -> Vec<alloc::string::String> {
+    let Some(v) = crate::vfs::find("Data") else {
+        return Vec::new();
+    };
+    let Ok(programs) = v.fs.lookup(v.fs.root(), "Programs") else {
+        return Vec::new();
+    };
+    let mut names: Vec<alloc::string::String> =
+        v.fs.list(programs.id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i.is_dir && v.fs.lookup(i.id, "bin").is_ok_and(|b| b.is_dir))
+            .map(|i| alloc::format!("/Data/Programs/{}/bin", i.name))
+            .collect();
+    names.sort();
+    names
 }
 
 /// Minutes east of UTC from `Data:/.stela/timezone` (+08:00 without it).

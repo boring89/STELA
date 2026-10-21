@@ -1,0 +1,21 @@
+[package]
+name = "pkg"
+description = "STELA's package tool: pkg update, install, remove, list, upgrade, search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pkg"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libstela = { path = "../libstela" }
+pkgcore = { path = "../pkgcore" }
+
+[lints]
+workspace = true

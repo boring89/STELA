@@ -74,3 +74,20 @@ lazy_static, libm (MIT), time, time-core, deranged, num-conv, powerfmt, autocfg,
 version_check, syn. All are compatible with GPL-3.0-or-later. The AES and POLYVAL crates are
 built with `--cfg aes_force_soft --cfg polyval_force_soft` (`.cargo/config.toml`): their
 AES-NI/CLMUL code needs SSE, which the `x86_64-unknown-none` target does not have.
+
+## Rust crates for package signatures (P12 K12)
+
+`user/pkgcore` checks the ed25519 signature of the package index (`docs/pkg.md` §4):
+
+| crate | version | license | use |
+|---|---|---|---|
+| ed25519-dalek | 2.2.0 | BSD-3-Clause | ed25519 signature check (`verify_strict`, RFC 8032) |
+| curve25519-dalek | 4.1.3 | BSD-3-Clause | the curve arithmetic under it (serial backend: `--cfg curve25519_dalek_backend="serial"`) |
+| curve25519-dalek-derive | 0.1.1 | MIT OR Apache-2.0 | its build-time macros |
+| ed25519 | 2.2.3 | Apache-2.0 OR MIT | the signature type |
+| fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause | verified field arithmetic |
+| rustc_version, semver | 0.4.1, 1.0.28 | MIT OR Apache-2.0 | build scripts |
+
+sha2 (already listed) gives the SHA-256 of downloaded packages. All are compatible with
+GPL-3.0-or-later. The signing side is `tools/pkgsign.py` (Python's `cryptography`, on the
+build machine only).

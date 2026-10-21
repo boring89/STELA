@@ -16,21 +16,83 @@
 //! working directory, waits for the shell to report in (`SHELL_READY`,
 //! carrying a `SEND` handle to the shell's main port) and gives it the
 //! keyboard. When the shell ends, init starts a new one.
+//!
+//! The kernel gives init the capabilities `POWER`, `INPUT` and `NETWORK`
+//! (P11, `docs/userland.md` §2.3). The window server gets all three (it
+//! takes the input and passes `POWER` to Mouseion); the text-mode shell
+//! gets `INPUT` (for `run echo`). Everyone also gets `INIT`, a `SEND`
+//! handle to init's main port: while it waits for its child, init answers
+//! `POWER_REQUEST`s there (the shell's `shutdown`).
 
 #![no_std]
 #![no_main]
 #![forbid(unsafe_code)]
 
-use libstela::abi::object_kind;
+use libstela::abi::{capability, object_kind};
 use libstela::fs::{self, open};
-use libstela::ipc::{handle_close, handle_duplicate, handle_kind, input_attach, port_receive};
+use libstela::ipc::{
+    FOREVER, handle_close, handle_duplicate, handle_kind, input_attach, port_receive, port_send,
+};
 use libstela::process::{self, pass};
+use libstela::wait::{self, Ready, WaitSet};
 use libstela::{Handle, Message, Rights, bootstrap, println, tag};
 
 libstela::entry!(main);
 
 /// How long to wait for a new shell to report in.
 const READY_TIMEOUT: u64 = 5_000_000_000;
+
+/// A message on init's main port other than the shell's report.
+fn serve(msg: &Message) {
+    if msg.tag == tag::POWER_REQUEST {
+        let kind = msg.payload().get(..8).map_or(u64::MAX, |b| {
+            u64::from_le_bytes(b.try_into().unwrap_or([0; 8]))
+        });
+        println!("init: power request {kind}");
+        // Returns only if it failed.
+        let e = process::power(kind);
+        if let Some(&reply) = msg.carried().first() {
+            let answer = Message::with_data(tag::POWER_REQUEST, &e.raw().to_le_bytes());
+            let _ = port_send(reply, &answer);
+        }
+    }
+    for &h in msg.carried() {
+        let _ = handle_close(h);
+    }
+}
+
+/// Waits for `child` to end, answering requests on the main port
+/// meanwhile; its exit code.
+fn wait_child(child: Handle) -> i64 {
+    let Ok(set) = WaitSet::new() else {
+        return process::wait_forever(child).unwrap_or(-1);
+    };
+    if set.add(child, 1, wait::EXITED).is_err()
+        || set.add(bootstrap::MAIN_PORT, 0, wait::READABLE).is_err()
+    {
+        return process::wait_forever(child).unwrap_or(-1);
+    }
+    let mut ready = [Ready::default(); 2];
+    loop {
+        let Ok(n) = set.wait(&mut ready, FOREVER) else {
+            continue;
+        };
+        for r in &ready[..n] {
+            if r.key == 1 {
+                return process::wait(child, 0).unwrap_or(-1);
+            }
+            let mut msg = Message::new();
+            while port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_ok() {
+                serve(&msg);
+            }
+        }
+    }
+}
+
+/// A copy of capability `kind` for a child.
+fn give(kind: u32) -> Option<(u32, Handle)> {
+    process::pass_capability(kind).map(|h| (kind, h))
+}
 
 fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
     let to_init = handle_duplicate(bootstrap::MAIN_PORT, Rights::SEND | Rights::TRANSFER).ok()?;
@@ -39,7 +101,9 @@ fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
         to_init,
         pass(home, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
     ];
-    let shell = match process::spawn(program, &["shell"], handles) {
+    let mut caps = process::inherited();
+    caps.extend(give(capability::INPUT));
+    let shell = match process::spawn_with(program, &["shell"], handles, &caps) {
         Ok(h) => h,
         Err(e) => {
             println!("init: cannot start the shell: {}", e.name());
@@ -56,12 +120,7 @@ fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
                 }
                 return Some(shell);
             }
-            Ok(()) => {
-                // Something else: release what it carried.
-                for &h in msg.carried() {
-                    let _ = handle_close(h);
-                }
-            }
+            Ok(()) => serve(&msg),
             Err(e) => {
                 println!("init: the shell did not report in: {}", e.name());
                 return Some(shell);
@@ -93,14 +152,17 @@ fn run_desktop(home: Handle) {
             ),
             pass(home, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
         ];
-        let server = match process::spawn(program, DESKTOP, handles) {
+        let mut caps = process::inherited();
+        caps.extend(give(capability::POWER));
+        caps.extend(give(capability::INPUT));
+        let server = match process::spawn_with(program, DESKTOP, handles, &caps) {
             Ok(h) => h,
             Err(e) => {
                 println!("init: cannot start the window server: {}", e.name());
                 return;
             }
         };
-        let code = process::wait_forever(server).unwrap_or(-1);
+        let code = wait_child(server);
         let _ = handle_close(server);
         println!("init: the window server ended with code {code}; starting it again");
         libstela::sleep_ms(1000);
@@ -108,6 +170,13 @@ fn run_desktop(home: Handle) {
 }
 
 fn main() -> i64 {
+    match handle_duplicate(
+        bootstrap::MAIN_PORT,
+        Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+    ) {
+        Ok(h) => process::set_capability(capability::INIT, h),
+        Err(e) => println!("init: no INIT capability: {}", e.name()),
+    }
     let home = match fs::volume_open("Data") {
         Ok(h) => h,
         Err(_) => match fs::volume_open("Initrd") {
@@ -137,7 +206,7 @@ fn main() -> i64 {
             libstela::sleep_ms(1000);
             continue;
         };
-        let code = process::wait_forever(shell).unwrap_or(-1);
+        let code = wait_child(shell);
         let _ = handle_close(shell);
         println!("init: the shell ended with code {code}; starting a new one");
     }

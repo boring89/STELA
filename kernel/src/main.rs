@@ -128,7 +128,16 @@ fn run(name: &str) {
         object: KernelObject::Framebuffer(alloc::sync::Arc::new(fb)),
         rights: Rights::MAP | Rights::READ | Rights::WRITE | Rights::DUPLICATE | Rights::TRANSFER,
     });
-    match kernel::program::spawn_path("Initrd", name, framebuffer) {
+    // init gets every capability (`docs/userland.md` §2.3).
+    let capabilities = [
+        abi::capability::POWER,
+        abi::capability::INPUT,
+        abi::capability::NETWORK,
+    ]
+    .into_iter()
+    .map(|kind| (kind, kernel::object::capability(kind)))
+    .collect();
+    match kernel::program::spawn_path_with("Initrd", name, framebuffer, capabilities) {
         Ok(process) => {
             let pid = process.id();
             drop(process);

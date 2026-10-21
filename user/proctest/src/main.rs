@@ -241,6 +241,28 @@ fn wait_sets(me: Handle) -> Result<(), i64> {
         set.wait(&mut ready, 0) == Err(Error::TimedOut),
         "send-only port sees no messages",
     )?;
+    capabilities()
+}
+
+/// Without the POWER capability (the self test gives none), SystemPower
+/// is refused, and a bogus handle does not stand in for it.
+fn capabilities() -> Result<(), i64> {
+    check(
+        24,
+        process::capability(libstela::abi::capability::POWER).is_none(),
+        "no POWER given",
+    )?;
+    check(
+        24,
+        process::shutdown() == Error::AccessDenied,
+        "shutdown refused",
+    )?;
+    let raw = libstela::sys::syscall2(
+        libstela::abi::Syscall::SystemPower,
+        libstela::abi::power::REBOOT,
+        bootstrap::MAIN_PORT.raw(),
+    );
+    check(24, raw == Err(Error::AccessDenied), "a port is not POWER")?;
     Ok(())
 }
 

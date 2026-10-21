@@ -110,11 +110,11 @@ QEMU 用 `-no-reboot`（Makefile），重設會讓 QEMU 結束、exit status 0�
 
 | 編號 | 名稱 | 參數 | 回傳 |
 |---|---|---|---|
-| 32 | `SystemPower` | kind（`abi::power::SHUTDOWN` 0、`REBOOT` 1） | 成功不返回；`NotSupported`（不能 ACPI 關機）、`IoError`（寫了但沒關掉）、`InvalidArgument`（kind 不對） |
+| 32 | `SystemPower` | kind（`abi::power::SHUTDOWN` 0、`REBOOT` 1）, power（P11：`capability::POWER` 的 handle） | 成功不返回；`AccessDenied`（不是 POWER 能力）、`NotSupported`（不能 ACPI 關機）、`IoError`（寫了但沒關掉）、`InvalidArgument`（kind 不對） |
 
-- **任何程式都能呼叫**（沒有權限或 handle 擋著）——記在限制裡，之後應該要求某個系統 handle。
-- libstela：`process::shutdown()`、`process::reboot()`（只在失敗時返回 `Error`）。
-- shell：`shutdown`、`reboot`；失敗時印 `shutdown: NotSupported` 之類。
+- **P11（使用者尚未審核）**：要持有 `POWER` 能力（`docs/userland.md` §2.3）。kernel 只給 init；init 給視窗伺服器，視窗伺服器給 Mouseion（特別選單的關機／重新開機）。
+- libstela：`process::shutdown()`、`process::reboot()`（只在失敗時返回 `Error`）：有 `POWER` 就直接呼叫，否則送 `POWER_REQUEST` 給 init（`INIT` 能力）由 init 執行。
+- shell：`shutdown`、`reboot`（沒有 `POWER`，經 init）；失敗時印 `shutdown: NotSupported` 之類。init 收到請求時印 `init: power request N`。
 
 ```
 Data:/> shutdown
@@ -128,15 +128,16 @@ power: turning off
 |---|---|
 | host `frame::acpi::fadt` | 完整 FADT（QEMU 的值）、X_DSDT 優先、X_PM1 退路、ACPI 1.0 的 116 bytes、reset 需要旗標與已知空間、沒有 8042、太短、簽名錯 |
 | host `frame::acpi::aml` | BytePrefix、ZeroOp／OneOp、多 byte 的 PkgLength、單一元素、找不到（方法、`_S4_`、截斷、算出來的元素）、第一個不是 Package 時用下一個 |
-| host `abi` | `SystemPower` = 32、kind 0／1 |
+| host `abi` | `SystemPower` = 32、kind 0／1、`capability::*` |
+| selftest（proctest 第 24 步） | 沒有 `POWER` 時 `shutdown()` → `AccessDenied`；拿 port 當 power 參數 → `AccessDenied` |
 | selftest "acpi fadt" | 有 FADT、PM1a 非 0、找到 `\_S5`、`can_shutdown()`，印 SLP_TYP 與 reset 暫存器 |
-| `make test-shutdown` | 一般 kernel + AHCI 測試磁碟：`mkdir before-shutdown`、`shutdown` → QEMU 自己結束（status 0）→ host 的 `fsck.ehfs` 說「unmounted cleanly」、`ehfs-ls` 看得到 `before-shutdown`；再開一次打 `reboot` → QEMU 結束（status 0）→ fsck 仍然 clean |
+| `make test-shutdown` | 一般 kernel + AHCI 測試磁碟：`mkdir before-shutdown`、`shutdown`（經 init 的 `POWER_REQUEST`）→ QEMU 自己結束（status 0）→ host 的 `fsck.ehfs` 說「unmounted cleanly」、`ehfs-ls` 看得到 `before-shutdown`；再開一次打 `reboot` → QEMU 結束（status 0）→ fsck 仍然 clean |
 
 ## 9. 已知限制
 
 - 沒有 AML 直譯器：只認常數 Package 的 `\_S5`；不跑 `\_PTS`／`\_GTS` 等關機前的方法（大部分機器不需要，少數筆電需要）。
 - 不看 SSDT；不支援 S3（待命）、S4（休眠）。
-- `SystemPower` 沒有權限控管：任何程式都能關機。
+- 有 `INIT` 能力的程式（預設所有人）都能請 init 關機；init 不問使用者。
 - 關機前不通知使用者空間（程式沒有機會存檔）；不等程式結束，直接卸載卷宗（之後的寫入會失敗或寫進已標 clean 的卷宗）。
 - 關機失敗的退路只有回報錯誤；沒有 QEMU／VirtualBox 專用的 port（68k_HAL 有）。
 - reset 暫存器在 PCI 設定空間的機器不支援（退到 8042 → triple fault）。

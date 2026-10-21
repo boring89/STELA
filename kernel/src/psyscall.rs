@@ -24,14 +24,13 @@ fn load_error(e: LoadError) -> Error {
     }
 }
 
-/// `ProcessSpawn(file, &Message, &[Handle; count], count) -> handle`.
-pub fn process_spawn(
-    process: &Process,
-    file: u64,
-    msg_ptr: u64,
-    handles_ptr: u64,
-    count: u64,
-) -> Result<u64, Error> {
+/// `ProcessSpawn(file, &Message, &[Handle; count], count, &[u32; 2 * n],
+/// n) -> handle`.
+pub fn process_spawn(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
+    let [file, msg_ptr, handles_ptr, count, caps_ptr, caps_count] = args;
+    if caps_count as usize > abi::capability::MAX {
+        return Err(Error::InvalidArgument);
+    }
     let flags = count & !0xFFFF_FFFF;
     let count = count & 0xFFFF_FFFF;
     if count > INITIAL || flags & !abi::spawn::ALL != 0 || flags == abi::spawn::ALL {
@@ -111,6 +110,23 @@ pub fn process_spawn(
         }
         _ => bundle_name.unwrap_or(file_name),
     };
+    let mut caps_raw = [0u8; 8 * abi::capability::MAX];
+    let caps_raw = &mut caps_raw[..caps_count as usize * 8];
+    process
+        .space()
+        .read(caps_ptr, caps_raw)
+        .map_err(|_| Error::BadAddress)?;
+    let caps: Vec<(Handle, u32)> = caps_raw
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| {
+            (
+                Handle(u32::from_le_bytes([c[0], c[1], c[2], c[3]])),
+                u32::from_le_bytes([c[4], c[5], c[6], c[7]]),
+            )
+        })
+        .collect();
     let carried: Vec<Handle> = msg.carried().to_vec();
     let mut all: Vec<Handle> = initial_handles
         .iter()
@@ -118,13 +134,28 @@ pub fn process_spawn(
         .filter(|h| *h != Handle::NONE)
         .collect();
     all.extend(carried.iter().copied());
-    let (initial, objects) = {
+    all.extend(caps.iter().map(|c| c.0));
+    let (initial, objects, capabilities) = {
         let mut handles = process.handles().lock();
         for (i, h) in all.iter().enumerate() {
             if all[..i].contains(h) {
                 return Err(Error::InvalidArgument);
             }
             handles.get_with(*h, Rights::TRANSFER)?;
+        }
+        // A capability's kind must be what it says; INIT is a port.
+        for &(h, kind) in &caps {
+            let entry = handles.get(h)?;
+            let ok = match &entry.object {
+                KernelObject::Capability(k) => *k == kind,
+                KernelObject::Port(_) => {
+                    kind == abi::capability::INIT && entry.rights.contains(Rights::SEND)
+                }
+                _ => false,
+            };
+            if !ok {
+                return Err(Error::InvalidArgument);
+            }
         }
         let mut initial: task::process::Initial = [None, None, None];
         for (slot, h) in initial.iter_mut().zip(initial_handles.iter()) {
@@ -136,7 +167,11 @@ pub fn process_spawn(
         for h in &carried {
             objects.push(handles.remove(*h)?);
         }
-        (initial, objects)
+        let mut capabilities: Vec<(u32, Entry)> = Vec::with_capacity(caps.len());
+        for &(h, kind) in &caps {
+            capabilities.push((kind, handles.remove(h)?));
+        }
+        (initial, objects, capabilities)
     };
     msg.handle_slots = [Handle::NONE; MESSAGE_HANDLES];
     msg.reserved = 0;
@@ -145,6 +180,7 @@ pub fn process_spawn(
         &image,
         initial,
         Some(QueuedMessage { msg, objects }),
+        capabilities,
         force,
     )
     .map_err(load_error)?;
@@ -304,10 +340,11 @@ fn kernel_ticks_of(id: usize) -> u64 {
     frame::cpu::ticks_of(id)
 }
 
-/// `SystemPower(kind)`: flushes and unmounts the volumes, then turns the
-/// machine off or restarts it. Any program may call it for now (no
-/// right guards it yet; `docs/acpi.md`).
-pub fn system_power(kind: u64) -> Result<u64, Error> {
+/// `SystemPower(kind, power)`: flushes and unmounts the volumes, then
+/// turns the machine off or restarts it. Needs a `capability::POWER`
+/// handle (`docs/acpi.md`).
+pub fn system_power(process: &Process, kind: u64, power: u64) -> Result<u64, Error> {
+    crate::object::check_capability(process, power, abi::capability::POWER)?;
     match kind {
         abi::power::SHUTDOWN => match crate::power::shutdown() {
             frame::power::PowerError::NotSupported => Err(Error::NotSupported),

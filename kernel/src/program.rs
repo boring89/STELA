@@ -130,6 +130,7 @@ pub fn spawn_with(
         image,
         task::process::standard_initial(None),
         None,
+        Vec::new(),
         personality,
     )
     .map(|p| p.id())
@@ -193,6 +194,7 @@ pub fn spawn_process(
     image: &[u8],
     initial: task::process::Initial,
     args: Option<QueuedMessage>,
+    capabilities: Vec<(u32, Entry)>,
     force: Option<Personality>,
 ) -> Result<Arc<Process>, LoadError> {
     let elf = Elf::parse_with(image, Layout::Packed).map_err(LoadError::BadElf)?;
@@ -205,10 +207,29 @@ pub fn spawn_process(
     // On failure the process has no thread; dropping it frees what was
     // mapped and ends it with code -1.
     load(process.space(), &elf)?;
-    if process.main_port().send(args).is_err() {
+    if process.main_port().send(args).is_err()
+        || process
+            .main_port()
+            .send(capabilities_message(capabilities))
+            .is_err()
+    {
         return Err(LoadError::OutOfMemory);
     }
     start(&process, elf.entry(), STACK_TOP - 8)
+}
+
+/// The `CAPABILITIES` message: the kinds in the data, the handles carried.
+fn capabilities_message(capabilities: Vec<(u32, Entry)>) -> QueuedMessage {
+    let mut data = Vec::new();
+    let mut objects = Vec::new();
+    for (kind, entry) in capabilities.into_iter().take(abi::MESSAGE_HANDLES) {
+        data.extend_from_slice(&kind.to_le_bytes());
+        objects.push(entry);
+    }
+    QueuedMessage {
+        msg: Message::with_data(tag::CAPABILITIES, &data),
+        objects,
+    }
 }
 
 fn start(process: &Arc<Process>, entry: u64, rsp: u64) -> Result<Arc<Process>, LoadError> {
@@ -294,6 +315,17 @@ pub fn spawn_path(
     path: &str,
     bootstrap: Option<Entry>,
 ) -> Result<Arc<Process>, LoadError> {
+    spawn_path_with(volume, path, bootstrap, Vec::new())
+}
+
+/// Like [`spawn_path`], with `capabilities` in its `CAPABILITIES`
+/// message.
+pub fn spawn_path_with(
+    volume: &str,
+    path: &str,
+    bootstrap: Option<Entry>,
+    capabilities: Vec<(u32, Entry)>,
+) -> Result<Arc<Process>, LoadError> {
     let volume = vfs::find(volume).ok_or(LoadError::NotFound)?;
     let mut id = volume.fs.root();
     for part in path.split('/').filter(|p| !p.is_empty()) {
@@ -309,6 +341,7 @@ pub fn spawn_path(
         &image,
         task::process::standard_initial(bootstrap),
         None,
+        capabilities,
         None,
     )
 }

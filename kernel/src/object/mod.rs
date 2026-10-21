@@ -57,6 +57,9 @@ mod target {
         Audio(Arc<crate::audio::AudioSession>),
         /// Objects to wait on together (`docs/ipc.md` §13).
         WaitSet(Arc<super::waitset::WaitSet>),
+        /// A capability: holding it is the permission (`abi::capability`;
+        /// `docs/userland.md` §2.3).
+        Capability(u32),
     }
 
     impl KernelObject {
@@ -98,6 +101,32 @@ mod target {
                 KernelObject::Memory(memory) => Some(memory),
                 _ => None,
             }
+        }
+    }
+
+    /// A capability handle of `kind` (`DUPLICATE | TRANSFER`).
+    pub fn capability(kind: u32) -> Entry {
+        Entry {
+            object: KernelObject::Capability(kind),
+            rights: abi::Rights::DUPLICATE | abi::Rights::TRANSFER,
+        }
+    }
+
+    /// Whether `process` holds a capability of `kind` in handle `handle`.
+    pub fn check_capability(
+        process: &crate::task::Process,
+        handle: u64,
+        kind: u32,
+    ) -> Result<(), abi::Error> {
+        let handles = process.handles().lock();
+        match handles.get(abi::Handle::from_raw(handle)) {
+            Ok(Entry {
+                object: KernelObject::Capability(k),
+                ..
+            }) if *k == kind => Ok(()),
+            Ok(_) => Err(abi::Error::AccessDenied),
+            Err(abi::Error::BadHandle) => Err(abi::Error::AccessDenied),
+            Err(e) => Err(e),
         }
     }
 

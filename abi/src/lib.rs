@@ -106,7 +106,10 @@ pub enum Syscall {
     /// The message (or an empty one) is queued on its main port as its
     /// `BOOTSTRAP_ARGS`; the handles become its `[1]`..`[3]` (moved, each
     /// needs `TRANSFER`; `Handle::NONE` leaves a slot empty). The handle
-    /// returned has `WAIT | KILL | DUPLICATE | TRANSFER`.
+    /// returned has `WAIT | KILL | DUPLICATE | TRANSFER`. Arguments 5 and
+    /// 6 (P11): `&[u32; 2 * n]` pairs (handle, `capability::*` kind) and
+    /// `n` (≤ `capability::MAX`), moved into the `CAPABILITIES` message the
+    /// kernel queues second (empty when `n` is 0).
     ProcessSpawn = 27,
     /// `ProcessWait(process, timeout_ns) -> exit code`: waits until the
     /// process ended (`TimedOut` otherwise); the code is an `i64`.
@@ -119,10 +122,11 @@ pub enum Syscall {
     /// `SysInfo(kind, buf, len) -> count`: system information
     /// (`sysinfo::*`).
     SysInfo = 31,
-    /// `SystemPower(kind)`: flushes and unmounts the volumes, then turns
-    /// the machine off (`power::SHUTDOWN`) or restarts it
-    /// (`power::REBOOT`). Returns only on failure (`NotSupported`: no
-    /// ACPI soft off on this machine).
+    /// `SystemPower(kind, power)`: flushes and unmounts the volumes, then
+    /// turns the machine off (`power::SHUTDOWN`) or restarts it
+    /// (`power::REBOOT`). `power` is a `capability::POWER` handle
+    /// (`AccessDenied` without). Returns only on failure (`NotSupported`:
+    /// no ACPI soft off on this machine).
     SystemPower = 32,
     /// `TtyCreate(flags) -> handles`: a new terminal (`docs/linux.md` §5).
     /// The low 32 bits of the value are the program-side handle (`SEND |
@@ -667,6 +671,37 @@ pub mod tag {
     /// From a terminal to its shell: handle slot 0 is a `SEND` handle to
     /// the window server, for the programs the shell starts (their `[2]`).
     pub const WINDOW_SERVER: u32 = 6;
+    /// The second message on a new STELA process's main port (P11): the
+    /// capability handles it was given, their `capability::*` kinds as u32
+    /// LE in the data, one per carried handle (none: empty).
+    pub const CAPABILITIES: u32 = 7;
+    /// To init (the `capability::INIT` port): turn off or restart
+    /// (`power::*`, u64 LE). Slot 0 may carry a `SEND` handle for the
+    /// answer, sent back with the same tag and an `Error` value (u64 LE)
+    /// when it fails (on success the machine is gone).
+    pub const POWER_REQUEST: u32 = 8;
+}
+
+/// Capabilities (P11, `docs/userland.md` §2.3): handles whose possession
+/// is the permission. The kernel gives init `POWER`, `INPUT` and
+/// `NETWORK`; init passes them on.
+pub mod capability {
+    /// `SystemPower`.
+    pub const POWER: u32 = 1;
+    /// `InputAttach` (taking the keyboard and the mouse).
+    pub const INPUT: u32 = 2;
+    /// `SocketCreate`.
+    pub const NETWORK: u32 = 3;
+    /// Not a kernel capability: a `SEND` handle to init's main port, for
+    /// `tag::POWER_REQUEST`.
+    pub const INIT: u32 = 4;
+    /// Most capabilities one `ProcessSpawn` passes (and a message
+    /// carries).
+    pub const MAX: usize = 4;
+    /// Whether `kind` is one of the kinds above.
+    pub const fn is_valid(kind: u32) -> bool {
+        kind >= POWER && kind <= INIT
+    }
 }
 
 /// The exit code of a process ended by `ProcessKill`.
@@ -735,6 +770,8 @@ pub mod object_kind {
     pub const AUDIO: u64 = 10;
     /// A set of objects to wait on (`wait`).
     pub const WAIT_SET: u64 = 11;
+    /// A capability (`capability`).
+    pub const CAPABILITY: u64 = 12;
 }
 
 /// Waiting on several objects (`WaitSetAdd`, `WaitSetWait`;
@@ -1734,5 +1771,15 @@ mod tests {
         assert_eq!(b[8], 9);
         assert_eq!(&b[12..], &[0, 0, 0, 0]);
         assert_eq!(wait::Ready::from_bytes(&b), r);
+    }
+
+    #[test]
+    fn capabilities() {
+        use capability::*;
+        assert_eq!((POWER, INPUT, NETWORK, INIT, MAX), (1, 2, 3, 4, 4));
+        assert!(is_valid(POWER) && is_valid(INIT));
+        assert!(!is_valid(0) && !is_valid(5));
+        assert_eq!((tag::CAPABILITIES, tag::POWER_REQUEST), (7, 8));
+        assert_eq!(object_kind::CAPABILITY, 12);
     }
 }

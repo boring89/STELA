@@ -6,7 +6,8 @@
 //! program got.
 
 use crate::ipc::{FOREVER, Mapping, handle_close, memory_create, port_receive};
-use crate::sys::{syscall0, syscall1, syscall2, syscall3, syscall4};
+use crate::sys::{syscall0, syscall1, syscall2, syscall3, syscall6};
+use abi::capability;
 use abi::sysinfo::{self, MemInfo, PROCESS_INFO_SIZE, ProcessInfo};
 use abi::{Error, Handle, MESSAGE_DATA, Message, Rights, Syscall, bootstrap, tag};
 use alloc::string::String;
@@ -16,8 +17,67 @@ use alloc::vec::Vec;
 /// Starts the program in `file` (a handle with `READ`) with `args` (the
 /// program name first) and `handles` as its `[1]`, `[2]`, `[3]`
 /// (`Handle::NONE` for none; each is moved and needs `TRANSFER`).
-/// Returns a handle with `WAIT | KILL`.
+/// Returns a handle with `WAIT | KILL`. The child also gets copies of
+/// this program's inherited capabilities ([`inherited`]: `NETWORK`,
+/// `INIT`).
 pub fn spawn(file: Handle, args: &[&str], handles: [Handle; 3]) -> Result<Handle, Error> {
+    spawn_with(file, args, handles, &inherited())
+}
+
+/// Copies of the capabilities a child gets by default: `NETWORK` and
+/// `INIT` (`POWER` and `INPUT` are only given on purpose).
+pub fn inherited() -> Vec<(u32, Handle)> {
+    [capability::NETWORK, capability::INIT]
+        .into_iter()
+        .filter_map(|kind| pass_capability(kind).map(|h| (kind, h)))
+        .collect()
+}
+
+/// A copy of this program's capability `kind` to give a child, if it has
+/// one.
+pub fn pass_capability(kind: u32) -> Option<Handle> {
+    let h = capability(kind)?;
+    let rights = if kind == capability::INIT {
+        Rights::SEND | Rights::DUPLICATE
+    } else {
+        Rights::DUPLICATE
+    };
+    let copy = pass(h, rights);
+    (copy != Handle::NONE).then_some(copy)
+}
+
+/// Like [`spawn`], with exactly `caps` (kind, handle; moved, each needs
+/// `TRANSFER`) as the child's capabilities.
+pub fn spawn_with(
+    file: Handle,
+    args: &[&str],
+    handles: [Handle; 3],
+    caps: &[(u32, Handle)],
+) -> Result<Handle, Error> {
+    let r = spawn_raw(file, args, handles, caps);
+    if r.is_err() {
+        // Not moved: do not keep the copies.
+        for &(_, h) in caps {
+            let _ = handle_close(h);
+        }
+    }
+    r
+}
+
+fn spawn_raw(
+    file: Handle,
+    args: &[&str],
+    handles: [Handle; 3],
+    caps: &[(u32, Handle)],
+) -> Result<Handle, Error> {
+    if caps.len() > capability::MAX {
+        return Err(Error::InvalidArgument);
+    }
+    let mut pairs = [0u32; 2 * capability::MAX];
+    for (i, &(kind, h)) in caps.iter().enumerate() {
+        pairs[2 * i] = h.0;
+        pairs[2 * i + 1] = kind;
+    }
     let mut joined: Vec<u8> = Vec::new();
     for (i, a) in args.iter().enumerate() {
         if i > 0 {
@@ -46,12 +106,16 @@ pub fn spawn(file: Handle, args: &[&str], handles: [Handle; 3]) -> Result<Handle
         }
         r
     };
-    syscall4(
+    syscall6(
         Syscall::ProcessSpawn,
-        file.raw(),
-        &msg as *const Message as u64,
-        raw.as_ptr() as u64,
-        3,
+        [
+            file.raw(),
+            &msg as *const Message as u64,
+            raw.as_ptr() as u64,
+            3,
+            pairs.as_ptr() as u64,
+            caps.len() as u64,
+        ],
     )
     .map(Handle::from_raw)
 }
@@ -213,20 +277,54 @@ pub fn boot_flag(key: &str) -> bool {
     sysinfo::cmdline_flag(&cmdline(), key)
 }
 
-/// Flushes the volumes and turns the machine off (`SystemPower`). Returns
-/// only on failure (`NotSupported` when the machine has no ACPI soft off).
+/// Flushes the volumes and turns the machine off. Returns only on
+/// failure (`NotSupported` when the machine has no ACPI soft off,
+/// `AccessDenied` without a way to do it). See [`power`].
 pub fn shutdown() -> Error {
-    match syscall1(Syscall::SystemPower, abi::power::SHUTDOWN) {
-        Ok(_) => Error::NotSupported,
-        Err(e) => e,
-    }
+    power(abi::power::SHUTDOWN)
 }
 
-/// Flushes the volumes and restarts the machine (`SystemPower`). Returns
-/// only on failure.
+/// Flushes the volumes and restarts the machine. Returns only on failure.
 pub fn reboot() -> Error {
-    match syscall1(Syscall::SystemPower, abi::power::REBOOT) {
-        Ok(_) => Error::NotSupported,
+    power(abi::power::REBOOT)
+}
+
+/// How long to wait for init's answer to a `POWER_REQUEST`.
+const POWER_TIMEOUT: u64 = 10_000_000_000;
+
+/// `SystemPower(kind)` with the `POWER` capability, or else a
+/// `POWER_REQUEST` to init (the `INIT` capability), which does it.
+pub fn power(kind: u64) -> Error {
+    if let Some(p) = capability(capability::POWER) {
+        return match syscall2(Syscall::SystemPower, kind, p.raw()) {
+            Ok(_) => Error::NotSupported,
+            Err(e) => e,
+        };
+    }
+    let Some(init) = capability(capability::INIT) else {
+        return Error::AccessDenied;
+    };
+    let Ok(reply) = crate::ipc::port_create() else {
+        return Error::OutOfHandles;
+    };
+    let result = (|| {
+        let mut msg = Message::with_data(tag::POWER_REQUEST, &kind.to_le_bytes());
+        msg.push_handle(crate::ipc::handle_duplicate(
+            reply,
+            Rights::SEND | Rights::TRANSFER,
+        )?);
+        crate::ipc::port_send(init, &msg)?;
+        let mut answer = Message::new();
+        port_receive(reply, &mut answer, POWER_TIMEOUT)?;
+        let code = answer
+            .payload()
+            .get(..8)
+            .map_or(0, |b| u64::from_le_bytes(b.try_into().unwrap_or([0; 8])));
+        Err(Error::from_raw(code).unwrap_or(Error::NotSupported))
+    })();
+    let _ = handle_close(reply);
+    match result {
+        Ok(()) => Error::NotSupported,
         Err(e) => e,
     }
 }
@@ -255,10 +353,43 @@ fn split(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Takes the `BOOTSTRAP_ARGS` message the kernel queued first on the main
-/// port. Called by `entry!` before `main`.
+/// The capabilities this program holds: (kind, handle).
+static CAPS: crate::sync::SpinMutex<Vec<(u32, Handle)>> = crate::sync::SpinMutex::new(Vec::new());
+
+/// This program's capability of `kind` (`abi::capability`), if it was
+/// given one.
+pub fn capability(kind: u32) -> Option<Handle> {
+    CAPS.lock().iter().find(|c| c.0 == kind).map(|c| c.1)
+}
+
+/// Records `handle` as this program's capability of `kind` (init makes
+/// its own `INIT`), replacing one it had.
+pub fn set_capability(kind: u32, handle: Handle) {
+    let mut caps = CAPS.lock();
+    caps.retain(|c| c.0 != kind);
+    caps.push((kind, handle));
+}
+
+/// Takes the `BOOTSTRAP_ARGS` and `CAPABILITIES` messages the kernel
+/// queued first on the main port. Called by `entry!` before `main`.
 #[doc(hidden)]
 pub fn take_args() {
+    take_arguments();
+    let mut msg = Message::new();
+    if port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_err() || msg.tag != tag::CAPABILITIES {
+        return;
+    }
+    let kinds = msg.payload();
+    let mut caps = CAPS.lock();
+    for (i, &h) in msg.carried().iter().enumerate() {
+        let kind = kinds
+            .get(4 * i..4 * i + 4)
+            .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        caps.push((kind, h));
+    }
+}
+
+fn take_arguments() {
     let mut msg = Message::new();
     // The kernel queues it before the program starts: no waiting.
     if port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_err() || msg.tag != tag::BOOTSTRAP_ARGS {

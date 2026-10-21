@@ -1179,7 +1179,12 @@ fn start_programs(names: &[String]) {
         ];
         let base = name.rsplit('/').next().unwrap_or(name);
         let base = base.strip_suffix(".app").unwrap_or(base);
-        match process::spawn(file.0, &[base], handles) {
+        // The first programs (Mouseion) may turn the machine off.
+        let mut caps = process::inherited();
+        if let Some(p) = process::pass_capability(abi::capability::POWER) {
+            caps.push((abi::capability::POWER, p));
+        }
+        match process::spawn_with(file.0, &[base], handles, &caps) {
             Ok(p) => {
                 let _ = handle_close(p);
             }

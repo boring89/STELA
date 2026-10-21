@@ -472,6 +472,7 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::Socket(_) => k::SOCKET,
         KernelObject::Audio(_) => k::AUDIO,
         KernelObject::WaitSet(_) => k::WAIT_SET,
+        KernelObject::Capability(_) => k::CAPABILITY,
     })
 }
 
@@ -577,12 +578,12 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::VolumeList => volume_list(&p, a0, a1),
         Syscall::VolumeOpen => volume_open(&p, a0, a1),
         Syscall::VolumeOpenById => volume_open_by_id(&p, a0, a1),
-        Syscall::ProcessSpawn => crate::psyscall::process_spawn(&p, a0, a1, a2, a3),
+        Syscall::ProcessSpawn => crate::psyscall::process_spawn(&p, args),
         Syscall::ProcessWait => crate::psyscall::process_wait(&p, a0, a1),
         Syscall::ProcessKill => crate::psyscall::process_kill(&p, a0),
         Syscall::ProcessSelf => crate::psyscall::process_self(&p),
         Syscall::SysInfo => crate::psyscall::sys_info(&p, a0, a1, a2),
-        Syscall::SystemPower => crate::psyscall::system_power(a0),
+        Syscall::SystemPower => crate::psyscall::system_power(&p, a0, a1),
         Syscall::FileGetInfo => file_get_info(&p, a0, a1),
         Syscall::FileSetInfo => file_set_info(&p, a0, a1),
         Syscall::SocketCreate => crate::net::socket_create(&p, a0),

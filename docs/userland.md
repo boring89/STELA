@@ -28,7 +28,7 @@ tools/qemu_test.py           --type：經 QMP 打字
 
 | 編號 | 名稱 | 參數 | 回傳 |
 |---|---|---|---|
-| 27 | `ProcessSpawn` | file, &Message, &[Handle; n], n（≤ 3） | Process handle（`WAIT|KILL|DUPLICATE|TRANSFER`） |
+| 27 | `ProcessSpawn` | file, &Message, &[Handle; n], n（≤ 3）, &[u32; 2m], m（≤ 4，P11：能力，§2.3） | Process handle（`WAIT|KILL|DUPLICATE|TRANSFER`） |
 | 28 | `ProcessWait` | process, timeout_ns | exit code（i64）；`TimedOut` |
 | 29 | `ProcessKill` | process | 0；被 kill 的行程以 `EXIT_KILLED`（137）結束 |
 | 30 | `ProcessSelf` | — | 自己的 Process handle（`KILL|DUPLICATE|TRANSFER`，沒有 `WAIT`） |
@@ -39,6 +39,24 @@ tools/qemu_test.py           --type：經 QMP 打字
 - `ProcessWait` 等在行程表的 waiter 清單上（`block_until`，可逾時）；等待者自己被 kill 時放棄。
 - `ProcessKill` 自己 → 等於 `ProcessExit(137)`。
 - `SysInfo`：`PROCESSES`（每筆 48 bytes：pid、執行緒數、狀態 1 執行中／2 已結束、exit code、名稱 24 bytes；回傳總筆數，可能多於放得下的）、`MEMORY`（PMM 總數／空閒頁框、kernel heap 大小／已用）、`UPTIME`（奈秒、tick）、`FRAMEBUFFER`（`docs/display.md`）、`TIME`（6，P10：牆上時鐘，1970 年起的奈秒，libstela `process::wall_clock_ns`）、`CMDLINE`（5，P10：開機選項的位元組，回傳長度；`abi::sysinfo::cmdline_flag` 查選項，libstela 的 `process::boot_flag`；`docs/p520.md` §3）。
+
+### 2.3 能力（capability，P11，使用者尚未審核）
+
+**比喻**：大樓的總電源開關、對講機總機、對外電話線各有一把專用鑰匙。管理員（init）一開始就拿到全部三把（kernel 給的），只把需要的那幾把**複製**給該用的人；沒拿到鑰匙的人就算知道開關在哪也打不開（`AccessDenied`）。
+
+| kind | 名稱 | 守著什麼 | 誰拿到 |
+|---|---|---|---|
+| 1 | `POWER` | `SystemPower`（`docs/acpi.md`） | init → 視窗伺服器 → 它啟動的程式（Mouseion：特別 → 關機／重新開機） |
+| 2 | `INPUT` | `InputAttach`（K6 起檢查） | init → 視窗伺服器；文字模式的 shell |
+| 3 | `NETWORK` | `SocketCreate`（K6 起檢查） | init → 所有人（預設繼承，現在的行為） |
+| 4 | `INIT` | 不是 kernel 的能力：init 主 port 的 `SEND`，送 `POWER_REQUEST` | init 做的，所有人預設繼承 |
+
+- kernel 物件 `KernelObject::Capability(kind)`，handle 的權限只有 `DUPLICATE|TRANSFER`；`HandleKind` = 12。持有就是許可，kernel 只檢查種類（`object::check_capability`）。
+- **傳遞**：`ProcessSpawn` 的第 5、6 個參數是 (handle, kind) 對（最多 4 個，搬走，要 `TRANSFER`）；kernel 檢查 Capability 的種類和宣稱的相符、`INIT` 必須是有 `SEND` 的 port，否則 `InvalidArgument`。kernel 在 `BOOTSTRAP_ARGS` 之後**一定**再排一則 `CAPABILITIES`（tag 7；data = 每個 handle 的 kind，u32 LE；沒有就是空的），都在程式開始前放好，所以 libstela 的 `take_args` 不等待地收兩則就好。
+- kernel 啟動 init 時給 `POWER`、`INPUT`、`NETWORK`（`program::spawn_path_with`）；selftest 啟動的程式什麼都沒有。
+- libstela：`process::capability(kind)`、`set_capability(kind, h)`（init 登記自己做的 `INIT`）、`pass_capability(kind)`（複製一份給子行程）、`inherited()`（`NETWORK` + `INIT` 的複製）、`spawn_with(file, args, handles, &[(kind, h)])`；`spawn` = `spawn_with(…, &inherited())`。**`POWER` 與 `INPUT` 不會自動往下傳**。
+- `process::shutdown()`／`reboot()`（`power(kind)`）：有 `POWER` 就直接 `SystemPower(kind, power)`；否則有 `INIT` 就送 `POWER_REQUEST`（data = kind，夾帶回覆 port）給 init，等 10 秒的回覆（失敗時 init 回 `Error` 值；成功就沒有回覆，機器已經關了）；兩個都沒有 → `AccessDenied`。所以 shell 的 `shutdown` 不必持有 `POWER`：它請 init 做。
+- init 等子行程時用 WaitSet 同時等主 port（`POWER_REQUEST`）與子行程（`EXITED`）。
 
 ### 2.1 程式一律從檔案啟動
 
@@ -54,7 +72,7 @@ P3–P5 的 kernel 有「從 initrd 生行程」的特例；P6 起 initrd 掛成
  kernel 自己啟動的程式：只有程式名
 ```
 
-libstela 的 `entry!` 在呼叫 `main` 前 `take_args()`：從主 port 不等待地收一則（一定是它），存起來；`process::args()` 回傳 `Vec<String>`。長參數就 map 那個 Memory 讀出來、關掉 handle。
+libstela 的 `entry!` 在呼叫 `main` 前 `take_args()`：從主 port 不等待地收一則（一定是它），存起來；`process::args()` 回傳 `Vec<String>`。長參數就 map 那個 Memory 讀出來、關掉 handle。P11 起接著再收第二則 `CAPABILITIES`（§2.3）。
 
 ## 4. libstela
 
@@ -66,7 +84,7 @@ libstela 的 `entry!` 在呼叫 `main` 前 `take_args()`：從主 port 不等待
 | `sync::SpinMutex` | 使用者空間的鎖（搶不到就 `yield`） |
 | `ipc` | handle、port、memory、`Mapping`、`input_attach` |
 | `fs` | 檔案與卷宗（`docs/vfs.md`） |
-| `process` | `spawn(file, args, [h1, h2, h3])`、`pass(h, rights)`（複製一份可轉移的）、`standard_handles`、`wait`、`wait_forever`、`kill`、`this`、`list`、`memory`、`uptime`、`args` |
+| `process` | `spawn(file, args, [h1, h2, h3])`、`spawn_with(…, caps)`、`capability(kind)`、`pass(h, rights)`（複製一份可轉移的）、`standard_handles`、`wait`、`wait_forever`、`kill`、`this`、`list`、`memory`、`uptime`、`args`、`shutdown`／`reboot`（§2.3） |
 | `path` | `Location { volume, parts }`、`resolve(cwd, input)` |
 | `line` | `LineEditor`：`feed(char) -> Edit` |
 

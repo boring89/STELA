@@ -199,8 +199,8 @@ struct Record {
 static TABLE: SpinLock<BTreeMap<ProcessId, Record>> = SpinLock::new(BTreeMap::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-/// The bootstrap handles `[1]`, `[2]`, `[3]` of a new process.
-pub type Initial = [Option<Entry>; 3];
+/// The bootstrap handles `[1]`..`[6]` of a new process (`abi::bootstrap`).
+pub type Initial = [Option<Entry>; 6];
 
 /// The usual `[1]`..`[3]`: the console service (if it runs), `bootstrap`,
 /// the root of `Data` (if mounted).
@@ -217,7 +217,7 @@ pub fn standard_initial(bootstrap: Option<Entry>) -> Initial {
             rights,
         }
     });
-    [console, bootstrap, cwd]
+    [console, bootstrap, cwd, None, None, None]
 }
 
 /// Creates a process with an empty address space, no threads and the
@@ -241,8 +241,9 @@ pub fn create_with(
         object: KernelObject::Port(Arc::clone(&main_port)),
         rights: Rights::RECEIVE | Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
     };
-    let [console, bootstrap, cwd] = initial;
-    let handles = HandleTable::with_initial([Some(main), console, bootstrap, cwd]);
+    let [console, bootstrap, cwd, program, stdin, spare] = initial;
+    let handles =
+        HandleTable::with_initial([Some(main), console, bootstrap, cwd, program, stdin, spare]);
     let process = Arc::new(Process {
         id,
         name: String::from(name),

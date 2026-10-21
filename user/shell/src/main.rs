@@ -231,8 +231,9 @@ impl Shell {
     }
 
     /// The program file (or bundle, `Name.app`): in the current folder
-    /// (or the given path), then in `Initrd:/`.
-    fn find_program(&self, name: &str) -> Result<Owned, String> {
+    /// (or the given path), then in `Initrd:/`; with the folder it is in
+    /// (the program's `[4]`).
+    fn find_program(&self, name: &str) -> Result<(Owned, Option<Owned>), String> {
         let runnable = |h: Handle| {
             fs::stat(h).is_ok_and(|s| {
                 s.kind == kind::FILE || (s.kind == kind::DIRECTORY && is_bundle(name))
@@ -242,14 +243,19 @@ impl Shell {
             && let Ok(h) = open_at(&loc, open::READ)
             && runnable(h.0)
         {
-            return Ok(h);
+            let folder = open_at(&loc.parent(), open::READ).ok();
+            return Ok((h, folder));
         }
         if !name.contains(':') && !name.starts_with('/') {
             let initrd = Owned(fs::volume_open("Initrd").map_err(|e| String::from(describe(e)))?);
             if let Ok(h) = fs::open(initrd.0, name, open::READ) {
                 let h = Owned(h);
                 if runnable(h.0) {
-                    return Ok(h);
+                    let folder = match name.trim_end_matches('/').rsplit_once('/') {
+                        Some((dir, _)) => fs::open(initrd.0, dir, open::READ).ok().map(Owned),
+                        None => Some(initrd),
+                    };
+                    return Ok((h, folder));
                 }
             }
         }
@@ -257,7 +263,7 @@ impl Shell {
     }
 
     fn run(&self, program: &str, rest: &[&str]) -> Result<(), String> {
-        let file = self.find_program(program)?;
+        let (file, folder) = self.find_program(program)?;
         let cwd = open_at(&self.cwd, open::READ | open::WRITE)
             .or_else(|_| open_at(&self.cwd, open::READ))
             .map_err(|e| alloc::format!("{}: {}", self.cwd, describe(e)))?;
@@ -291,6 +297,9 @@ impl Shell {
                 pass(ws, Rights::SEND | Rights::DUPLICATE)
             }),
             process::pass_dir(cwd.0),
+            folder
+                .as_ref()
+                .map_or(Handle::NONE, |f| process::pass_dir(f.0)),
         ];
         // In text mode the shell has INPUT (for `run echo`) and passes it.
         let mut caps = process::inherited();
@@ -298,7 +307,7 @@ impl Shell {
             caps.push((libstela::abi::capability::INPUT, input));
         }
         let child = Owned(
-            process::spawn_with(file.0, &args, handles, &caps)
+            process::spawn_with(file.0, &args, &handles, &caps)
                 .map_err(|e| String::from(describe(e)))?,
         );
         // Wait, watching the keyboard for Ctrl-C (unless the program took

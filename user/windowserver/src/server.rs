@@ -1181,7 +1181,7 @@ fn start_programs(names: &[String]) {
         if let Some(p) = process::pass_capability(abi::capability::POWER) {
             caps.push((abi::capability::POWER, p));
         }
-        match process::spawn_with(file.0, &[base], handles, &caps) {
+        match process::spawn_with(file.0, &[base], &handles, &caps) {
             Ok(p) => {
                 let _ = handle_close(p);
             }

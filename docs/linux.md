@@ -180,14 +180,15 @@ Linux 程式的 tty：kernel 在 `spawn_linux` 時看 `[1]`：是 Tty 就用它�
 
 - `.`、`..` 在 kernel 以字面處理（`normalize(cwd, path)`，`..` 在根停住）；沒有符號連結。
 - 相對路徑相對於 cwd，或 `*at` 的 dirfd（它的 `OpenFile::Dir` 記著自己的 Linux 路徑）；`AT_FDCWD` = −100。
-- cwd 一開始是 `[3]` 那個資料夾所在卷宗的根（`/Data`）；沒有 `[3]` 時 `/Data`，再沒有 `/Initrd`。**不追蹤** `[3]` 在卷宗裡的子路徑（shell 在 `Data:/t` 裡 `run` 時 cwd 仍是 `/Data`）。
+- cwd 一開始是 `[3]` 那個資料夾（P11：包括它在卷宗裡的子路徑，`vfs::path_of`；shell 在 `Data:/t` 裡 `run` 時 cwd 是 `/Data/t`）；沒有 `[3]` 時 `/Data`，再沒有 `/Initrd`。
+- **P11：合成根只顯示 `[3]` 與 `[4]`（程式所在資料夾）的卷宗**，加上 `tmp`、`dev`、`etc`；其他卷宗（`Boot`、`Archive`…）看不到也打不開（`ENOENT`；`linux::State::volumes`）。沒有 `[3]`/`[4]` 時只有 cwd 的卷宗。shell 從 `Data:/` 跑 `linux/files` 時看得到 `Data`（`[3]`）與 `Initrd`（`[4]` = `Initrd:/linux`）。
 - `open`：`O_CREAT`（`O_EXCL` → `EEXIST`）、`O_TRUNC`、`O_APPEND`、`O_DIRECTORY`、`O_CLOEXEC`；資料夾以寫入開 → `EISDIR`；唯讀卷宗寫入 → `EROFS`；在 `/` 或 `/dev` 建新名字 → `EACCES`。
 - `rename`：同一卷宗（否則 `EXDEV`）；目標是檔案就先刪掉（Linux 的取代語意），是資料夾 → `EISDIR`。
 - `stat`：`st_dev` = 卷宗 index + 1、`st_ino` = 持久 ID、mode 資料夾 `040755`、檔案 `100644`、裝置與 tty `020666`／`020620`；時間來自後端。
 - `getdents64`：`.`、`..` 在前；每次呼叫重新列出（和 `DirRead` 一樣 O(n²)）；cursor 存在 `OpenFile::Dir`；`lseek(fd, 0, SEEK_SET)` 重來。
 - `/etc` 只有 `resolv.conf`（唯讀，`open` 時才產生內容；寫入 → `EROFS`）；其他名字 → `ENOENT`（musl 找 `/etc/hosts` 時就是這樣，然後走 DNS）。
 - P11：`socket()` 要行程啟動時拿到 `NETWORK` 能力（`docs/userland.md` §2.3），否則 `EACCES`。
-- **Linux 程式不受 handle 能力限制**：它看得到所有卷宗（合成根目錄就是全部）。之後的沙箱要收緊（`docs/architecture.md` §4.1）。
+- Linux 程式在看得到的卷宗裡不受 handle 權限限制（P11 前看得到所有卷宗）；之後的沙箱可以再收緊到 `[3]` 那個資料夾以下（`docs/architecture.md` §4.1）。
 
 ### 7.1 `Tmp`（`vfs/tmpfs.rs`）
 
@@ -232,7 +233,7 @@ P6 的 `InitrdFs` 把所有檔案放在根目錄；P7 起建一棵樹：成員�
 | 程式 | 測什麼 | 預期 |
 |---|---|---|
 | `hello` | printf、argv、uname、`__thread` | `hello from linux: 3 args`、`hello: uname STELA …`、`thread-local value 7`，exit 3 |
-| `files` | `/tmp` 與 cwd（`/Data`）：mkdir（兩次 → EEXIST）、建檔、write、lseek、read、fstat、close 兩次 → EBADF、rename、stat、getdents、rmdir 非空 → ENOTEMPTY、unlink、rmdir、access；合成根與 `/dev`；讀 `/Initrd/linux/hello` 的 ELF magic；唯讀卷宗 → EROFS；`/dev/null`；chdir、相對路徑、dup2 | `files: OK` |
+| `files` | P11：cwd 是 `/Data/linuxdir`（shell 先 `mkdir`、`cd`）、合成根沒有 `Archive`、`Boot`；`/tmp` 與 cwd：mkdir（兩次 → EEXIST）、建檔、write、lseek、read、fstat、close 兩次 → EBADF、rename、stat、getdents、rmdir 非空 → ENOTEMPTY、unlink、rmdir、access；合成根與 `/dev`；讀 `/Initrd/linux/hello` 的 ELF magic；唯讀卷宗 → EROFS；`/dev/null`；chdir、相對路徑、dup2 | `files: OK` |
 | `memory` | 8 MiB malloc、2000 個小 malloc、brk 長大／縮回／太遠、mmap 1 MiB（清零、對齊）、mprotect、munmap、PROT_EXEC 被拒 | `memory: OK` |
 | `time` | MONOTONIC + nanosleep(20 ms) ≥ 20 ms、REALTIME 年份 ≥ 2024、gettimeofday | `time: OK` |
 | `tty` | isatty（0、1 是，/dev/null 不是）、tcgetattr 有 ICANON、讀一行 | `tty: you typed: …` |
@@ -258,8 +259,8 @@ P6 的 `InitrdFs` 把所有檔案放在根目錄；P7 起建一棵樹：成員�
 
 - 只有靜態、非 PIE 的 x86-64 程式（`ET_EXEC`）；沒有動態連結、`ET_DYN`、32 位元（`int 0x80`）。
 - 單執行緒：沒有 `clone`／執行緒；`futex` 是單執行緒的簡化；沒有 `fork`／`execve`／`pipe`、訊號遞送（`rt_sigaction` 只回 0）、`/proc`、檔案 mmap、`MAP_FIXED`、`mremap`、`epoll`。
-- Linux 程式不受能力限制：合成根目錄看得到所有卷宗。
-- cwd 只從 `[3]` 的卷宗根開始；`getppid` 是 1；`getrandom` 不安全；時間只有 tick 解析度（沒有 invariant TSC 時 1 ms）。
+- Linux 程式在 `[3]`、`[4]` 的卷宗裡不受 handle 權限限制（整個卷宗，不只那個資料夾以下）。
+- `getppid` 是 1；`getrandom` 不安全；時間只有 tick 解析度（沒有 invariant TSC 時 1 ms）。
 - tty：一個 tty 的 `TIOCGWINSZ` 永遠 25×80；沒有 job control（`TIOCSPGRP` 什麼都不做）；VMIN／VTIME 不看；raw 模式下 `read` 有一個字就回。
 - `PROT_NONE` 頁可以讀；部分 `munmap` 不歸還位址範圍。
 - 輸出到沒有 master 的 tty 是同步 `kprint!`；有 master 時超過 64 KiB 未讀的輸出會被丟掉。

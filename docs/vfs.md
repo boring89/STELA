@@ -90,13 +90,21 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 
 每個項目 32 bytes 的 Finder 資訊（`abi::FINDER_INFO_SIZE`），kernel 不解讀：eHFS 存在目錄記錄裡（格式本來就有，`docs/ehfs.md`），`Tmp` 存在記憶體；FAT 與 Initrd 回 `NotSupported`。後端：`FileSystem::get_info`／`set_info`（預設 `NotSupported`）。Mouseion 的配置（視窗矩形、圖示位置）見 `docs/mouseion.md`。
 
+### 4.4 `FilePath`（P11，使用者尚未審核）
+
+| 編號 | 名稱 | 參數 | 回傳 | 權限 |
+|---|---|---|---|---|
+| 53 | `FilePath` | 檔案或資料夾, buf, len | 路徑的總長度（寫進 buf 的最多 len bytes） | READ |
+
+回傳卷宗**裡面**的路徑：根是 `/`，其他是 `/a/b`（UTF-8，沒有 NUL）。kernel 從項目往上走：`FileSystem::parent(id)`——eHFS 用目錄記錄裡的父 CNID（`Entry::parent`）；其他後端（FAT、Initrd、Tmp）用預設實作，從根做廣度優先搜尋（最多看 10 萬個資料夾）。`vfs::path_of(volume, id)` 也給 Linux 人格算 cwd（`docs/linux.md` §7）。libstela `fs::path_of(h)`（buf 不夠時放大重試）。注意：有某個資料夾的 handle 就能知道它上面各層的名字（不能打開它們）。
+
 ### 4.3 bundle（P9）
 
 `ProcessSpawn` 也接受 `Name.app` 資料夾的 handle：執行裡面的 `exec`（`program::BUNDLE_EXEC`），行程名稱是參數的第一個字（沒有參數時用 bundle 名稱 `Name`）。其他資料夾仍是 `IsDir`。P9 起行程名稱一律取參數的第一個字（≤ 24 bytes），不再是檔名。initrd 裡的 `Terminal.app`、`Echo.app`（之後 `Viewer.app`）由 Makefile 的 `BUNDLES` 產生（`exec` + `info.txt`：名稱、版本）。
 
 ## 5. 初始 handle `[3]`
 
-`bootstrap::CWD`：kernel 建立行程時，如果有 `Data` 卷宗，`[3]` 是它的根（`READ|WRITE|DUPLICATE|TRANSFER`）；沒有就空（`BadHandle`）。P6 的 `ProcessSpawn` 讓父行程指定 `[1]`–`[3]`。
+`bootstrap::CWD`：kernel 建立行程時，如果有 `Data` 卷宗，`[3]` 是它的根（`READ|WRITE|MANAGE|DUPLICATE|TRANSFER`）；沒有就空（`BadHandle`）。P6 的 `ProcessSpawn` 讓父行程指定 `[1]`–`[3]`；P11 起最多 `[1]`–`[6]`：`[4]`（`bootstrap::PROGRAM`）= 程式所在的資料夾（shell 的 `run` 與 Mouseion 給；Linux 程式看得到它的卷宗），`[5]`（`STDIN`）= 標準輸入（E 部分），`[6]` 保留。
 
 ## 6. 掛載（`vfs::mount::mount_all`，開機時）
 
@@ -131,6 +139,7 @@ initrd 也是一個卷宗：`InitrdFs`，唯讀，ustar 的檔案都在根目錄
 | 測試 | 內容 |
 |---|---|
 | host `abi` | 編號、錯誤值、`DirEntry`／`Stat`／`VolumeInfo` 的大小與位移、`CWD`、`open::ALL` |
+| fstest 第 35–36 步（P11） | `FilePath`：eHFS 的 `/fstest/hello.txt`、根是 `/`；FAT 的 `/EFI/BOOT/nested.txt`（預設的搜尋） |
 | host `kernel::vfs::path` | 切分、`.`／空的、`..` 拒絕、非 UTF-8、太長、單一名稱 |
 | selftest "file systems" | 列出卷宗與空間；有 Boot 就直接用後端讀 `HELLO.TXT`、建立 → `ReadOnly`；有 Data 就跑 `fstest`（exit 0） |
 | `fstest`（使用者程式） | `VolumeList`；`Data:/fstest-boots` 開機計數（`fstest: boot N`，第二次開機看到 2 = 持久）；建資料夾（`EXCLUSIVE`）、建檔、寫 10000 bytes、讀回、stat、讀到結尾、不分大小寫開啟、`EXCLUSIVE` 失敗、不存在、唯讀 handle 不能寫、改名、by-id 開啟、列目錄、`set_size`、非空資料夾不能刪、刪除後 by-id 的 handle 失效；Boot：讀 `HELLO.TXT`、唯讀卷宗建立 → `ReadOnly`、巢狀路徑 `EFI/BOOT/nested.txt` |

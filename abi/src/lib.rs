@@ -102,10 +102,10 @@ pub enum Syscall {
     /// `VolumeOpenById(dir, id) -> handle`: the item with persistent id
     /// `id` on `dir`'s volume.
     VolumeOpenById = 26,
-    /// `ProcessSpawn(file, &Message, &[Handle; 3], count) -> handle`: starts
+    /// `ProcessSpawn(file, &Message, &[Handle; n], n) -> handle`: starts
     /// the ELF program in `file` (a handle with `READ`) as a new process.
     /// The message (or an empty one) is queued on its main port as its
-    /// `BOOTSTRAP_ARGS`; the handles become its `[1]`..`[3]` (moved, each
+    /// `BOOTSTRAP_ARGS`; the handles (n ≤ 6) become its `[1]`..`[n]` (moved, each
     /// needs `TRANSFER`; `Handle::NONE` leaves a slot empty). The handle
     /// returned has `WAIT | KILL | DUPLICATE | TRANSFER`. Arguments 5 and
     /// 6 (P11): `&[u32; 2 * n]` pairs (handle, `capability::*` kind) and
@@ -198,11 +198,15 @@ pub enum Syscall {
     /// `WaitSetWait(set, &mut [wait::Ready], max, timeout_ns) -> count`:
     /// waits until a member is ready and writes up to `max` records.
     WaitSetWait = 52,
+    /// `FilePath(item, buf, len) -> length`: the item's path inside its
+    /// volume (`/` for the root, `/a/b`; UTF-8, no NUL); the whole length
+    /// is returned even when `len` cut it (P11, `docs/vfs.md` §4.4).
+    FilePath = 53,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 52] = [
+    pub const ALL: [Syscall; 53] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -255,6 +259,7 @@ impl Syscall {
         Syscall::WaitSetAdd,
         Syscall::WaitSetRemove,
         Syscall::WaitSetWait,
+        Syscall::FilePath,
     ];
 
     /// The call with number `raw`, if any.
@@ -1200,8 +1205,18 @@ pub mod bootstrap {
     /// `[3]`: the working directory (the root of `Data` when the kernel
     /// starts a program and there is one).
     pub const CWD: Handle = Handle::new(3, 1);
+    /// `[4]` (P11): the folder the program was started from (a Linux
+    /// program sees that volume too).
+    pub const PROGRAM: Handle = Handle::new(4, 1);
+    /// `[5]` (P11): standard input, when given (a pipe or a tty's
+    /// reading side).
+    pub const STDIN: Handle = Handle::new(5, 1);
+    /// `[6]`: reserved.
+    pub const RESERVED: Handle = Handle::new(6, 1);
     /// Number of bootstrap slots.
-    pub const COUNT: u32 = 4;
+    pub const COUNT: u32 = 7;
+    /// How many of them `ProcessSpawn` fills (`[1]`..`[6]`).
+    pub const GIVEN: usize = 6;
 }
 
 /// `DirOpen` flags.
@@ -1684,6 +1699,9 @@ mod tests {
         assert_eq!(core::mem::offset_of!(Stat, kind), 32);
         assert_eq!(core::mem::offset_of!(VolumeInfo, name), 32);
         assert_eq!(bootstrap::CWD.0, 0x0100_0003);
+        assert_eq!(bootstrap::PROGRAM.0, 0x0100_0004);
+        assert_eq!(bootstrap::STDIN.0, 0x0100_0005);
+        assert_eq!((bootstrap::COUNT, bootstrap::GIVEN), (7, 6));
         assert_eq!(open::ALL, 0x3F);
     }
 
@@ -1765,6 +1783,7 @@ mod tests {
         assert_eq!(Syscall::WaitSetAdd.raw(), 50);
         assert_eq!(Syscall::WaitSetRemove.raw(), 51);
         assert_eq!(Syscall::WaitSetWait.raw(), 52);
+        assert_eq!(Syscall::FilePath.raw(), 53);
         assert_eq!(object_kind::WAIT_SET, 11);
         assert_eq!(wait::ALL, 31);
         let r = wait::Ready {

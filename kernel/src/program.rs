@@ -261,17 +261,33 @@ fn spawn_linux(
         }) => Arc::clone(tty),
         _ => Tty::new(false),
     };
-    let cwd = match &initial[2] {
+    let folder = |e: &Option<Entry>| match e {
         Some(Entry {
             object: KernelObject::Directory(node),
             ..
-        }) => alloc::format!("/{}", node.volume.name),
-        _ if vfs::find("Data").is_some() => String::from("/Data"),
-        _ => String::from("/Initrd"),
+        }) => Some(node.clone()),
+        _ => None,
     };
+    // The working directory: [3], down to its own folder (P11).
+    let cwd = match folder(&initial[2]) {
+        Some(node) => linux_path(&node),
+        None if vfs::find("Data").is_some() => String::from("/Data"),
+        None => String::from("/Initrd"),
+    };
+    // It sees the volumes of [3] and [4] (and /tmp, /dev, /etc).
+    let mut volumes: Vec<String> = [folder(&initial[2]), folder(&initial[3])]
+        .into_iter()
+        .flatten()
+        .map(|n| n.volume.name.clone())
+        .collect();
+    if volumes.is_empty() {
+        volumes.push(String::from(&cwd[1..]));
+    }
+    volumes.dedup();
     let (_, image_end) = elf.image_span();
     let mut state = crate::linux::State::new(Arc::clone(&tty), cwd, image_end);
     state.network = network;
+    state.volumes = volumes;
     let process = task::process::create_with(name, initial, Some(state))?;
     load(process.space(), elf)?;
     let argv = message_args(args);
@@ -282,6 +298,19 @@ fn spawn_linux(
         .map_err(|_| LoadError::OutOfMemory)?;
     tty.add_user(process.id());
     start(&process, elf.entry(), stack.rsp)
+}
+
+/// The Linux path of a folder: `/Volume/a/b` (`/tmp/...` for `Tmp`).
+fn linux_path(node: &vfs::Node) -> String {
+    let top = if node.volume.name == "Tmp" {
+        "tmp"
+    } else {
+        node.volume.name.as_str()
+    };
+    match vfs::path_of(&node.volume, node.id) {
+        Ok(p) if p != "/" => alloc::format!("/{top}{p}"),
+        _ => alloc::format!("/{top}"),
+    }
 }
 
 /// The program file inside a bundle.

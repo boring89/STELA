@@ -89,6 +89,17 @@ fn run() -> Result<(), i64> {
     check(31, fs::set_info(file, &info).is_ok(), "set Finder info")?;
     check(32, fs::get_info(file) == Ok(info), "Finder info back")?;
     check(33, fs::set_info(dir, &info).is_ok(), "folder Finder info")?;
+    // Paths from the parents (FilePath, P11).
+    check(
+        35,
+        fs::path_of(file).as_deref() == Ok("/fstest/hello.txt"),
+        "path of a file",
+    )?;
+    check(
+        35,
+        fs::path_of(data).as_deref() == Ok("/"),
+        "path of the root",
+    )?;
     // Without MANAGE (P11) the metadata stays.
     let plain =
         libstela::ipc::handle_duplicate(file, libstela::Rights::READ | libstela::Rights::WRITE)
@@ -184,6 +195,11 @@ fn run() -> Result<(), i64> {
             23,
             fs::stat(nested).map(|s| s.size) == Ok(15),
             "nested FAT path",
+        )?;
+        check(
+            36,
+            fs::path_of(nested).is_ok_and(|p| p.eq_ignore_ascii_case("/EFI/BOOT/nested.txt")),
+            "path on FAT",
         )?;
     }
     Ok(())

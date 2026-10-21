@@ -587,6 +587,7 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::SystemPower => crate::psyscall::system_power(&p, a0, a1),
         Syscall::FileGetInfo => file_get_info(&p, a0, a1),
         Syscall::FileSetInfo => file_set_info(&p, a0, a1),
+        Syscall::FilePath => file_path(&p, a0, a1, a2),
         Syscall::SocketCreate => crate::net::socket_create(&p, a0, a1),
         Syscall::SocketBind => crate::net::socket_bind(&p, a0, a1),
         Syscall::SocketConnect => crate::net::socket_connect(&p, a0, a1, a2),

@@ -77,6 +77,9 @@ int main(void)
     if (file_round_trip("/tmp") != 0 || file_round_trip(".") != 0)
         return 1;
     CHECK(has_entry("/", "Initrd") && has_entry("/", "tmp") && has_entry("/", "dev"), "root");
+    /* Only the volumes of the working directory and the program (P11). */
+    CHECK(!has_entry("/", "Archive") && !has_entry("/", "Boot"), "other volumes hidden");
+    CHECK(access("/Archive", F_OK) == -1 && errno == ENOENT, "hidden volume");
     CHECK(has_entry("/dev", "null"), "/dev");
     fd = open("/Initrd/linux/hello", O_RDONLY);
     CHECK(fd >= 0 && read(fd, buf, 4) == 4 && memcmp(buf, "\177ELF", 4) == 0, "read a program");

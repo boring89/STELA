@@ -222,7 +222,7 @@ libstela 的 `ipc::Mapping` 包住映射：`read(offset, buf)`／`write(offset, 
 | `[1]` | `CONSOLE` = `0x0100_0001` | console 服務的 `SEND|DUPLICATE|TRANSFER` |
 | `[2]` | `BOOTSTRAP` = `0x0100_0002` | 啟動者給的 handle（`program::spawn_process(.., Some(entry))`）；沒有就空（`BadHandle`） |
 
-P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessSpawn` 由父行程指定 `[1]`–`[3]`（`docs/userland.md` §2），主 port 的第一則訊息是 `BOOTSTRAP_ARGS`（參數）。
+P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessSpawn` 由父行程指定 `[1]`–`[3]`（`docs/userland.md` §2），主 port 的第一則訊息是 `BOOTSTRAP_ARGS`（參數）。P11 起最多 `[1]`–`[6]`（`[4]` `PROGRAM` 程式所在的資料夾、`[5]` `STDIN`、`[6]` 保留；`bootstrap::COUNT` = 7），第二則訊息是 `CAPABILITIES`（`docs/userland.md` §2.3）。
 
 ## 7. console 服務（`kernel/src/console.rs`）
 

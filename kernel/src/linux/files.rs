@@ -117,8 +117,18 @@ fn config_text(c: Config) -> Vec<u8> {
     }
 }
 
-fn volume(name: &str) -> Result<Arc<Volume>, i64> {
+/// The volume called `name`, if this process may see it (P11: the
+/// volumes of its `[3]` and `[4]`, and `Tmp`).
+fn volume(p: &Process, name: &str) -> Result<Arc<Volume>, i64> {
+    if name != "Tmp" && !visible(p, name) {
+        return Err(ENOENT);
+    }
     vfs::find(name).ok_or(ENOENT)
+}
+
+fn visible(p: &Process, name: &str) -> bool {
+    p.linux()
+        .is_some_and(|l| l.volumes.iter().any(|v| v == name))
 }
 
 /// Walks `parts` from the root of `volume`.
@@ -134,7 +144,7 @@ fn walk(volume: &Arc<Volume>, parts: &[String]) -> Result<NodeInfo, i64> {
     Ok(info)
 }
 
-fn resolve(parts: &[String]) -> Result<Found, i64> {
+fn resolve(p: &Process, parts: &[String]) -> Result<Found, i64> {
     match path::target(parts) {
         Target::Root => Ok(Found::Root),
         Target::DevDir => Ok(Found::DevDir),
@@ -142,7 +152,7 @@ fn resolve(parts: &[String]) -> Result<Found, i64> {
         Target::EtcDir => Ok(Found::EtcDir),
         Target::Config(c) => Ok(Found::Config(c)),
         Target::Volume(name, rest) => {
-            let volume = volume(&name)?;
+            let volume = volume(p, &name)?;
             let info = walk(&volume, &rest)?;
             Ok(Found::Item(
                 Node {
@@ -156,9 +166,9 @@ fn resolve(parts: &[String]) -> Result<Found, i64> {
 }
 
 /// The parent folder (on a volume) and the last name of `parts`.
-fn parent_of(parts: &[String]) -> Result<(Node, String), i64> {
+fn parent_of(p: &Process, parts: &[String]) -> Result<(Node, String), i64> {
     let (parent, name) = path::split_last(parts).ok_or(EEXIST)?;
-    match resolve(parent)? {
+    match resolve(p, parent)? {
         Found::Item(node, info) if info.is_dir => Ok((node, String::from(name))),
         Found::Item(..) => Err(ENOTDIR),
         // New names at the root or in /dev cannot be made.
@@ -187,7 +197,7 @@ pub fn openat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
         path: path::join(&parts),
         cursor: SpinLock::new(0),
     };
-    let found = match resolve(&parts) {
+    let found = match resolve(p, &parts) {
         Ok(found) => {
             if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
                 return Err(EEXIST);
@@ -195,7 +205,7 @@ pub fn openat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
             found
         }
         Err(ENOENT) if flags & O_CREAT != 0 => {
-            let (parent, name) = parent_of(&parts)?;
+            let (parent, name) = parent_of(p, &parts)?;
             let fs = &parent.volume.fs;
             if fs.read_only() {
                 return Err(EROFS);
@@ -559,7 +569,7 @@ pub fn stat_path(p: &Process, dirfd: u64, ptr: u64, buf: u64, flags: u64) -> Lin
         return fstat(p, dirfd, buf);
     }
     let parts = parts_of(p, dirfd, ptr)?;
-    let found = resolve(&parts)?;
+    let found = resolve(p, &parts)?;
     write_user(p, buf, &stat_of(&found))?;
     Ok(0)
 }
@@ -593,7 +603,7 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
 pub fn access(p: &Process, dirfd: u64, ptr: u64, mode: u64) -> LinuxResult {
     const W_OK: u64 = 2;
     let parts = parts_of(p, dirfd, ptr)?;
-    let found = resolve(&parts)?;
+    let found = resolve(p, &parts)?;
     if mode & W_OK != 0 {
         match &found {
             Found::Item(node, _) if node.volume.fs.read_only() => return Err(EROFS),
@@ -619,7 +629,7 @@ pub fn getcwd(p: &Process, buf: u64, size: u64) -> LinuxResult {
 /// `chdir(path)`.
 pub fn chdir(p: &Process, ptr: u64) -> LinuxResult {
     let parts = parts_of(p, AT_FDCWD, ptr)?;
-    match resolve(&parts)? {
+    match resolve(p, &parts)? {
         Found::Root | Found::DevDir | Found::EtcDir => {}
         Found::Item(_, info) if info.is_dir => {}
         _ => return Err(ENOTDIR),
@@ -632,10 +642,10 @@ pub fn chdir(p: &Process, ptr: u64) -> LinuxResult {
 /// `mkdirat(dirfd, path, mode)` (and `mkdir`).
 pub fn mkdirat(p: &Process, dirfd: u64, ptr: u64) -> LinuxResult {
     let parts = parts_of(p, dirfd, ptr)?;
-    if resolve(&parts).is_ok() {
+    if resolve(p, &parts).is_ok() {
         return Err(EEXIST);
     }
-    let (parent, name) = parent_of(&parts)?;
+    let (parent, name) = parent_of(p, &parts)?;
     let fs = &parent.volume.fs;
     if fs.read_only() {
         return Err(EROFS);
@@ -648,7 +658,7 @@ pub fn mkdirat(p: &Process, dirfd: u64, ptr: u64) -> LinuxResult {
 /// `unlinkat(dirfd, path, flags)` (and `unlink`, `rmdir`).
 pub fn unlinkat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
     let parts = parts_of(p, dirfd, ptr)?;
-    let is_dir = match resolve(&parts)? {
+    let is_dir = match resolve(p, &parts)? {
         Found::Item(_, info) => info.is_dir,
         Found::Root | Found::DevDir | Found::EtcDir => return Err(errno::EBUSY),
         Found::Device(_) | Found::Config(_) => return Err(errno::EACCES),
@@ -659,7 +669,7 @@ pub fn unlinkat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
     if flags & AT_REMOVEDIR == 0 && is_dir {
         return Err(EISDIR);
     }
-    let (parent, name) = parent_of(&parts)?;
+    let (parent, name) = parent_of(p, &parts)?;
     let fs = &parent.volume.fs;
     if fs.read_only() {
         return Err(EROFS);
@@ -676,8 +686,8 @@ pub fn unlinkat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
 pub fn renameat(p: &Process, olddir: u64, old: u64, newdir: u64, new: u64) -> LinuxResult {
     let from = parts_of(p, olddir, old)?;
     let to = parts_of(p, newdir, new)?;
-    let (from_parent, from_name) = parent_of(&from)?;
-    let (to_parent, to_name) = parent_of(&to)?;
+    let (from_parent, from_name) = parent_of(p, &from)?;
+    let (to_parent, to_name) = parent_of(p, &to)?;
     if !Arc::ptr_eq(&from_parent.volume, &to_parent.volume) {
         return Err(EXDEV);
     }
@@ -707,7 +717,7 @@ const DT_REG: u8 = 8;
 
 /// The entries of a folder for `getdents64`: (inode, type, name), with
 /// `.` and `..` first.
-fn listing(node: &Option<Node>, path: &str) -> Result<Vec<(u64, u8, String)>, i64> {
+fn listing(p: &Process, node: &Option<Node>, path: &str) -> Result<Vec<(u64, u8, String)>, i64> {
     let mut entries = vec![
         (1, DT_DIR, String::from(".")),
         (1, DT_DIR, String::from("..")),
@@ -726,7 +736,10 @@ fn listing(node: &Option<Node>, path: &str) -> Result<Vec<(u64, u8, String)>, i6
         }
         None if path == "/etc" => entries.push((9, DT_REG, String::from("resolv.conf"))),
         None => {
-            for v in vfs::volumes() {
+            for v in vfs::volumes()
+                .into_iter()
+                .filter(|v| v.name == "Tmp" || visible(p, &v.name))
+            {
                 let name = if v.name == "Tmp" {
                     String::from("tmp")
                 } else {
@@ -749,7 +762,7 @@ pub fn getdents64(p: &Process, fd: u64, buf: u64, count: u64) -> LinuxResult {
     let OpenFile::Dir { node, path, cursor } = &*file else {
         return Err(ENOTDIR);
     };
-    let entries = listing(node, path)?;
+    let entries = listing(p, node, path)?;
     let mut cursor = cursor.lock();
     let mut out = Vec::new();
     while let Some((ino, kind, name)) = entries.get(*cursor as usize) {

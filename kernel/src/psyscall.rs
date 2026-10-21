@@ -13,8 +13,8 @@ use abi::sysinfo::{MemInfo, ProcessInfo};
 use abi::{Error, Handle, MESSAGE_DATA, MESSAGE_HANDLES, MESSAGE_SIZE, Message, Rights, tag};
 use alloc::vec::Vec;
 
-/// Most initial handles `ProcessSpawn` takes (`[1]`..`[3]`).
-const INITIAL: u64 = 3;
+/// Most initial handles `ProcessSpawn` takes (`[1]`..`[6]`).
+const INITIAL: u64 = 6;
 
 fn load_error(e: LoadError) -> Error {
     match e {
@@ -74,7 +74,7 @@ pub fn process_spawn(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
     let (file_name, image) = program::read_program(&node.volume, node.id).map_err(load_error)?;
     program::check_image(&image).map_err(|_| Error::InvalidArgument)?;
     // The initial handles and the message's handles: checked, then moved.
-    let mut raw = [0u8; 12];
+    let mut raw = [0u8; 4 * INITIAL as usize];
     process
         .space()
         .read(handles_ptr, &mut raw[..count as usize * 4])
@@ -157,7 +157,7 @@ pub fn process_spawn(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
                 return Err(Error::InvalidArgument);
             }
         }
-        let mut initial: task::process::Initial = [None, None, None];
+        let mut initial: task::process::Initial = Default::default();
         for (slot, h) in initial.iter_mut().zip(initial_handles.iter()) {
             if *h != Handle::NONE {
                 *slot = Some(handles.remove(*h)?);

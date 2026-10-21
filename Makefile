@@ -438,7 +438,9 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-linux.img
 	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-linux.log \
 		--type "STELA shell" "run linux/hello a b\n" \
-		--type "hello exited with code" "run linux/files\n" \
+		--type "hello exited with code" "mkdir linuxdir\n" \
+		--type "> mkdir linuxdir" "cd linuxdir\n" \
+		--type "> cd linuxdir" "run linux/files\n" \
 		--type "files exited with code" "run linux/memory\n" \
 		--type "memory exited with code" "run linux/time\n" \
 		--type "time exited with code" "run linux/nosys\n" \
@@ -448,6 +450,7 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "poll: type a line" "poll works\n" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
+		--expect "files: working directory /Data/linuxdir" \
 		--expect "files: OK" --expect "files exited with code 0" \
 		--expect "memory: OK" --expect "memory exited with code 0" \
 		--expect "time: OK" --expect "time exited with code 0" \

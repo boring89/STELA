@@ -90,6 +90,9 @@ pub struct State {
     /// Whether it was given the `NETWORK` capability (`socket` needs it;
     /// P11).
     pub network: bool,
+    /// The volumes it sees under `/` (besides `tmp`): those of its `[3]`
+    /// and `[4]` (P11).
+    pub volumes: Vec<String>,
 }
 
 impl State {
@@ -114,6 +117,7 @@ impl State {
             tty,
             tid_address: AtomicU64::new(0),
             network: false,
+            volumes: Vec::new(),
         }
     }
 

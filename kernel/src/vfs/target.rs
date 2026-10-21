@@ -74,6 +74,55 @@ pub trait FileSystem: Send + Sync {
     fn set_info(&self, _id: u64, _info: &[u8; 32]) -> Result<(), Error> {
         Err(Error::NotSupported)
     }
+    /// The folder item `id` is in (`NotFound` for the root). Backends
+    /// without parent links search from the root (P11, `FilePath`).
+    fn parent(&self, id: u64) -> Result<u64, Error> {
+        let root = self.root();
+        if id == root {
+            return Err(Error::NotFound);
+        }
+        let mut queue = alloc::collections::VecDeque::from([root]);
+        let mut looked = 0;
+        while let Some(dir) = queue.pop_front() {
+            for item in self.list(dir)? {
+                if item.id == id {
+                    return Ok(dir);
+                }
+                if item.is_dir {
+                    queue.push_back(item.id);
+                }
+            }
+            looked += 1;
+            if looked > 100_000 {
+                break;
+            }
+        }
+        Err(Error::NotFound)
+    }
+}
+
+/// The path of item `id` inside `volume` (`/` for the root, `/a/b`
+/// otherwise), from its parents.
+pub fn path_of(volume: &Volume, id: u64) -> Result<String, Error> {
+    let fs = &volume.fs;
+    let mut names = Vec::new();
+    let mut at = id;
+    while at != fs.root() {
+        names.push(fs.get(at)?.name);
+        at = fs.parent(at)?;
+        if names.len() > 256 {
+            return Err(Error::IoError);
+        }
+    }
+    let mut path = String::new();
+    for name in names.iter().rev() {
+        path.push('/');
+        path.push_str(name);
+    }
+    if path.is_empty() {
+        path.push('/');
+    }
+    Ok(path)
 }
 
 /// A mounted volume.
@@ -209,6 +258,13 @@ impl FileSystem for EhfsFs {
     fn lookup(&self, dir: u64, name: &str) -> Result<NodeInfo, Error> {
         self.with(|v| v.lookup(dir, name.as_bytes()))
             .map(|e| ehfs_info(&e))
+    }
+
+    fn parent(&self, id: u64) -> Result<u64, Error> {
+        if id == self.root() {
+            return Err(Error::NotFound);
+        }
+        self.with(|v| v.get(id)).map(|e| e.parent)
     }
 
     fn get(&self, id: u64) -> Result<NodeInfo, Error> {

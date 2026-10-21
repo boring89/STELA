@@ -155,7 +155,27 @@ pub fn get_info(h: Handle) -> Result<[u8; abi::FINDER_INFO_SIZE], Error> {
     Ok(info)
 }
 
-/// Stores the Finder information of `h` (which needs `WRITE`).
+/// The path of item `h` inside its volume (`/`, `/a/b`; `FilePath`).
+pub fn path_of(h: Handle) -> Result<alloc::string::String, Error> {
+    let mut buf = alloc::vec![0u8; 256];
+    loop {
+        let n = syscall4(
+            Syscall::FilePath,
+            h.raw(),
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            0,
+        )? as usize;
+        if n <= buf.len() {
+            buf.truncate(n);
+            return alloc::string::String::from_utf8(buf).map_err(|_| Error::InvalidArgument);
+        }
+        buf.resize(n, 0);
+    }
+}
+
+/// Stores the Finder information of `h` (which needs `WRITE` and
+/// `MANAGE`).
 pub fn set_info(h: Handle, info: &[u8; abi::FINDER_INFO_SIZE]) -> Result<(), Error> {
     crate::sys::syscall2(Syscall::FileSetInfo, h.raw(), info.as_ptr() as u64).map(|_| ())
 }

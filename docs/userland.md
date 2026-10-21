@@ -28,7 +28,7 @@ tools/qemu_test.py           --type：經 QMP 打字
 
 | 編號 | 名稱 | 參數 | 回傳 |
 |---|---|---|---|
-| 27 | `ProcessSpawn` | file, &Message, &[Handle; n], n（≤ 3）, &[u32; 2m], m（≤ 4，P11：能力，§2.3） | Process handle（`WAIT|KILL|DUPLICATE|TRANSFER`） |
+| 27 | `ProcessSpawn` | file, &Message, &[Handle; n], n（≤ 6，P11；之前 ≤ 3）, &[u32; 2m], m（≤ 4，P11：能力，§2.3） | Process handle（`WAIT|KILL|DUPLICATE|TRANSFER`） |
 | 28 | `ProcessWait` | process, timeout_ns | exit code（i64）；`TimedOut` |
 | 29 | `ProcessKill` | process | 0；被 kill 的行程以 `EXIT_KILLED`（137）結束 |
 | 30 | `ProcessSelf` | — | 自己的 Process handle（`KILL|DUPLICATE|TRANSFER`，沒有 `WAIT`） |
@@ -58,6 +58,7 @@ tools/qemu_test.py           --type：經 QMP 打字
 - `process::shutdown()`／`reboot()`（`power(kind)`）：有 `POWER` 就直接 `SystemPower(kind, power)`；否則有 `INIT` 就送 `POWER_REQUEST`（data = kind，夾帶回覆 port）給 init，等 10 秒的回覆（失敗時 init 回 `Error` 值；成功就沒有回覆，機器已經關了）；兩個都沒有 → `AccessDenied`。所以 shell 的 `shutdown` 不必持有 `POWER`：它請 init 做。
 - init 等子行程時用 WaitSet 同時等主 port（`POWER_REQUEST`）與子行程（`EXITED`）。
 - libstela 的 `ipc::input_attach` 與 `net::Socket::*` 自動帶上自己的能力（沒有就送 0 → `AccessDenied`）。
+- `process::spawn_with(file, args, &[h1..h6], caps)`：P11 起 `[4]` = 程式所在的資料夾（shell 的 `find_program` 一併找出來；Mouseion 給 bundle／程式所在的資料夾，Viewer 與 Terminal 給 Initrd 的根）。
 - 資料夾 handle 的 `MANAGE` 權限（`docs/ipc.md` §3.3）：`process::pass_dir(h)` 複製一份給子行程，盡量保留 READ／WRITE／MANAGE（拿不到就退一級），取代各處的 `pass(cwd, READ|WRITE|DUPLICATE)`（那樣會拿掉 MANAGE，唯讀的 Initrd 還會因為沒有 WRITE 而複製失敗）。
 
 ### 2.1 程式一律從檔案啟動

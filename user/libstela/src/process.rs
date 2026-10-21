@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 /// this program's inherited capabilities ([`inherited`]: `NETWORK`,
 /// `INIT`).
 pub fn spawn(file: Handle, args: &[&str], handles: [Handle; 3]) -> Result<Handle, Error> {
-    spawn_with(file, args, handles, &inherited())
+    spawn_with(file, args, &handles, &inherited())
 }
 
 /// Copies of the capabilities a child gets by default: `NETWORK` and
@@ -46,12 +46,14 @@ pub fn pass_capability(kind: u32) -> Option<Handle> {
     (copy != Handle::NONE).then_some(copy)
 }
 
-/// Like [`spawn`], with exactly `caps` (kind, handle; moved, each needs
-/// `TRANSFER`) as the child's capabilities.
+/// Like [`spawn`], with up to six initial handles (`[1]`..`[6]`:
+/// console, bootstrap, cwd, program folder, stdin, reserved) and exactly
+/// `caps` (kind, handle; moved, each needs `TRANSFER`) as the child's
+/// capabilities.
 pub fn spawn_with(
     file: Handle,
     args: &[&str],
-    handles: [Handle; 3],
+    handles: &[Handle],
     caps: &[(u32, Handle)],
 ) -> Result<Handle, Error> {
     let r = spawn_raw(file, args, handles, caps);
@@ -67,10 +69,10 @@ pub fn spawn_with(
 fn spawn_raw(
     file: Handle,
     args: &[&str],
-    handles: [Handle; 3],
+    handles: &[Handle],
     caps: &[(u32, Handle)],
 ) -> Result<Handle, Error> {
-    if caps.len() > capability::MAX {
+    if caps.len() > capability::MAX || handles.len() > bootstrap::GIVEN {
         return Err(Error::InvalidArgument);
     }
     let mut pairs = [0u32; 2 * capability::MAX];
@@ -99,8 +101,8 @@ fn spawn_raw(
         msg.push_handle(memory);
         msg
     };
-    let raw: [u8; 12] = {
-        let mut r = [0u8; 12];
+    let raw: [u8; 4 * bootstrap::GIVEN] = {
+        let mut r = [0u8; 4 * bootstrap::GIVEN];
         for (i, h) in handles.iter().enumerate() {
             r[4 * i..4 * i + 4].copy_from_slice(&h.0.to_le_bytes());
         }
@@ -112,7 +114,7 @@ fn spawn_raw(
             file.raw(),
             &msg as *const Message as u64,
             raw.as_ptr() as u64,
-            3,
+            handles.len() as u64,
             pairs.as_ptr() as u64,
             caps.len() as u64,
         ],

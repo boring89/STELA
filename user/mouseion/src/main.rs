@@ -495,14 +495,16 @@ impl Mouseion {
     // ---- opening and running ----
 
     /// Runs `file` (a program file or a bundle folder) with `args`; its
-    /// working folder is `cwd`.
-    fn run(&self, file: Handle, args: &[&str], cwd: Handle) {
+    /// working folder is `cwd`, and `home` the folder it is in (its
+    /// `[4]`).
+    fn run(&self, file: Handle, args: &[&str], cwd: Handle, home: Handle) {
         let handles = [
             pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
             pass(bootstrap::BOOTSTRAP, Rights::SEND | Rights::DUPLICATE),
             process::pass_dir(cwd),
+            process::pass_dir(home),
         ];
-        match process::spawn(file, args, handles) {
+        match process::spawn_with(file, args, &handles, &process::inherited()) {
             Ok(p) => {
                 println!("mouseion: started {}", args[0]);
                 let _ = handle_close(p);
@@ -545,7 +547,7 @@ impl Mouseion {
                 if let Ok(h) = fs::open_by_id(folder, item.id) {
                     let h = Owned(h);
                     let name = bundle_name(&item.name).unwrap_or(&item.name);
-                    self.run(h.0, &[name], folder);
+                    self.run(h.0, &[name], folder, folder);
                 }
             }
             Kind::Text => self.open_with_viewer(&child_path, folder),
@@ -556,7 +558,7 @@ impl Mouseion {
                 let h = Owned(h);
                 let mut magic = [0u8; 4];
                 if fs::read(h.0, &mut magic, 0) == Ok(4) && &magic == b"\x7FELF" {
-                    self.run(h.0, &[&item.name], folder);
+                    self.run(h.0, &[&item.name], folder, folder);
                 } else {
                     self.open_with_viewer(&child_path, folder);
                 }
@@ -571,7 +573,7 @@ impl Mouseion {
         let initrd = Owned(initrd);
         if let Ok(viewer) = fs::open(initrd.0, "Viewer.app", open::READ) {
             let viewer = Owned(viewer);
-            self.run(viewer.0, &["Viewer", path], cwd);
+            self.run(viewer.0, &["Viewer", path], cwd, initrd.0);
         }
     }
 
@@ -583,7 +585,7 @@ impl Mouseion {
         let initrd = Owned(initrd);
         if let Ok(t) = fs::open(initrd.0, "Terminal.app", open::READ) {
             let t = Owned(t);
-            self.run(t.0, &["Terminal"], bootstrap::CWD);
+            self.run(t.0, &["Terminal"], bootstrap::CWD, initrd.0);
         }
     }
 

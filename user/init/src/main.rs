@@ -103,7 +103,7 @@ fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
     ];
     let mut caps = process::inherited();
     caps.extend(give(capability::INPUT));
-    let shell = match process::spawn_with(program, &["shell"], handles, &caps) {
+    let shell = match process::spawn_with(program, &["shell"], &handles, &caps) {
         Ok(h) => h,
         Err(e) => {
             println!("init: cannot start the shell: {}", e.name());
@@ -155,7 +155,7 @@ fn run_desktop(home: Handle) {
         let mut caps = process::inherited();
         caps.extend(give(capability::POWER));
         caps.extend(give(capability::INPUT));
-        let server = match process::spawn_with(program, DESKTOP, handles, &caps) {
+        let server = match process::spawn_with(program, DESKTOP, &handles, &caps) {
             Ok(h) => h,
             Err(e) => {
                 println!("init: cannot start the window server: {}", e.name());

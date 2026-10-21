@@ -330,6 +330,21 @@ pub fn file_stat(process: &Process, h: u64, ptr: u64) -> Result<u64, Error> {
     Ok(0)
 }
 
+/// `FilePath(item, buf, len) -> length`: the path inside the volume.
+pub fn file_path(process: &Process, h: u64, ptr: u64, len: u64) -> Result<u64, Error> {
+    let (node, _, rights) = node_of(process, h)?;
+    if !rights.contains(Rights::READ) {
+        return Err(Error::AccessDenied);
+    }
+    let path = vfs::path_of(&node.volume, node.id)?;
+    let n = path.len().min(len as usize);
+    process
+        .space()
+        .write(ptr, &path.as_bytes()[..n])
+        .map_err(|_| Error::BadAddress)?;
+    Ok(path.len() as u64)
+}
+
 /// `FileSetSize(file, size)`.
 pub fn file_set_size(process: &Process, file: u64, size: u64) -> Result<u64, Error> {
     let node = file_of(process, file, Rights::WRITE)?;

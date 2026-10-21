@@ -41,6 +41,7 @@ pub mod process;
 pub mod sync;
 pub mod sys;
 pub mod time;
+pub mod tls;
 pub mod tty;
 pub mod wait;
 

@@ -67,10 +67,13 @@ HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic bin peri
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
-USER_CRATES := libstela toolbox bin $(USER_PROGRAMS)
+USER_CRATES := libstela toolbox bin $(USER_PACKAGES)
+# The packages to give cargo: `spin` is also a crates.io crate (a TLS
+# dependency, P12), so the workspace's is named with its version.
+USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -81,7 +84,7 @@ kernel:
 	cargo build --release -p kernel --target $(KERNEL_TARGET)
 
 user:
-	cargo build --release $(addprefix -p ,$(USER_PROGRAMS)) -p bin --target $(KERNEL_TARGET)
+	cargo build --release $(addprefix -p ,$(USER_PACKAGES)) -p bin --target $(KERNEL_TARGET)
 	mkdir -p $(USER_DIR)/bin
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(USER_PROGRAMS)) $(USER_DIR)/
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(BIN_TOOLS)) $(USER_DIR)/bin/
@@ -98,6 +101,8 @@ initrd: user linux-tests
 	cp -r $(USER_DIR)/bin $(INITRD_ROOT)/bin
 	mkdir -p $(INITRD_ROOT)/fonts
 	cp third_party/fusion-pixel/fusion-pixel-12-zh_tw.bin $(INITRD_ROOT)/fonts/
+	mkdir -p $(INITRD_ROOT)/certs
+	python3 tools/cacert_to_der.py third_party/mozilla-ca/cacert.pem $(INITRD_ROOT)/certs/cacert.der
 	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
 		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
 		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
@@ -188,7 +193,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-browser
+test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-tls test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-browser
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -425,6 +430,35 @@ test-net: esp $(BUILD)/OVMF_VARS.fd
 	mkdir -p $(BUILD)/www
 	printf 'hello from the host over TCP\n' > $(BUILD)/www/hello.txt
 	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- $(MAKE) --no-print-directory test-net-cards
+
+# TLS (P12, docs/tls.md §5): HTTPS servers on the host (Python's ssl,
+# TLS 1.3 only) with certificates from a test root made here; fetch gets
+# the file when it trusts that root (--ca), and refuses a certificate for
+# another name, an expired one, a self-signed one and (with the system's
+# Mozilla roots) the test root's.
+TLS_PORT := 8643
+test-tls: esp test-images $(BUILD)/OVMF_VARS.fd
+	python3 tools/make_test_certs.py $(BUILD)/tls
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-tls.img
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-tls.img in $(BUILD)/tls/ca.der /test-ca.der
+	mkdir -p $(BUILD)/www
+	printf 'hello over TLS\n' > $(BUILD)/www/tls.txt
+	python3 tools/with_https.py $(BUILD)/www $(BUILD)/tls $(TLS_PORT) -- \
+		python3 tools/qemu_test.py --timeout 180 --log $(BUILD)/test-tls.log \
+		--type "STELA shell" "run fetch --ca test-ca.der https://10.0.2.2:$(TLS_PORT)/tls.txt\n" \
+		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:8644/tls.txt\n" \
+		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:8645/tls.txt\n" \
+		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:8646/tls.txt\n" \
+		--type "fetch exited with code" "run fetch https://10.0.2.2:$(TLS_PORT)/tls.txt\n" \
+		--expect "fetch: https://10.0.2.2:$(TLS_PORT)/tls.txt: HTTP 200, 15 bytes" \
+		--expect "hello over TLS" --expect "fetch exited with code 0" \
+		--expect "fetch: https://10.0.2.2:8644/tls.txt: access denied" \
+		--expect "fetch: https://10.0.2.2:8645/tls.txt: access denied" \
+		--expect "fetch: https://10.0.2.2:8646/tls.txt: access denied" \
+		--expect "fetch: https://10.0.2.2:$(TLS_PORT)/tls.txt: access denied" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-tls.img \
+		-device ide-hd,drive=sata1,bus=ide.1
 
 # Measurements (P11, docs/bench.md): the normal kernel with the AHCI test
 # disk and user networking, no KVM; the shell runs bench (memory on the

@@ -14,7 +14,8 @@
 //!  status: Loaded http://host/path (12 KiB)
 //! ```
 //!
-//! Addresses: `http://host[:port]/path`, `stela:home` (built in),
+//! Addresses: `http://host[:port]/path`, `https://...` (P12, TLS 1.3),
+//! `stela:home` (built in),
 //! `Volume:/path` or `file:Volume:/path` (local files; `.html`/`.htm` are
 //! HTML). Started without an address it shows the home page with an
 //! empty address field ready for typing. Keys: Ctrl-L a new address
@@ -63,7 +64,7 @@ const HOME: &str = "<html><head><title>STELA</title></head><body>\
 <h2>Places</h2><ul>\
 <li><a href=\"Data:/welcome.txt\">Data:/welcome.txt</a> (a file on the Data volume)</li>\
 <li><a href=\"http://10.0.2.2:8642/\">http://10.0.2.2:8642/</a> (the host, under QEMU's user networking)</li>\
-<li><a href=\"http://example.com/\">http://example.com/</a></li>\
+<li><a href=\"http://example.com/\">http://example.com/</a>, <a href=\"https://example.com/\">https://example.com/</a></li>\
 </ul></body></html>";
 
 /// What drawing the page needs.
@@ -183,7 +184,8 @@ impl Browser {
                 String::from(url),
             ));
         }
-        if url.starts_with("http://") {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            // https:// (P12): TLS 1.3 with the system's trusted roots.
             let r = http::get(url, 10_000_000_000).map_err(|e| String::from(e.name()))?;
             if r.status >= 400 {
                 return Err(format!("the server answered {}", r.status));
@@ -196,11 +198,6 @@ impl Browser {
             };
             let what = format!("{} KiB, status {}", r.body.len().div_ceil(1024), r.status);
             return Ok((page, what, r.url));
-        }
-        if url.starts_with("https://") {
-            return Err(String::from(
-                "HTTPS needs TLS, which Periplus does not have",
-            ));
         }
         // A local file.
         let name = url.strip_prefix("file:").unwrap_or(url);

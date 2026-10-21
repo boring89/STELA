@@ -4,5 +4,9 @@ target-dir = "build/target"
 # The kernel is linked at a fixed higher-half address (kernel/linker.ld):
 # no position-independent code. The target already defaults to
 # code-model=kernel, no red zone and soft-float (no SSE).
+#
+# The RustCrypto AES and POLYVAL (TLS, P12) use AES-NI/CLMUL through SSE
+# when the processor has them; the target has no SSE, so they are told to
+# use their portable code.
 [target.x86_64-unknown-none]
-rustflags = ["-C", "relocation-model=static"]
+rustflags = ["-C", "relocation-model=static", "--cfg", "aes_force_soft", "--cfg", "polyval_force_soft"]

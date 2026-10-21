@@ -289,3 +289,32 @@ fn volume_open_inner(name: &str) -> Result<Handle, Error> {
 pub fn open_by_id(dir: Handle, id: u64) -> Result<Handle, Error> {
     syscall2(Syscall::VolumeOpenById, dir.raw(), id).map(Handle::from_raw)
 }
+
+/// The whole file at `path` (`Volume:folder/name`; P12, for `tls` and
+/// `pkg`).
+pub fn read_path(path: &str) -> Result<alloc::vec::Vec<u8>, Error> {
+    let (volume, inside) = path.split_once(':').ok_or(Error::InvalidArgument)?;
+    let root = volume_open(volume)?;
+    let file = open(root, inside.trim_start_matches('/'), open::READ);
+    let _ = crate::ipc::handle_close(root);
+    let file = file?;
+    let result = read_all(file);
+    let _ = crate::ipc::handle_close(file);
+    result
+}
+
+/// Everything in the open file `file`.
+pub fn read_all(file: Handle) -> Result<alloc::vec::Vec<u8>, Error> {
+    let size = stat(file)?.size as usize;
+    let mut data = alloc::vec![0u8; size];
+    let mut at = 0;
+    while at < size {
+        let n = read(file, &mut data[at..], at as u64)?;
+        if n == 0 {
+            break;
+        }
+        at += n;
+    }
+    data.truncate(at);
+    Ok(data)
+}

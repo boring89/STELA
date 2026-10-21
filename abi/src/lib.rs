@@ -245,11 +245,18 @@ pub enum Syscall {
     /// `tag::VOLUME_CHANGED` to `port` (a `SEND` handle) when a volume is
     /// mounted or taken away (P11 K42; at most 16 ports).
     VolumeWatch = 63,
+    /// `Random(buf, len) -> len`: fills `buf` with random bytes from the
+    /// kernel's generator (ChaCha20 keyed from RDSEED/RDRAND or timing
+    /// jitter; P12, `docs/tls.md` §2); at most `RANDOM_MAX` at a time.
+    Random = 64,
 }
+
+/// Most bytes one `Random` call gives.
+pub const RANDOM_MAX: u64 = 64 * 1024;
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 63] = [
+    pub const ALL: [Syscall; 64] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -313,6 +320,7 @@ impl Syscall {
         Syscall::ThreadJoin,
         Syscall::ProcessOpen,
         Syscall::VolumeWatch,
+        Syscall::Random,
     ];
 
     /// The call with number `raw`, if any.
@@ -1991,6 +1999,7 @@ mod tests {
         assert_eq!(Syscall::ThreadJoin.raw(), 61);
         assert_eq!(Syscall::ProcessOpen.raw(), 62);
         assert_eq!((Syscall::VolumeWatch.raw(), tag::VOLUME_CHANGED), (63, 9));
+        assert_eq!(Syscall::Random.raw(), 64);
         assert_eq!(time::parse_offset("+08:00"), Some(480));
         assert_eq!(time::parse_offset(" -05:30\n"), Some(-330));
         assert_eq!(time::parse_offset("+0800"), Some(480));

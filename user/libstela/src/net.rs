@@ -271,16 +271,29 @@ pub fn resolve(host: &str) -> Result<Ip, Error> {
 
 /// The parts of an `http://host[:port]/path` URL.
 pub fn parse_url(url: &str) -> Option<(&str, u16, &str)> {
-    let rest = url.strip_prefix("http://")?;
+    match parse_any_url(url)? {
+        (false, host, port, path) => Some((host, port, path)),
+        (true, ..) => None,
+    }
+}
+
+/// The parts of an `http://` or `https://host[:port]/path` URL: (TLS,
+/// host, port (default 80 or 443), path).
+pub fn parse_any_url(url: &str) -> Option<(bool, &str, u16, &str)> {
+    let (secure, rest) = match url.strip_prefix("https://") {
+        Some(rest) => (true, rest),
+        None => (false, url.strip_prefix("http://")?),
+    };
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
+    let default = if secure { 443 } else { 80 };
     let (host, port) = match authority.rsplit_once(':') {
         Some((h, p)) => (h, p.parse().ok()?),
-        None => (authority, 80),
+        None => (authority, default),
     };
-    (!host.is_empty()).then_some((host, port, path))
+    (!host.is_empty()).then_some((secure, host, port, path))
 }
 
 /// An HTTP response: the status code and the body.
@@ -314,15 +327,44 @@ pub fn http_get(url: &str, timeout_ns: u64) -> Result<Response, Error> {
 }
 
 /// The whole raw response (head and body) to `GET url` (`crate::http`
-/// makes sense of it).
+/// makes sense of it). `https://` (P12) trusts the system's roots.
 pub fn http_get_raw(url: &str, timeout_ns: u64) -> Result<Vec<u8>, Error> {
-    let (host, port, path) = parse_url(url).ok_or(Error::InvalidArgument)?;
+    http_get_raw_with(url, timeout_ns, None)
+}
+
+/// [`http_get_raw`] trusting `roots` for `https://` (`None`: the
+/// system's, `Initrd:/certs/cacert.der`).
+pub fn http_get_raw_with(
+    url: &str,
+    timeout_ns: u64,
+    roots: Option<&crate::tls::Roots>,
+) -> Result<Vec<u8>, Error> {
+    let (secure, host, port, path) = parse_any_url(url).ok_or(Error::InvalidArgument)?;
     let ip = resolve(host)?;
-    let s = Socket::tcp()?;
-    s.connect(ip, port, timeout_ns)?;
     let request = alloc::format!(
         "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: STELA\r\nConnection: close\r\n\r\n"
     );
+    if secure {
+        #[cfg(target_os = "none")]
+        {
+            let system;
+            let roots = match roots {
+                Some(r) => r,
+                None => {
+                    system = crate::tls::Roots::system()?;
+                    &system
+                }
+            };
+            return crate::tls::request(host, ip, port, request.as_bytes(), roots, timeout_ns);
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            let _ = roots;
+            return Err(Error::NotSupported);
+        }
+    }
+    let s = Socket::tcp()?;
+    s.connect(ip, port, timeout_ns)?;
     s.send_all(request.as_bytes())?;
     let mut raw = Vec::new();
     let mut buf = vec![0u8; 16 * 1024];

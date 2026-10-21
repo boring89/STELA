@@ -9,24 +9,52 @@
 #![no_main]
 #![forbid(unsafe_code)]
 
+use alloc::string::String;
 use libstela::fs::{self, open};
 use libstela::ipc::handle_close;
 use libstela::net;
 use libstela::{bootstrap, print, println, process};
 
+extern crate alloc;
+
 libstela::entry!(main);
 
 fn main() -> i64 {
-    let args = process::args();
+    let mut args = process::args();
+    // --ca FILE: trust the root certificates in FILE (DER, one after
+    // another) for https:// instead of the system's (P12, docs/tls.md).
+    let mut roots = None;
+    if args.get(1).map(String::as_str) == Some("--ca") && args.len() > 2 {
+        let path = args.remove(2);
+        args.remove(1);
+        let data = if path.contains(':') {
+            fs::read_path(&path)
+        } else {
+            fs::open(bootstrap::CWD, &path, open::READ).and_then(|h| {
+                let data = fs::read_all(h);
+                let _ = handle_close(h);
+                data
+            })
+        };
+        match data {
+            Ok(d) => roots = Some(libstela::tls::Roots::from_der(d)),
+            Err(e) => {
+                println!("fetch: {path}: {}", e.name());
+                return 1;
+            }
+        }
+    }
     let Some(url) = args.get(1) else {
-        println!("fetch: usage: fetch http://host[:port]/path [file]");
+        println!("fetch: usage: fetch [--ca roots.der] http(s)://host[:port]/path [file]");
         return 2;
     };
     if net::wait_configured(5_000_000_000).is_none() {
         println!("fetch: the network is not up");
         return 1;
     }
-    let response = match net::http_get(url, 10_000_000_000) {
+    let response = match net::http_get_raw_with(url, 10_000_000_000, roots.as_ref())
+        .and_then(|raw| net::parse_response(&raw).ok_or(libstela::abi::Error::IoError))
+    {
         Ok(r) => r,
         Err(e) => {
             println!("fetch: {url}: {}", e.name());

@@ -116,14 +116,8 @@ pub fn join(base: &str, link: &str) -> String {
     if is_absolute(link) {
         return normalize(link);
     }
-    // Where the path starts in `base`: after "http://host" or "Volume:".
-    let path_at = if let Some(rest) = base.strip_prefix("http://") {
-        7 + rest.find('/').unwrap_or(rest.len())
-    } else if let Some(colon) = base.find(':') {
-        colon + 1
-    } else {
-        0
-    };
+    // Where the path starts in `base`: after "http(s)://host" or "Volume:".
+    let path_at = path_start(base);
     let (origin, path) = base.split_at(path_at);
     let path = path.split(['?', '#']).next().unwrap_or("");
     let joined = if link.starts_with('/') {
@@ -138,6 +132,17 @@ pub fn join(base: &str, link: &str) -> String {
     normalize(&joined)
 }
 
+/// Where the path starts in `url`: after `http://host` or `https://host`
+/// (P12), or after a volume's `Name:`.
+fn path_start(url: &str) -> usize {
+    for scheme in ["http://", "https://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            return scheme.len() + rest.find('/').unwrap_or(rest.len());
+        }
+    }
+    url.find(':').map_or(0, |colon| colon + 1)
+}
+
 fn is_absolute(link: &str) -> bool {
     match link.find(':') {
         Some(i) => {
@@ -150,13 +155,7 @@ fn is_absolute(link: &str) -> bool {
 
 /// Resolves `.` and `..` in the path part of `url`.
 fn normalize(url: &str) -> String {
-    let path_at = if let Some(rest) = url.strip_prefix("http://") {
-        7 + rest.find('/').unwrap_or(rest.len())
-    } else if let Some(colon) = url.find(':') {
-        colon + 1
-    } else {
-        0
-    };
+    let path_at = path_start(url);
     let (origin, rest) = url.split_at(path_at);
     let (path, query) = match rest.find('?') {
         Some(i) => rest.split_at(i),
@@ -182,11 +181,21 @@ fn normalize(url: &str) -> String {
     format!("{origin}/{}{query}", parts.join("/"))
 }
 
-/// `GET url`, following redirects; the body de-chunked. Only `http://`.
+/// `GET url`, following redirects; the body de-chunked. `http://` and
+/// (P12) `https://` with the system's trusted roots.
 pub fn get(url: &str, timeout_ns: u64) -> Result<Response, Error> {
+    get_with(url, timeout_ns, None)
+}
+
+/// [`get`] trusting `roots` for `https://` instead of the system's.
+pub fn get_with(
+    url: &str,
+    timeout_ns: u64,
+    roots: Option<&crate::tls::Roots>,
+) -> Result<Response, Error> {
     let mut url = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
-        let raw = crate::net::http_get_raw(&url, timeout_ns)?;
+        let raw = crate::net::http_get_raw_with(&url, timeout_ns, roots)?;
         let (status, headers, at) = parse_head(&raw).ok_or(Error::IoError)?;
         let mut r = Response {
             status,
@@ -257,6 +266,19 @@ mod tests {
         r.headers = alloc::vec![(String::from("content-type"), String::from("text/plain"))];
         r.body = b"<html>".to_vec();
         assert!(!r.is_html());
+    }
+
+    #[test]
+    fn https_links() {
+        assert_eq!(
+            join("https://a.test/x/y.html", "../z.html"),
+            "https://a.test/z.html"
+        );
+        assert_eq!(join("https://a.test/x/", "/top"), "https://a.test/top");
+        assert_eq!(
+            join("http://a.test/", "https://b.test/p"),
+            "https://b.test/p"
+        );
     }
 
     #[test]

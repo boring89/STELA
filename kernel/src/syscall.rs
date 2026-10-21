@@ -23,6 +23,21 @@ use frame::mm::shared::SharedMemory;
 use frame::mm::user::UserFlags;
 use frame::syscall::SyscallFrame;
 
+/// `Random(buf, len)`: bytes from `frame::random` (P12).
+fn random(buf: u64, len: u64) -> Result<u64, Error> {
+    if len > abi::RANDOM_MAX {
+        return Err(Error::InvalidArgument);
+    }
+    let process = task::current_process().ok_or(Error::InvalidArgument)?;
+    let mut bytes = alloc::vec![0u8; len as usize];
+    frame::random::fill(&mut bytes);
+    process
+        .space()
+        .write(buf, &bytes)
+        .map_err(|_| Error::BadAddress)?;
+    Ok(len)
+}
+
 /// Registers [`handle`] with frame. Call once at boot.
 pub fn init() {
     frame::syscall::set_handler(handle);
@@ -75,6 +90,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::PipeCreate) => pipe_create(a0),
         Some(Syscall::PipeRead) => pipe_read(a0, a1, a2, args[3]),
         Some(Syscall::PipeWrite) => pipe_write(a0, a1, a2, args[3]),
+        Some(Syscall::Random) => random(a0, a1),
         Some(call) => file_call(call, args),
         None => Err(Error::InvalidSyscall),
     };

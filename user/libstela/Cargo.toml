@@ -13,6 +13,14 @@ doctest = false
 
 [dependencies]
 abi = { path = "../../abi" }
+# TLS 1.3 (P12, docs/tls.md, third_party/README.md): embedded-tls with
+# certificate checks (rustpki: ECDSA P-256/P-384, RSA), its I/O traits
+# and random-number trait. SHA-2 in software (the user target has no
+# SSE; aes and polyval get --cfg *_force_soft in .cargo/config.toml).
+embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rsa", "p384"] }
+embedded-io = "0.7"
+rand_core = { version = "0.6", default-features = false }
+sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
 
 [lints]
 workspace = true

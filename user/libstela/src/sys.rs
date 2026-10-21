@@ -61,3 +61,15 @@ pub fn syscall6(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
     };
     abi::decode(status, value)
 }
+
+/// Fills `buf` with random bytes from the kernel (`Random`, P12).
+pub fn random(buf: &mut [u8]) -> Result<(), Error> {
+    for chunk in buf.chunks_mut(abi::RANDOM_MAX as usize) {
+        syscall2(
+            Syscall::Random,
+            chunk.as_mut_ptr() as u64,
+            chunk.len() as u64,
+        )?;
+    }
+    Ok(())
+}

@@ -35,3 +35,42 @@
   font's name is not changed (Reserved Font Name). `OFL.txt` and the licenses of the fonts
   Fusion Pixel draws on (`LICENSES/ark-pixel`, `cubic-11`, `galmuri`, all OFL 1.1) are kept
   as they came.
+
+## Mozilla CA certificates (P12 K10)
+
+- Source: curl's conversion of Mozilla's root store, `https://curl.se/ca/cacert.pem`,
+  "Certificate data from Mozilla as of: Tue Oct 20 13:32:40 2026 GMT", 118 certificates,
+  200,116 bytes, SHA-256 `796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe`
+  (equal to curl's published `cacert.pem.sha256`). Downloaded 2026-10-22 (allowed in
+  P12_PLAN.md); committed as `third_party/mozilla-ca/cacert.pem`.
+- License: MPL-2.0 (the file's header). It is a separate data file, distributed unchanged
+  next to GPL-3.0-or-later code, which the MPL allows.
+- `make initrd` converts it with `tools/cacert_to_der.py` into `Initrd:/certs/cacert.der` (the
+  DER certificates one after another), which `libstela::tls` reads (`docs/tls.md`).
+- To update: download the new `cacert.pem`, check the SHA-256 curl publishes, replace the file
+  and this paragraph.
+
+## Rust crates for TLS (P12 K10)
+
+Added for `libstela::tls` (`docs/tls.md`), from crates.io, versions locked in `Cargo.lock`.
+Direct dependencies of `user/libstela`:
+
+| crate | version | license | use |
+|---|---|---|---|
+| embedded-tls | 0.19.0 | Apache-2.0 | TLS 1.3 client, `no_std`; features `alloc`, `rsa`, `p384` (its `rustpki` certificate checks) |
+| embedded-io | 0.7.1 | MIT OR Apache-2.0 | the read/write traits embedded-tls uses on a socket |
+| rand_core | 0.6.4 | MIT OR Apache-2.0 | the random-number trait (the kernel's `Random` behind it) |
+| sha2 | 0.10.9 | MIT OR Apache-2.0 | named only to turn on `force-soft` (no SSE in the user target) |
+
+What they pull in (all MIT OR Apache-2.0 unless noted): the RustCrypto crates aead, aes,
+aes-gcm, cipher, ctr, ghash, polyval, universal-hash, digest, block-buffer, crypto-common,
+hkdf, hmac, p256, p384, ecdsa, elliptic-curve, primeorder, sec1, rfc6979, signature,
+crypto-bigint, ff, group, base16ct, base64ct, der (0.7 and 0.8), der_derive, const-oid, spki,
+pkcs1, pkcs8, rsa, num-bigint-dig, zeroize, subtle (BSD-3-Clause), generic-array (MIT),
+typenum, opaque-debug, inout, cpufeatures, libc; and heapless, hash32, stable_deref_trait,
+portable-atomic, byteorder (Unlicense OR MIT), num-integer, num-iter, num-traits, rand,
+rand_chacha, ppv-lite86, zerocopy (BSD-2-Clause OR Apache-2.0 OR MIT), smallvec, spin (MIT),
+lazy_static, libm (MIT), time, time-core, deranged, num-conv, powerfmt, autocfg,
+version_check, syn. All are compatible with GPL-3.0-or-later. The AES and POLYVAL crates are
+built with `--cfg aes_force_soft --cfg polyval_force_soft` (`.cargo/config.toml`): their
+AES-NI/CLMUL code needs SSE, which the `x86_64-unknown-none` target does not have.

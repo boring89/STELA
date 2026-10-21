@@ -20,6 +20,11 @@
 //! `[1]` writes into the next one's `[5]`; `< file` and `> file` are fed
 //! and drained by the shell through pipes; `&` starts a job in the
 //! background (`jobs`, `fg N`, `kill N`).
+//!
+//! P11 K44: Tab completes the word before the cursor (a command or
+//! program name first, a file or folder name after it); arguments with
+//! `*` or `?` become the names they match in their folder, sorted (the
+//! word stays as it is when nothing matches).
 
 #![no_std]
 #![no_main]
@@ -109,6 +114,8 @@ impl Shell {
             return true;
         }
         let words: Vec<&str> = line.split_whitespace().collect();
+        let expanded = self.expand(&words);
+        let words: Vec<&str> = expanded.iter().map(String::as_str).collect();
         let Some((&command, args)) = words.split_first() else {
             return true;
         };
@@ -161,6 +168,113 @@ impl Shell {
             println!("{command}: {why}");
         }
         true
+    }
+
+    /// The names in the folder of `word` (relative to the current one)
+    /// that `keep` accepts, folders with a `/`; sorted.
+    fn names_in(&self, folder: &str, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        let folder = if folder.is_empty() { "." } else { folder };
+        let Ok(loc) = self.resolve(folder) else {
+            return Vec::new();
+        };
+        let Ok(dir) = open_at(&loc, open::READ) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = fs::entries(dir.0)
+            .unwrap_or_default()
+            .iter()
+            .filter(|e| keep(e.name()))
+            .map(|e| {
+                let mut n = String::from(e.name());
+                if e.kind == kind::DIRECTORY {
+                    n.push('/');
+                }
+                n
+            })
+            .collect();
+        names.sort_by_key(|n| n.to_ascii_lowercase());
+        names
+    }
+
+    /// The arguments with `*` or `?` replaced by the names they match
+    /// (the command word stays); hidden names only for a pattern that
+    /// starts with `.`.
+    fn expand(&self, words: &[&str]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, w) in words.iter().enumerate() {
+            let (folder, pattern) = path::split_last(w);
+            if i == 0 || !pattern.contains(['*', '?']) || folder.contains(['*', '?']) {
+                out.push(String::from(*w));
+                continue;
+            }
+            let found = self.names_in(folder, |n| {
+                (!n.starts_with('.') || pattern.starts_with('.')) && path::glob(pattern, n)
+            });
+            if found.is_empty() {
+                out.push(String::from(*w));
+            }
+            for n in found {
+                out.push(alloc::format!("{folder}{}", n.trim_end_matches('/')));
+            }
+        }
+        out
+    }
+
+    /// What `word` may become: a command or program for the first word,
+    /// else a file or folder (folders end in `/`).
+    fn completions(&self, word: &str, first: bool) -> Vec<String> {
+        let (folder, start) = path::split_last(word);
+        let starts = |n: &str| {
+            n.len() >= start.len()
+                && n.is_char_boundary(start.len())
+                && n[..start.len()].eq_ignore_ascii_case(start)
+        };
+        if !first || !folder.is_empty() {
+            return self.names_in(folder, |n| {
+                starts(n) && (!n.starts_with('.') || start.starts_with('.'))
+            });
+        }
+        let mut names: Vec<String> = BUILTINS
+            .iter()
+            .filter(|n| starts(n))
+            .map(|n| String::from(*n))
+            .collect();
+        // Programs: here, in Initrd:/ and Initrd:/bin/ (bundles too).
+        for folder in [".", "Initrd:/", "Initrd:/bin"] {
+            for n in self.names_in(folder, starts) {
+                if !n.ends_with('/') || is_bundle(&n) {
+                    names.push(String::from(n.trim_end_matches('/')));
+                }
+            }
+        }
+        names.sort_by_key(|n| n.to_ascii_lowercase());
+        names.dedup();
+        names
+    }
+
+    /// Tab: completes the word before the cursor; with several choices,
+    /// adds what they share, or lists them and shows the line again.
+    fn complete(&self, editor: &mut LineEditor) {
+        let (word, first) = editor.word();
+        let names = self.completions(&word, first);
+        let typed = path::split_last(&word).1.chars().count();
+        let rest = |n: &str| n.chars().skip(typed).collect::<String>();
+        let insert = match names.as_slice() {
+            [] => return,
+            [one] if one.ends_with('/') => rest(one),
+            [one] => alloc::format!("{} ", rest(one)),
+            _ => rest(&path::common_prefix(&names)),
+        };
+        if !insert.is_empty() {
+            if let Edit::Show(s) = editor.insert(&insert) {
+                print!("{s}");
+            }
+            return;
+        }
+        println!();
+        println!("{}", names.join("  "));
+        self.prompt();
+        print!("{}", editor.redraw());
     }
 
     fn cd(&mut self, to: &str) -> Result<(), String> {
@@ -415,7 +529,9 @@ impl Shell {
         }
         let mut prepared = Vec::new();
         for s in &p.stages {
-            let (name, rest) = match s.args.split_first() {
+            let words: Vec<&str> = s.args.iter().map(String::as_str).collect();
+            let args = self.expand(&words);
+            let (name, rest) = match args.split_first() {
                 Some((run, rest)) if run == "run" && !rest.is_empty() => (&rest[0], &rest[1..]),
                 Some((name, rest)) => (name, rest),
                 None => return Err(String::from("nothing to run")),
@@ -733,6 +849,12 @@ impl Shell {
     }
 }
 
+/// The built-in commands (for Tab).
+const BUILTINS: [&str; 20] = [
+    "cat", "cd", "cp", "exit", "fg", "help", "jobs", "kill", "ls", "mem", "mkdir", "mv", "ps",
+    "pwd", "reboot", "rm", "run", "shutdown", "uptime", "vols",
+];
+
 /// Whether `name` names a bundle (`Name.app`).
 fn is_bundle(name: &str) -> bool {
     let name = name.trim_end_matches('/');
@@ -769,6 +891,7 @@ fn help() {
     println!("  shutdown, reboot turn the computer off, restart it");
     println!("  exit             leave the shell (init starts a new one)");
     println!("paths: Volume:/a/b, /a/b (this volume) or a/b, with . and ..");
+    println!("Tab completes a name; * and ? in an argument match names (*.txt)");
 }
 
 fn ps() -> Result<(), String> {
@@ -941,6 +1064,7 @@ fn main() -> i64 {
         match editor.feed_key(key) {
             Edit::None => {}
             Edit::Show(s) => print!("{s}"),
+            Edit::Complete => shell.complete(&mut editor),
             Edit::Done(line) => {
                 println!();
                 save_history(&editor);

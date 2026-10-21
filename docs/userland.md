@@ -120,7 +120,7 @@ libstela 的 `entry!` 在呼叫 `main` 前 `take_args()`：從主 port 不等待
 
 ### 4.3 行編輯（`line::LineEditor`）
 
-可見字元加入（上限 200）、Backspace（0x08／0x7F）刪一個、Ctrl-U 清整行、Tab 當空白、Enter 完成；其他控制字元忽略。回傳要顯示的東西（`Echo(c)`、`Erase(n)`、`Done(line)`），呼叫者自己印——shell 用 `"\x08 \x08"` 擦掉（主控台 P6 起認得 backspace：游標退一格）。
+可見字元加入（上限 200）、Backspace（0x08／0x7F）刪一個、Ctrl-U 清整行、Tab 回傳 `Edit::Complete`（P11 K44 起；以前當空白，§6.3）、Enter 完成；其他控制字元忽略。回傳要顯示的東西（`Echo(c)`、`Erase(n)`、`Done(line)`），呼叫者自己印——shell 用 `"\x08 \x08"` 擦掉（主控台 P6 起認得 backspace：游標退一格）。
 
 ## 5. init（`user/init`）
 
@@ -206,6 +206,22 @@ Data:/> ps
 - shell 把 `KeyCode::Left/Right/Up/Down/Home/End/Delete` 對到 `Key`，其他鍵經 `key_to_char`；只看按下。
 - 測試：`tools/qemu_test.py` 的 `--type` 文字可以寫 `{up}`、`{left}`、`{home}`、`{end}` 等鍵（P11）；`make test-shell` 最後 `{up}{up}`（再跑一次 `mem`）與 `vls{left}{left}o{end}`（變成 `vols`）。
 
+### 6.3 Tab 補全與萬用字元（P11 K44，使用者尚未審核）
+
+```text
+ Data:/t> cat /welc<Tab>     →  cat /welcome.txt ␣      （唯一：補完，檔案加空白、資料夾加 /）
+ Data:/t> ls /lx/t<Tab>      →  （time、tty 沒有更長的共同開頭）
+ time  tty                       換行列出，再印一次提示符與這一行
+ Data:/t> ls /lx/t
+ Data:/t> echo /lx/*s        →  echo /lx/files /lx/nosys
+```
+
+- 編輯器：Tab 回傳 `Edit::Complete`（以前當空白）；`word()` 給游標前的字（從上一個空白算起）和「是不是第一個字」，`insert(text)` 像打字一樣插入，`redraw()` 印整行並把游標放回原位（提示符由 shell 印）。
+- 候選：第一個字是指令——內建指令（`BUILTINS`）＋目前資料夾、`Initrd:/`、`Initrd:/bin/` 的程式（檔案與 `Name.app`）；其他字（或第一個字有 `/`、`:`）是路徑——`path::split_last` 切成資料夾與開頭，列那個資料夾裡開頭相同的名字（不分大小寫；`.` 開頭的名字只在打了 `.` 時出現）。一個候選就補完；多個就補到共同的開頭（`path::common_prefix`），沒有可以補的就列出來。
+- 萬用字元：命令以外的字，最後一段有 `*` 或 `?`（資料夾的部分沒有）就換成那個資料夾裡符合的名字（`path::glob`：`*` 任意長度、`?` 一個字元、不分大小寫；排序；`.` 開頭的名字只給 `.` 開頭的模式），保留打的資料夾部分（`/lx/*s` → `/lx/files`）；沒有符合的就保留原字（和 sh 一樣）。管線的每一段也展開；`<`、`>` 後面的檔名不展開。
+- 不做：`~`（沒有家目錄，`Data:/` 就是）、`alias`、`[abc]`、引號跳脫（shell 沒有引號）。
+- 測試：`make test-shell` 的 `echo /lx/*s`、`cat /welc{tab}`、`upt{tab}`（內建指令）、`ls /lx/t{tab}ty`（列出 `time  tty` 後再打完）；`path` 與 `line` 的 host 測試（`glob`、`split_last`、`common_prefix`、`word`、`insert`、`redraw`）。
+
 ## 7. 怎麼寫一個程式
 
 ```rust
@@ -241,7 +257,7 @@ fn main() -> i64 {
 | selftest "processes" | `proctest` 跑兩次（第二次前後 PMM 頁框數相同、沒有 Zombie） |
 | `proctest`（使用者程式） | heap：1 MiB 的 `Vec`、1000 個 `Box`；自己的參數；從 `Initrd:/proctest` 啟動自己並傳 300 bytes 的參數（走 Memory）→ exit 42、再等一次同樣的值；另一個永遠等的子行程：10 ms 逾時、行程表裡有兩個 proctest、kill → 137；spawn 資料夾 → `IsDir`、wait 檔案 → `WrongType`、wait 自己 → `AccessDenied`；`SysInfo` 的記憶體與時間 |
 | `make test-fb` | 一般 kernel：看到 `STELA shell` 後打 `uptime`，看到 `uptime:` 後 screendump |
-| `make test-shell` | 一般 kernel + AHCI 測試磁碟：`vols`、`ls Data:/`（`welcome.txt`）、`mkdir t`、`cd t`、`pwd`（`Data:/t`）、`cat nothing`（`cat: Data:/t/nothing: not found`）、`run hello`（輸出與 `exited with code 0`）、`ps`（有 shell）、`mem`、`uptime`；每個指令在前一個指令的那一行出現後才打。P11：歷史與游標（`{up}{up}`、`vls{left}{left}o{end}`）、`hwinfo`、`cat /welcome.txt \| grep -i stela \| wc -l`、`grep -n`、`cp -r`、`find -name`、`date`、背景的 `Monitor.app &` |
+| `make test-shell` | 一般 kernel + AHCI 測試磁碟：`vols`、`ls Data:/`（`welcome.txt`）、`mkdir t`、`cd t`、`pwd`（`Data:/t`）、`cat nothing`（`cat: Data:/t/nothing: not found`）、`run hello`（輸出與 `exited with code 0`）、`ps`（有 shell）、`mem`、`uptime`；每個指令在前一個指令的那一行出現後才打。P11：歷史與游標（`{up}{up}`、`vls{left}{left}o{end}`）、`hwinfo`、`cat /welcome.txt \| grep -i stela \| wc -l`、`grep -n`、`cp -r`、`find -name`、`date`、萬用字元 `echo /lx/*s`、Tab 補全（`cat /welc{tab}`、`upt{tab}`、`ls /lx/t{tab}ty`）、背景的 `Monitor.app &` |
 | P11 的應用程式 | `make test-editor`（Kalamos）、`make test-browser`（Periplus）、`make test-window`（剪貼簿），見 `docs/apps.md` |
 
 `tools/qemu_test.py --type TRIGGER TEXT`：把文字轉成 QKeyCode（大寫與 `:`、`_` 用 shift），可以給很多次，依序在各自的 TRIGGER 出現時打。
@@ -251,7 +267,7 @@ fn main() -> i64 {
 - P11 起 `ThreadCreate` 回 Thread handle、有 `ThreadJoin`（`docs/process.md` §8.1）；沒有單一執行緒的 kill。
 - 沒有環境變數；管線與重新導向只接程式（內建指令不行，例如 `ls | wc`；P11 K33 起 `cat`、`echo` 等有程式版，`docs/apps.md` §1）、沒有 `2>`、引號與跳脫、萬用字元展開；背景工作不能重新導向；`run` 的程式拿不到鍵盤（除非它自己 `InputAttach`）。
 - 前景工作執行時打的字轉給它的 tty，它沒讀就結束時那些字會遺失（Unix 會留給 shell）。
-- shell 一行 200 字元（P11 起有歷史與游標移動，§6.2；沒有 Tab 補完、搜尋歷史）；`cp` 整個檔案讀進記憶體。
+- shell 一行 200 字元（P11 起有歷史與游標移動、Tab 補全與萬用字元，§6.2、§6.3；沒有搜尋歷史、引號）；`cp` 整個檔案讀進記憶體。
 - 行程表的已結束紀錄永遠不清（`ps` 只顯示數量）。
 - heap 不把記憶體還給 kernel；沒有 `realloc` 的就地成長（GlobalAlloc 的預設：配新的再複製）。
 - P6.5 加了 `shutdown`／`reboot`（`docs/acpi.md`）；關機前不通知其他程式。

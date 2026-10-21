@@ -42,6 +42,9 @@ pub enum Edit {
     Show(String),
     /// The line is done (Enter): its text.
     Done(String),
+    /// Tab (P11 K44): the program completes the word before the cursor
+    /// ([`LineEditor::word`], [`LineEditor::insert`]).
+    Complete,
 }
 
 /// Lines the history keeps.
@@ -100,6 +103,37 @@ impl LineEditor {
             let extra = self.history.len() - HISTORY;
             self.history.drain(..extra);
         }
+    }
+
+    /// The word before the cursor (from the last blank), and whether it
+    /// is the line's first word.
+    pub fn word(&self) -> (String, bool) {
+        let before = &self.line[..self.cursor];
+        let start = before.iter().rposition(|c| *c == ' ').map_or(0, |i| i + 1);
+        let first = before[..start].iter().all(|c| *c == ' ');
+        (before[start..].iter().collect(), first)
+    }
+
+    /// Types `text` at the cursor (a completion); what to print.
+    pub fn insert(&mut self, text: &str) -> Edit {
+        let mut out = String::new();
+        for c in text.chars() {
+            if let Edit::Show(s) = self.feed_key(Key::Char(c)) {
+                out.push_str(&s);
+            }
+        }
+        if out.is_empty() {
+            Edit::None
+        } else {
+            Edit::Show(out)
+        }
+    }
+
+    /// What prints the whole line again after other output (the prompt
+    /// is the caller's), with the cursor where it is.
+    pub fn redraw(&self) -> String {
+        let tail = self.line.len() - self.cursor;
+        alloc::format!("{}{}", self.text(), back(tail))
     }
 
     /// Feeds one character (as `abi::key::key_to_char` gives it).
@@ -223,7 +257,7 @@ impl LineEditor {
                 let new: Vec<char> = self.history[i + 1].chars().take(self.max).collect();
                 self.replace(new)
             }
-            Key::Char('\t') => self.feed_key(Key::Char(' ')),
+            Key::Char('\t') => Edit::Complete,
             Key::Char(c) if c.is_control() => Edit::None,
             Key::Char(_) if self.line.len() >= self.max => Edit::None,
             Key::Char(c) => {
@@ -291,8 +325,8 @@ mod tests {
         e.feed('\u{15}');
         assert_eq!(e.text(), "");
         assert_eq!(e.feed('é'), Edit::Show("é".into()));
-        assert_eq!(e.feed('\t'), Edit::Show(" ".into()));
-        assert_eq!(e.feed('\n'), Edit::Done("é ".into()));
+        assert_eq!(e.feed('\t'), Edit::Complete);
+        assert_eq!(e.feed('\n'), Edit::Done("é".into()));
     }
 
     #[test]
@@ -349,5 +383,26 @@ mod tests {
         }
         assert_eq!(e.history().len(), HISTORY);
         assert_eq!(e.history()[0], "line 50");
+    }
+
+    #[test]
+    fn words_for_completion() {
+        let mut e = LineEditor::new(80);
+        for c in "cat Data:/we".chars() {
+            e.feed(c);
+        }
+        assert_eq!(e.word(), (String::from("Data:/we"), false));
+        assert_eq!(
+            e.insert("lcome.txt "),
+            Edit::Show(String::from("lcome.txt "))
+        );
+        assert_eq!(e.text(), "cat Data:/welcome.txt ");
+        let mut e = LineEditor::new(80);
+        for c in "hw".chars() {
+            e.feed(c);
+        }
+        assert_eq!(e.word(), (String::from("hw"), true));
+        e.feed_key(Key::Left);
+        assert_eq!(e.redraw(), "hw\u{8}");
     }
 }

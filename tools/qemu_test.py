@@ -128,7 +128,7 @@ PLAIN = {" ": "spc", "/": "slash", ".": "dot", "-": "minus", ";": "semicolon",
          ",": "comma", "=": "equal", "\n": "ret", "'": "apostrophe"}
 
 
-NAMED = {"up", "down", "left", "right", "home", "end", "delete", "pgup", "pgdn", "esc"}
+NAMED = {"up", "down", "left", "right", "home", "end", "delete", "pgup", "pgdn", "esc", "tab"}
 
 
 def text_to_keys(text):

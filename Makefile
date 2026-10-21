@@ -525,7 +525,11 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "grep exited with code 0" "cp -r Initrd:/linux /lx\n" \
 		--type "bytes copied" "find /lx -name n*\n" \
 		--type "find exited with code 0" "date\n" \
-		--type " +08:00" "Monitor.app &\n" \
+		--type " +08:00" "echo /lx/*s\n" \
+		--type "echo exited with code 0" "cat /welc{tab}\n" \
+		--type "Welcome to STELA's" "upt{tab}\n" \
+		--type "ticks" "ls /lx/t{tab}ty\n" \
+		--type "> ls /lx/tty" "Monitor.app &\n" \
 		--expect "smp: 2 processor(s) online" --expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
@@ -539,6 +543,8 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "hwinfo exited with code 0" --expect "wc exited with code 0" \
 		--expect "1:Welcome to STELA's Data volume." --expect "file(s)," \
 		--expect "Data:/lx/nosys" --expect "find exited with code 0" --expect " +08:00" \
+		--expect "/lx/files /lx/nosys" --expect "cat /welcome.txt " --expect "Welcome to STELA's" \
+		--expect "uptime " --expect "uptime: " --expect "time  tty" --expect "tty" \
 		--expect "monitor: showing" \
 		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \

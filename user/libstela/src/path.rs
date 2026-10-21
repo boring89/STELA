@@ -85,6 +85,60 @@ pub fn resolve(cwd: &Location, input: &str) -> Result<Location, PathError> {
     Ok(loc)
 }
 
+/// Whether `name` matches `pattern`: `*` any run of characters, `?` one;
+/// ASCII case is ignored (the file systems ignore it; P11 K44).
+pub fn glob(pattern: &str, name: &str) -> bool {
+    let p: Vec<char> = pattern.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let n: Vec<char> = name.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let (mut pi, mut ni) = (0, 0);
+    let (mut star, mut mark) = (None, 0);
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ni = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
+/// A word split where its folder part ends: `Data:/docs/no` is
+/// (`Data:/docs/`, `no`), `no` is (``, `no`).
+pub fn split_last(word: &str) -> (&str, &str) {
+    match word.rfind(['/', ':']) {
+        Some(i) => word.split_at(i + 1),
+        None => ("", word),
+    }
+}
+
+/// What all of `names` start with (ASCII case ignored; the first name's
+/// case kept).
+pub fn common_prefix(names: &[String]) -> String {
+    let Some(first) = names.first() else {
+        return String::new();
+    };
+    let mut len = first.len();
+    for n in &names[1..] {
+        let same = first
+            .char_indices()
+            .zip(n.chars())
+            .take_while(|((_, a), b)| a.eq_ignore_ascii_case(b))
+            .last()
+            .map_or(0, |((i, a), _)| i + a.len_utf8());
+        len = len.min(same);
+    }
+    String::from(&first[..len])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,5 +173,20 @@ mod tests {
         assert_eq!(cwd.name(), "notes");
         assert_eq!(cwd.parent().to_string(), "Data:/docs");
         assert_eq!(Location::root("Data").name(), "Data");
+    }
+
+    #[test]
+    fn globs_and_completion_helpers() {
+        assert!(glob("*.TXT", "notes.txt"));
+        assert!(glob("n?tes*", "Notes.md"));
+        assert!(!glob("*.txt", "notes.md"));
+        assert!(glob("*", ""));
+        assert_eq!(split_last("Data:/docs/no"), ("Data:/docs/", "no"));
+        assert_eq!(split_last("Data:no"), ("Data:", "no"));
+        assert_eq!(split_last("no"), ("", "no"));
+        let names = ["welcome.txt", "Welcome.md", "wel"].map(String::from);
+        assert_eq!(common_prefix(&names), "wel");
+        assert_eq!(common_prefix(&names[..2]), "welcome.");
+        assert_eq!(common_prefix(&[]), "");
     }
 }

@@ -113,8 +113,22 @@ VIRTIO 1.1 的 **modern** 介面（§4.1.4 PCI capabilities、§2.6 split virtqu
 ```
 
 - 序號比較都是模 2³² 的（`lt`／`le`）。
-- **只收按順序的資料**：亂序的段丟掉並送重複的 ACK，讓對方重傳（不做重組）。每個資料段都立刻 ACK。
-- **重傳**：逾時 1 秒起、每次加倍到 8 秒、最多 8 次（之後 `TimedOut`）；go-back-N：退回最舊未確認的位元組全部重送；FIN 也會重送。
+- **重傳**：逾時加倍到 8 秒、最多 8 次（之後 `TimedOut`）；逾時時 go-back-N：退回最舊未確認的位元組重送；FIN 也會重送。
+
+### 4.3 P11：RTT、壅塞控制、快速重傳、延遲 ACK、重組（使用者尚未審核）
+
+**比喻**：寄包裹時先估計郵差來回要多久（RTT），等太久才補寄（RTO）；一開始只寄幾個試試路況，順了就越寄越多（慢啟動），掉件就減半（壅塞避免）；對方說「我一直在等第 N 號」三次，就馬上補寄第 N 號，不必等逾時（快速重傳）；收件方不必每收一件就回條，每兩件或等一下再回（延遲 ACK）；先到的後面幾號先收著，等前面的到了一起交出去（重組）。
+
+| 機制 | 做法 |
+|---|---|
+| RTT（RFC 6298） | 一次量一個段（握手的 SYN、之後新送出的資料）；重傳過的不量（Karn）。第一個樣本 R：SRTT = R、RTTVAR = R/2；之後 RTTVAR = ¾RTTVAR + ¼|SRTT−R|、SRTT = ⅞SRTT + ⅛R；RTO = SRTT + max(1 ms, 4·RTTVAR)，夾在 1 s（RFC 的下限）到 8 s；有進展的 ACK 讓退避過的 RTO 回到估計值 |
+| 慢啟動／壅塞避免（RFC 5681） | 初始 cwnd = 3 段（MSS 1460 時 4380 bytes），ssthresh = 65535；新 ACK：cwnd < ssthresh 時加 min(確認量, MSS)，否則加 MSS²/cwnd；送出量 ≤ min(對方視窗, cwnd) |
+| 逾時 | ssthresh = max(在途/2, 2 MSS)、cwnd = 1 段、go-back-N |
+| 快速重傳／快速恢復 | 第 3 個重複 ACK（同一個 ack、沒有資料、視窗沒變、有在途資料）：ssthresh 減半、立刻重送最舊的段、cwnd = ssthresh + 3 MSS；之後每個重複 ACK cwnd + MSS；部分 ACK 再補送下一個洞（RFC 6582 的精神）；確認到恢復點時 cwnd = ssthresh |
+| 延遲 ACK（RFC 1122 4.2.3.2） | 按順序的資料：每第 2 段立刻 ACK，否則 200 ms 內（`ACK_DELAY_MS`，net 執行緒 100 ms 一步，所以實際 ≤ 300 ms）；亂序、填補了洞、FIN、舊資料重來、視窗重新打開：立刻 ACK；我們送出的任何段都帶 ACK，所以有資料要送時就順便確認了 |
+| 重組 | 洞後面的段（在接收視窗內、總量不超過 64 KiB 緩衝）存在 `ooo`（依序號排序）；洞補上時接著交出去；洞後面的 FIN 記著（`fin_at`），資料到齊才算 |
+
+`Tcb::next_timer()` 給下一個計時器（重傳或延遲 ACK）的時間；`rto()`、`srtt()`、`cwnd` 給測試與診斷。
 - **視窗**：接收緩衝 64 KiB，宣告的視窗是剩下的空間；對方視窗是 0 時，沒有在途的資料就送 1 byte 探測。讀走資料讓視窗從 < MSS 變回 ≥ MSS 時主動送一個 ACK。
 - MSS：我們宣告 1460；對方沒說就用 536。
 - TIME-WAIT 縮短成 2 秒。
@@ -184,7 +198,7 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 
 | 測試 | 內容 |
 |---|---|
-| host `net` | checksum（RFC 1071 的例子）、各種封包的組裝與解析（含錯的檢查碼、分片）；TCP：握手、雙向資料、分段、視窗、遺失重傳、亂序丟棄與重複 ACK、放棄、拒絕、主動／被動關閉、FIN 重傳、RST、序號繞回；Stack：ARP 後 ping、ARP 放棄、往閘道送、UDP 雙向與 port 佔用、TCP 連線傳 10 KB 再關、拒絕、遺失段、shutdown 後還能讀、沒有位址時拒絕、DHCP（含重送） |
+| host `net` | checksum（RFC 1071 的例子）、各種封包的組裝與解析（含錯的檢查碼、分片）；TCP：握手、雙向資料、分段、視窗、遺失重傳、亂序保留與重複 ACK、放棄、拒絕、主動／被動關閉、FIN 重傳、RST、序號繞回；P11：延遲 ACK（一段等 200 ms、每兩段立刻）、慢啟動（先 3 段、cwnd 變大）、三個重複 ACK 立刻重送並補洞、RTT 樣本與 RTO（1.5 s 的握手、之後 300 ms）、洞後面的 FIN；Stack：P11 的「慢又會掉的線」（單向 20 ms、每 25 個掉 1 個）上傳 300 KB，20 秒（模擬時間）內完成且資料正確；Stack：ARP 後 ping、ARP 放棄、往閘道送、UDP 雙向與 port 佔用、TCP 連線傳 10 KB 再關、拒絕、遺失段、shutdown 後還能讀、沒有位址時拒絕、DHCP（含重送） |
 | host `drivers` | PCI id → 家族；e1000 描述子、MAC；virtio capability、協商、環的配置 |
 | host `libstela` | DNS 查詢的格式、回覆（CNAME + 壓縮指標、NXDOMAIN）、URL、HTTP 回應 |
 | host `abi` | 編號 39–46、錯誤 22–25、`pack`、`NetInfo` |
@@ -204,7 +218,7 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 ## 10. 已知限制
 
 - 一次一張網卡；沒有 IPv6、IP 分片重組、IP 選項、多播、路由表（只有預設閘道）、DHCP 續租。
-- TCP：沒有亂序重組、延遲 ACK、Nagle、壅塞控制（慢啟動）、SACK、視窗縮放、keepalive、RTT 估計（固定 1 s 起跳）；TIME-WAIT 只有 2 秒。
+- TCP：沒有 Nagle、SACK、視窗縮放（接收緩衝 64 KiB 就是上限）、keepalive、ECN；TIME-WAIT 只有 2 秒；RTO 下限 1 s（RFC 6298 的建議；區域網路上的掉件主要靠快速重傳）。
 - P11 起 socket 可以放進 WaitSet（`docs/ipc.md` §13），Linux 有 `poll`/`select`（`docs/linux.md` §5.3）與 `sendmsg`/`recvmsg`，musl 的 `getaddrinfo` 經合成的 `/etc/resolv.conf` 可用；等待者仍被「任何事件」全部叫醒再各自檢查（簡單但 socket 多時浪費）；沒有 `epoll`。
 - 任何程式都能開 socket（沒有能力限制）。
 - e1000 輪詢會讓閒置時每 5 ms 醒一次。

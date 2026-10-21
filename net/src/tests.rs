@@ -326,3 +326,86 @@ fn readiness_follows_the_connection() {
     let r = a.readiness(u);
     assert!(r.writable && !r.readable);
 }
+
+/// A lossy, slow wire: frames from `b` to `a` take `delay` ms, and every
+/// `drop_every`th of them (counting from 1) is lost.
+struct Wire {
+    in_flight: Vec<(u64, bool, Vec<u8>)>,
+    count: u64,
+}
+
+impl Wire {
+    fn step(&mut self, a: &mut Stack, b: &mut Stack, now: u64, delay: u64, drop_every: u64) {
+        for f in a.take_output() {
+            self.in_flight.push((now + delay, true, f));
+        }
+        for f in b.take_output() {
+            self.count += 1;
+            if self.count.is_multiple_of(drop_every) {
+                continue;
+            }
+            self.in_flight.push((now + delay, false, f));
+        }
+        let due: Vec<(u64, bool, Vec<u8>)> = self
+            .in_flight
+            .iter()
+            .filter(|(t, ..)| *t <= now)
+            .cloned()
+            .collect();
+        self.in_flight.retain(|(t, ..)| *t > now);
+        for (_, to_b, f) in due {
+            if to_b {
+                b.receive(&f, now);
+            } else {
+                a.receive(&f, now);
+            }
+        }
+        a.poll(now);
+        b.poll(now);
+    }
+}
+
+#[test]
+fn tcp_bulk_transfer_over_a_lossy_slow_wire() {
+    let (mut a, mut b) = pair();
+    let l = b.socket(Kind::Tcp).expect("socket");
+    b.bind(l, 80).expect("bind");
+    b.listen(l, 1).expect("listen");
+    let c = a.socket(Kind::Tcp).expect("socket");
+    a.connect(c, B_IP, 80, 0).expect("connect");
+    exchange(&mut a, &mut b, 0);
+    let s = b.accept(l).expect("accept").expect("conn");
+    let body: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+    let mut sent = 0;
+    let mut got = Vec::new();
+    let mut wire = Wire {
+        in_flight: Vec::new(),
+        count: 0,
+    };
+    let mut buf = [0u8; 8192];
+    let mut now = 1;
+    // 20 ms each way, one data frame in 25 lost.
+    while got.len() < body.len() && now < 120_000 {
+        if sent < body.len() {
+            sent += b.send(s, &body[sent..], None, now).expect("send");
+        }
+        wire.step(&mut a, &mut b, now, 20, 25);
+        while let Some((n, ..)) = a.recv(c, &mut buf).expect("recv") {
+            if n == 0 {
+                break;
+            }
+            got.extend_from_slice(&buf[..n]);
+        }
+        now += 5;
+    }
+    assert_eq!(
+        got.len(),
+        body.len(),
+        "only {} bytes by {now} ms",
+        got.len()
+    );
+    assert_eq!(got, body);
+    // Fast retransmit and reassembly keep it moving: well under the
+    // time one RTO per loss would take (about 9 losses x 1 s).
+    assert!(now < 20_000, "took {now} ms");
+}

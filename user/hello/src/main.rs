@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The first STELA user program: prints a greeting, starts a second thread
-//! that prints too, waits for it, and exits with code 0.
+//! that prints too, joins it, and exits with code 0.
 
 #![no_std]
 #![no_main]
@@ -17,30 +17,36 @@ static STACK: ThreadStack<16384> = ThreadStack::new();
 /// The argument the child thread saw, once it ran.
 static CHILD_SAW: AtomicU64 = AtomicU64::new(0);
 
-fn child(arg: u64) {
+fn child(arg: u64) -> u64 {
     debug_println!("hello from a second thread (argument {arg})");
     CHILD_SAW.store(arg, Ordering::Release);
+    arg * 6
 }
 
 fn main() -> i64 {
     debug_println!("hello from user mode");
     let start = libstela::now_ns();
-    let id = match libstela::spawn(child, 7, &STACK) {
-        Ok(id) => id,
+    let thread = match libstela::spawn(child, 7, &STACK) {
+        Ok(thread) => thread,
         Err(e) => {
             debug_println!("hello: cannot start a thread: {}", e.name());
             return 1;
         }
     };
-    while CHILD_SAW.load(Ordering::Acquire) == 0 {
-        libstela::sleep_ms(1);
-    }
-    // The stack is used up: a second spawn on it is refused.
+    // The stack is in use until the thread is joined: a second spawn on it
+    // is refused.
     if libstela::spawn(child, 8, &STACK).is_ok() {
         return 2;
     }
+    let value = match thread.join() {
+        Ok(value) => value,
+        Err(_) => return 3,
+    };
+    if CHILD_SAW.load(Ordering::Acquire) != 7 {
+        return 4;
+    }
     debug_println!(
-        "hello: thread {id} finished within {} us",
+        "hello: thread returned {value} within {} us",
         (libstela::now_ns() - start) / 1000
     );
     0

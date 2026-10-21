@@ -16,6 +16,8 @@ pub mod pipe;
 pub mod port;
 pub mod regions;
 #[cfg(target_os = "none")]
+pub mod thread;
+#[cfg(target_os = "none")]
 pub mod tty;
 #[cfg(target_os = "none")]
 pub mod waitset;
@@ -66,6 +68,8 @@ mod target {
         PipeRead(Arc<super::pipe::ReadEnd>),
         /// A pipe's writing end.
         PipeWrite(Arc<super::pipe::WriteEnd>),
+        /// A thread's end (`ThreadJoin`; `docs/process.md` §8.1).
+        Thread(Arc<super::thread::ThreadExit>),
     }
 
     impl KernelObject {

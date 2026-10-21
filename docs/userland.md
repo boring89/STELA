@@ -166,7 +166,7 @@ Initrd     initrd  ro  380 KiB, 0 KiB free
 Data:/> run hello
 hello from user mode
 hello from a second thread (argument 7)
-hello: thread 9 finished within 4000 us
+hello: thread returned 42 within 4000 us
 hello exited with code 0
 Data:/> ps
   pid  name             threads  state
@@ -244,7 +244,7 @@ fn main() -> i64 {
 
 ## 9. 已知限制
 
-- 沒有 Thread 物件（`ThreadCreate` 仍回 id；沒有 join）——目前沒有使用者，延後。
+- P11 起 `ThreadCreate` 回 Thread handle、有 `ThreadJoin`（`docs/process.md` §8.1）；沒有單一執行緒的 kill。
 - 沒有環境變數；管線與重新導向只接程式（內建指令不行，例如 `ls | wc`）、沒有 `2>`、引號與跳脫；背景工作不能重新導向；`run` 的程式拿不到鍵盤（除非它自己 `InputAttach`）。
 - shell 一行 200 字元（P11 起有歷史與游標移動，§6.2；沒有 Tab 補完、搜尋歷史）；`cp` 整個檔案讀進記憶體。
 - 行程表的已結束紀錄永遠不清（`ps` 只顯示數量）。

@@ -29,12 +29,15 @@ pub enum Syscall {
     /// `ProcessExit(code)`: ends every thread of the calling process. Does
     /// not return.
     ProcessExit = 0,
-    /// `ThreadExit()`: ends the calling thread; the process ends with its
-    /// last thread (exit code 0). Does not return.
+    /// `ThreadExit(value)`: ends the calling thread with `value` (what
+    /// `ThreadJoin` returns); the process ends with its last thread (exit
+    /// code 0). Does not return.
     ThreadExit = 1,
-    /// `ThreadCreate(entry, stack_top, arg) -> thread id`: a new thread of
+    /// `ThreadCreate(entry, stack_top, arg) -> thread`: a new thread of
     /// the calling process starts at `entry` with RDI = `arg` and RSP =
-    /// `stack_top` rounded down to 16, minus 8 (as after a `call`).
+    /// `stack_top` rounded down to 16, minus 8 (as after a `call`). The
+    /// handle (`WAIT | DUPLICATE | TRANSFER`, P11) is for `ThreadJoin` and
+    /// `WaitSetAdd` (`EXITED`).
     ThreadCreate = 2,
     /// `Yield()`: lets other threads run.
     Yield = 3,
@@ -228,11 +231,16 @@ pub enum Syscall {
     /// `FileListAttr(item, buf, len) -> length`: the names, each ending
     /// in NUL; the whole length is returned.
     FileListAttr = 60,
+    /// `ThreadJoin(thread, timeout_ns) -> value`: waits until the thread
+    /// ended (`TimedOut` otherwise; `u64::MAX` waits forever) and returns
+    /// its `ThreadExit` value, `EXIT_KILLED` if it ended with its process
+    /// (P11).
+    ThreadJoin = 61,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 60] = [
+    pub const ALL: [Syscall; 61] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -293,6 +301,7 @@ impl Syscall {
         Syscall::FileGetAttr,
         Syscall::FileSetAttr,
         Syscall::FileListAttr,
+        Syscall::ThreadJoin,
     ];
 
     /// The call with number `raw`, if any.
@@ -523,7 +532,7 @@ impl Rights {
     pub const WRITE: Rights = Rights(1 << 5);
     /// `MemoryMap`.
     pub const MAP: Rights = Rights(1 << 6);
-    /// Wait for the object (`ProcessWait`).
+    /// Wait for the object (`ProcessWait`, `ThreadJoin`).
     pub const WAIT: Rights = Rights(1 << 7);
     /// End the object (`ProcessKill`).
     pub const KILL: Rights = Rights(1 << 8);
@@ -827,6 +836,8 @@ pub mod object_kind {
     pub const PIPE_READ: u64 = 13;
     /// A pipe's writing end.
     pub const PIPE_WRITE: u64 = 14;
+    /// A thread (`ThreadCreate`).
+    pub const THREAD: u64 = 15;
 }
 
 /// Waiting on several objects (`WaitSetAdd`, `WaitSetWait`;
@@ -842,7 +853,7 @@ pub mod wait {
     /// The other side is gone: a port closed and empty, a connection
     /// reset or ended.
     pub const CLOSED: u32 = 8;
-    /// A process has ended.
+    /// A process or a thread has ended.
     pub const EXITED: u32 = 16;
     /// Every defined event.
     pub const ALL: u32 = READABLE | WRITABLE | CONNECTED | CLOSED | EXITED;
@@ -1842,6 +1853,8 @@ mod tests {
             (58, 59, 60)
         );
         assert_eq!((ATTR_NAME_MAX, ATTR_VALUE_MAX), (255, 3072));
+        assert_eq!(Syscall::ThreadJoin.raw(), 61);
+        assert_eq!(object_kind::THREAD, 15);
         assert_eq!((object_kind::PIPE_READ, object_kind::PIPE_WRITE), (13, 14));
         assert_eq!(PIPE_BUFFER, 65536);
         assert_eq!(object_kind::WAIT_SET, 11);

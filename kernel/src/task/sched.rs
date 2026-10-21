@@ -35,6 +35,7 @@
 use super::process::Process;
 use super::queue::{RunQueue, SleepList};
 use super::{TIME_SLICE, ThreadId};
+use crate::object::thread::ThreadExit;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -84,6 +85,9 @@ pub struct Thread {
     user_start: Option<(u64, u64, u64)>,
     /// The process of a user thread; `None` for kernel threads.
     process: Option<Arc<Process>>,
+    /// What the thread's handles see of its end (threads made by
+    /// `ThreadCreate`); finished when the thread is freed.
+    exit: Option<Arc<ThreadExit>>,
 }
 
 /// The per-processor scheduler state. Threads are boxed everywhere so that
@@ -160,6 +164,7 @@ fn new_scheduler(name: &'static str) {
         start: None,
         user_start: None,
         process: None,
+        exit: None,
     });
     let idle_id = new_id();
     let idle = match TaskContext::new(idle_entry, 0, false) {
@@ -177,6 +182,7 @@ fn new_scheduler(name: &'static str) {
             start: None,
             user_start: None,
             process: None,
+            exit: None,
         }),
         Err(OutOfMemory) => panic!("task: no memory for the idle thread"),
     };
@@ -340,6 +346,7 @@ pub fn spawn_on(
         start: Some(Box::new(f)),
         user_start: None,
         process: None,
+        exit: None,
     });
     let cpu = if cpu < frame::cpu::online() { cpu } else { 0 };
     push_on(cpu, thread);
@@ -372,6 +379,18 @@ pub fn spawn_user(
     rsp: u64,
     arg: u64,
 ) -> Result<ThreadId, SpawnError> {
+    spawn_user_with(process, entry, rsp, arg, None)
+}
+
+/// [`spawn_user`] for `ThreadCreate`: `exit` is finished when the thread
+/// is freed (`docs/process.md` §8.1).
+pub fn spawn_user_with(
+    process: &Arc<Process>,
+    entry: u64,
+    rsp: u64,
+    arg: u64,
+    exit: Option<Arc<ThreadExit>>,
+) -> Result<ThreadId, SpawnError> {
     let context =
         TaskContext::new(thread_entry, 0, true).map_err(|OutOfMemory| SpawnError::OutOfMemory)?;
     let id = new_id();
@@ -389,6 +408,7 @@ pub fn spawn_user(
         start: None,
         user_start: Some((entry, rsp, arg)),
         process: Some(Arc::clone(process)),
+        exit,
     });
     // The exiting check and the queueing happen under the target
     // scheduler's lock, which `kill` takes too: either the kill sees the
@@ -543,6 +563,14 @@ pub fn current_name() -> &'static str {
 /// to the back of the run queue.
 pub fn yield_now() {
     schedule();
+}
+
+/// Ends the calling thread with `value` for its joiners (`ThreadExit`).
+pub fn exit_with(value: u64) -> ! {
+    if let Some(exit) = with(|s| current_mut(s).exit.clone()) {
+        exit.set_value(value);
+    }
+    exit()
 }
 
 /// Ends the running thread. Its stack and control block are freed by the
@@ -722,7 +750,11 @@ fn reap() {
     let zombies = with(|s| core::mem::take(&mut s.zombies));
     for mut zombie in zombies {
         let process = zombie.process.take();
+        let exit = zombie.exit.take();
         drop(zombie);
+        if let Some(exit) = exit {
+            exit.finish();
+        }
         if let Some(process) = process {
             // May end the process; its address space goes with the last
             // reference, which may be this one.

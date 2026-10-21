@@ -8,7 +8,8 @@
 //!   fit in a message) and exits with 42;
 //! - `proctest wait`: waits on its main port for ever, until killed.
 //!
-//! Then it waits on a port, a terminal and a process with a wait set.
+//! Then it waits on a port, a terminal and a process with a wait set, and
+//! joins threads.
 //!
 //! Prints `proctest: OK` and exits with 0, or exits with the number of the
 //! failed check.
@@ -141,7 +142,7 @@ fn parent() -> Result<(), i64> {
 static SEND_TO: AtomicU32 = AtomicU32::new(0);
 static HELPER: ThreadStack<16384> = ThreadStack::new();
 
-fn helper(_: u64) {
+fn helper(_: u64) -> u64 {
     libstela::sleep_ms(5);
     let mut msg = Message::new();
     msg.tag = 77;
@@ -149,6 +150,15 @@ fn helper(_: u64) {
         Handle::from_raw(u64::from(SEND_TO.load(Ordering::Acquire))),
         &msg,
     );
+    0
+}
+
+static WORKER: ThreadStack<16384> = ThreadStack::new();
+
+/// Sleeps `arg` milliseconds and returns `arg + 1`.
+fn worker(arg: u64) -> u64 {
+    libstela::sleep_ms(arg);
+    arg + 1
 }
 
 /// Wait sets: a port, a terminal's master and a process waited on
@@ -198,7 +208,7 @@ fn wait_sets(me: Handle) -> Result<(), i64> {
     )?;
     // Blocked in the wait, woken by a send from another thread.
     SEND_TO.store(port.raw() as u32, Ordering::Release);
-    libstela::spawn(helper, 0, &HELPER).map_err(|_| 20i64)?;
+    let helping = libstela::spawn(helper, 0, &HELPER).map_err(|_| 20i64)?;
     let start = libstela::now_ns();
     let n = set.wait(&mut ready, 2_000_000_000).map_err(|_| 20i64)?;
     check(
@@ -208,6 +218,7 @@ fn wait_sets(me: Handle) -> Result<(), i64> {
     )?;
     port_receive(port, &mut msg, 0).map_err(|_| 20i64)?;
     check(20, msg.tag == 77, "helper's message")?;
+    check(20, helping.join() == Ok(0), "helper joined")?;
     // A closed member is dropped: the wait times out.
     libstela::ipc::handle_close(port).map_err(|_| 21i64)?;
     check(
@@ -242,7 +253,44 @@ fn wait_sets(me: Handle) -> Result<(), i64> {
         "send-only port sees no messages",
     )?;
     capabilities()?;
-    pipes(me)
+    pipes(me)?;
+    threads()
+}
+
+/// Thread handles: joined with a value, with a timeout, through a wait
+/// set; a joined thread's stack can be used again.
+fn threads() -> Result<(), i64> {
+    let mut slow = libstela::spawn(worker, 50, &WORKER).map_err(|_| 29i64)?;
+    check(
+        29,
+        libstela::ipc::handle_kind(slow.handle()) == Ok(libstela::abi::object_kind::THREAD),
+        "kind",
+    )?;
+    check(
+        29,
+        libstela::spawn(worker, 1, &WORKER).err() == Some(Error::InvalidArgument),
+        "stack in use",
+    )?;
+    check(
+        29,
+        slow.join_timeout(1_000_000) == Err(Error::TimedOut),
+        "join times out",
+    )?;
+    check(29, slow.join_timeout(FOREVER) == Ok(51), "joined")?;
+    // Joined again: the same value.
+    check(29, slow.join() == Ok(51), "joined twice")?;
+    let quick = libstela::spawn(worker, 5, &WORKER).map_err(|_| 30i64)?;
+    let set = WaitSet::new().map_err(|_| 30i64)?;
+    set.add(quick.handle(), 9, 0).map_err(|_| 30i64)?;
+    let mut ready = [Ready::default(); 2];
+    let n = set.wait(&mut ready, 2_000_000_000).map_err(|_| 30i64)?;
+    check(
+        30,
+        n == 1 && ready[0].key == 9 && ready[0].events == wait::EXITED,
+        "thread ended",
+    )?;
+    check(30, quick.join() == Ok(6), "value after the wait")?;
+    Ok(())
 }
 
 /// Without the POWER capability (the self test gives none), SystemPower

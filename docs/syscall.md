@@ -38,8 +38,8 @@
 | 編號 | 名稱 | 參數 | 回傳值 | 說明 |
 |---|---|---|---|---|
 | 0 | `ProcessExit` | code | —（不返回） | 結束整個行程（所有執行緒），exit code = `code as i64` |
-| 1 | `ThreadExit` | — | —（不返回） | 結束呼叫的執行緒；最後一個執行緒結束時行程以 0 結束 |
-| 2 | `ThreadCreate` | entry, stack_top, arg | 執行緒 id | 同一行程的新執行緒：RIP = entry、RDI = arg、RSP = `(stack_top & !15) − 8` |
+| 1 | `ThreadExit` | value | —（不返回） | 結束呼叫的執行緒，value 給 `ThreadJoin`（P11）；最後一個執行緒結束時行程以 0 結束 |
+| 2 | `ThreadCreate` | entry, stack_top, arg | Thread handle | 同一行程的新執行緒：RIP = entry、RDI = arg、RSP = `(stack_top & !15) − 8`；P11 起回 handle（`WAIT | DUPLICATE | TRANSFER`，`docs/process.md` §8.1），之前是執行緒 id |
 | 3 | `Yield` | — | 0 | 讓別的執行緒先跑 |
 | 4 | `SleepNs` | ns | 0 | 至少睡 `ns` 奈秒（tick 解析度：1 ms） |
 | 5 | `ClockNowNs` | — | 開機以來的奈秒 | 單調；沒有 invariant TSC 時解析度 1 ms |
@@ -65,6 +65,7 @@
 | 54–56 | `PipeCreate`、`PipeRead`、`PipeWrite` | | | pipe，見 `docs/ipc.md` §14（P11） |
 | 58–60 | `FileGetAttr`、`FileSetAttr`、`FileListAttr` | | | 延伸屬性，見 `docs/vfs.md` §4.5（P11） |
 | 57 | `TtySetSize` | master, 欄, 列 | 0 | 給 Linux 的 `TIOCGWINSZ`，見 `docs/window.md` §7（P11） |
+| 61 | `ThreadJoin` | thread, timeout_ns | 執行緒的 value | 等執行緒結束（`u64::MAX` 永遠等；`TimedOut`）；跟著行程結束的 → `EXIT_KILLED`，見 `docs/process.md` §8.1（P11） |
 
 P7 起沒有 STELA ELF note 的程式用 **Linux 人格**：同一個進入點，號碼與回傳慣例是 Linux 的（`docs/linux.md`）。
 
@@ -170,7 +171,7 @@ fn handle(frame: &mut SyscallFrame) {
     let [a0, a1, a2, ..] = frame.args();
     let result = match Syscall::from_raw(frame.number()) {
         Some(Syscall::ProcessExit) => task::exit_process(a0 as i64),   // !
-        Some(Syscall::ThreadExit) => task::exit(),                     // !
+        Some(Syscall::ThreadExit) => task::exit_with(a0),              // !
         Some(Syscall::ThreadCreate) => thread_create(a0, a1, a2),
         Some(Syscall::Yield) => { task::yield_now(); Ok(0) }
         Some(Syscall::SleepNs) => { task::sleep_ns(a0); Ok(0) }
@@ -199,7 +200,7 @@ fn handle(frame: &mut SyscallFrame) {
 | `debug_print!`、`debug_println!` | 格式化進 256 bytes 的堆疊緩衝區再 `console_write`（一行不會被別的執行緒插進來）；超過 256 bytes 就分次送 |
 | `ipc::*` | `handle_close`、`handle_duplicate`、`port_create`、`port_send`、`port_receive`（`FOREVER`）、`memory_create`、`memory_map`、`memory_unmap`、`Mapping`、`input_attach`（`docs/ipc.md`） |
 | `pub use abi` | 程式可以用 `libstela::abi::key` 等型別 |
-| `ThreadStack<N>` + `spawn(entry: fn(u64), arg, &'static ThreadStack<N>) -> Result<u64, Error>` | 放在 `static` 的堆疊，只能用一次（第二次 `InvalidArgument`）。`(entry, arg)` 存在 ThreadStack 開頭，`ThreadCreate` 的 arg 是 ThreadStack 的位址；新執行緒從 libstela 的 `thread_start` 開始，讀出來呼叫 `entry(arg)`，回來就 `thread_exit()` |
+| `ThreadStack<N>` + `spawn(entry: fn(u64) -> u64, arg, &'static ThreadStack<N>) -> Result<JoinHandle, Error>` | 放在 `static` 的堆疊，占用中再用 → `InvalidArgument`。`(entry, arg)` 存在 ThreadStack 開頭，`ThreadCreate` 的 arg 是 ThreadStack 的位址；新執行緒從 libstela 的 `thread_start` 開始，讀出來呼叫 `entry(arg)`，回來就 `thread_exit(回傳值)`。P11：`JoinHandle::join()`／`join_timeout(ns)` 拿到回傳值，之後堆疊可以再用；`handle()` 可以放進 WaitSet（`docs/process.md` §8.1） |
 | `sys::syscall0..4`、`syscall6` | 原始呼叫：`inlateout("rax")`、`in("rdi"/"rsi"/"r10"/"r8"/"r9")`、`inlateout("rdx")`、`lateout("rcx"/"r11")` |
 | `fs::*` | 檔案與卷宗（`docs/vfs.md`） |
 | `process::*`、`heap`、`path`、`line`、`print!`／`println!` | 行程、參數、heap、路徑、行編輯（`docs/userland.md`）；`entry!` 在 `main` 前收下參數訊息 |
@@ -232,7 +233,7 @@ fn handle(frame: &mut SyscallFrame) {
 
 ## 7. 已知限制與待辦
 
-- 行程 syscall 見 `docs/userland.md`；沒有 Thread 物件。
-- `ThreadCreate` 不檢查 stack_top 是否已映射（用到才 page fault → 行程被殺）；沒有 join，程式自己用共享記憶體同步（hello 用 atomic）。
+- 行程 syscall 見 `docs/userland.md`；Thread handle 與 join 見 `docs/process.md` §8.1（P11）。
+- `ThreadCreate` 不檢查 stack_top 是否已映射（用到才 page fault → 行程被殺）。P11 起有 join（`docs/process.md` §8.1）；沒有單一執行緒的 kill。
 - 沒有 SMAP；kernel 不直接解參考使用者指標，所以目前不需要。沒有 32 位元相容（`int 0x80`、compat mode）的進入點。
 - syscall 進入點與 NMI 的交互（`swapgs` 之前、`sysret` 之前的 NMI）見 `docs/process.md` §14。

@@ -334,6 +334,28 @@ kernel **從不直接解參考使用者位址**：壞指標在檢查時就變成
 
 就算 kernel 寫錯、提早 drop 了 A 的 TCB，per-CPU 的那份 `Arc` 也讓堆疊撐到切換完成——記憶體安全不依賴 kernel 的政策正確。selftest：16 個執行緒結束後 PMM 的 free 數與 heap 用量都回到原值。
 
+### 8.1 Thread 物件與 join（P11，使用者尚未審核）
+
+`ThreadCreate` 回的是一個 **Thread handle**（`WAIT | DUPLICATE | TRANSFER`，`object_kind::THREAD` = 15），不再是執行緒 id。handle 指的不是 TCB 本身，而是一份「結束紀錄」（`kernel/src/object/thread.rs` 的 `ThreadExit`）：TCB 在回收時就消失了，紀錄要活到最後一個 handle 關掉。
+
+```
+ ThreadCreate ──► Thread { exit: Some(Arc<ThreadExit>) } ──► handle（WAIT）
+                      │ ThreadExit(value)：exit_with 記下 value
+                      ▼ Zombie → 下一個執行緒 reap()
+                  drop(Box<Thread>) 之後 ThreadExit::finish()
+                      └─► 叫醒 ThreadJoin 的等待者與 WaitSet 的 watchers
+```
+
+- `ThreadExit(value)`（syscall 1，P11 起帶一個參數）：記下 value 再 `exit()`。沒有呼叫它就結束的（行程被 kill、別的執行緒 `ProcessExit`、例外）→ join 拿到 `EXIT_KILLED`（137）。
+- `ThreadJoin(thread, timeout_ns)`（syscall 61）：等到紀錄 finished 就回 value；`u64::MAX` 永遠等；逾時 `TimedOut`；呼叫者被 kill → `NotSupported`。可以 join 很多次，值都一樣。
+- **finish 在 `reap()`（切換之後）**：這時執行緒已經不在任何 CPU 上，使用者堆疊不會再被碰，所以 join 回來之後可以重用那塊堆疊（libstela 的 `ThreadStack` 就這樣做）。
+- WaitSet：Thread handle 可以加入（`EXITED`，以 Weak 參考，handle 都關了就自動移出；`docs/ipc.md` §13.3）。
+- 行程的主執行緒、kernel 執行緒、selftest 直接生的執行緒沒有紀錄（`exit: None`）。
+- `ThreadCreate` 先放 handle 再生執行緒：handle 表滿 → `Full`，不會生出沒有 handle 的執行緒；生不出來（記憶體、行程正在結束）就把 handle 拿掉。
+- 計畫寫「`WAIT|KILL`」，但沒有單一執行緒的 kill（被殺的執行緒可能正拿著使用者空間的鎖，例如 heap 的 `SpinMutex`，其他執行緒會卡死），所以不給 `KILL`；要停就整個行程。
+- libstela：`spawn(entry: fn(u64) -> u64, arg, &'static ThreadStack<N>) -> Result<JoinHandle, Error>`；`JoinHandle::join()`（永遠等）、`join_timeout(ns)`、`handle()`（給 WaitSet）。join 成功後 `ThreadStack` 可以再 `spawn`；沒 join 的（`JoinHandle` 被 drop，handle 關掉、執行緒照跑）堆疊就一直被占用。
+- 測試：`hello` join 子執行緒拿到 42；`proctest` 第 20 步 join helper、第 29–30 步：`HandleKind` = `THREAD`、堆疊占用中再 spawn → `InvalidArgument`、1 ms 的 join 逾時、join 拿到 51（兩次）、join 後同一塊堆疊再 spawn、WaitSet 等到 `EXITED` 再 join 拿到 6。
+
 ## 9. 使用者模式
 
 ### 9.1 GDT（Vol. 3A §3.4.5、§5.2.1）

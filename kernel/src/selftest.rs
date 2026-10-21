@@ -1139,7 +1139,7 @@ fn initrd_program(name: &str) -> u64 {
 fn initrd_programs(_: &'static BootInfo) {
     assert!(!frame::mm::initrd().is_empty(), "no initrd");
     let (free, _) = pmm::stats();
-    // hello: prints from two threads, exits with 0.
+    // hello: prints from two threads, joins the second, exits with 0.
     let pid = initrd_program("hello");
     assert_eq!(task::wait_process(pid), Some(0));
     // fault: reads address 0 -> page fault -> 128 + 14; the kernel goes on.

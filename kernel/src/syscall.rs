@@ -6,6 +6,7 @@
 //! RAX and the value in RDX.
 
 use crate::object::port::{Port, QueuedMessage};
+use crate::object::thread::ThreadExit;
 use crate::object::tty::Tty;
 use crate::object::waitset::WaitSet;
 use crate::object::{Entry, KernelObject};
@@ -40,7 +41,7 @@ fn handle(frame: &mut SyscallFrame) {
     let [a0, a1, a2, ..] = args;
     let result = match Syscall::from_raw(frame.number()) {
         Some(Syscall::ProcessExit) => task::exit_process(a0 as i64),
-        Some(Syscall::ThreadExit) => task::exit(),
+        Some(Syscall::ThreadExit) => task::exit_with(a0),
         Some(Syscall::ThreadCreate) => thread_create(a0, a1, a2),
         Some(Syscall::Yield) => {
             task::yield_now();
@@ -64,6 +65,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::TtyRead) => tty_read(a0, a1, a2, args[3]),
         Some(Syscall::TtyWrite) => tty_write(a0, a1, a2),
         Some(Syscall::TtySetSize) => tty_set_size(a0, a1, a2),
+        Some(Syscall::ThreadJoin) => thread_join(a0, a1),
         Some(Syscall::HandleKind) => handle_kind(a0),
         Some(Syscall::WaitSetCreate) => wait_set_create(),
         Some(Syscall::WaitSetAdd) => wait_set_add(a0, a1, a2, args[3]),
@@ -79,7 +81,7 @@ fn handle(frame: &mut SyscallFrame) {
     frame.set_return(status, value);
 }
 
-/// `ThreadCreate(entry, stack_top, arg)`.
+/// `ThreadCreate(entry, stack_top, arg) -> thread`.
 fn thread_create(entry: u64, stack_top: u64, arg: u64) -> Result<u64, Error> {
     if entry >= USER_END || !(16..=USER_END).contains(&stack_top) {
         return Err(Error::InvalidArgument);
@@ -89,12 +91,42 @@ fn thread_create(entry: u64, stack_top: u64, arg: u64) -> Result<u64, Error> {
     };
     // As if the thread had been called: RSP + 8 is 16-byte aligned.
     let rsp = (stack_top & !15) - 8;
-    match task::spawn_user(&process, entry, rsp, arg) {
-        Ok(id) => Ok(id),
-        Err(task::SpawnError::OutOfMemory) => Err(Error::OutOfMemory),
+    let exit = Arc::new(ThreadExit::new());
+    // The handle first, so that a full table starts no thread.
+    let handle = process.handles().lock().insert(Entry {
+        object: KernelObject::Thread(Arc::clone(&exit)),
+        rights: Rights::WAIT | Rights::DUPLICATE | Rights::TRANSFER,
+    })?;
+    let error = match task::spawn_user_with(&process, entry, rsp, arg, Some(exit)) {
+        Ok(_) => return Ok(handle.raw()),
+        Err(task::SpawnError::OutOfMemory) => Error::OutOfMemory,
         // The process is being torn down; this thread is about to go too.
-        Err(task::SpawnError::Exiting) => Err(Error::NotSupported),
-    }
+        Err(task::SpawnError::Exiting) => Error::NotSupported,
+    };
+    let entry = process.handles().lock().remove(handle);
+    drop(entry);
+    Err(error)
+}
+
+/// `ThreadJoin(thread, timeout_ns) -> value`.
+fn thread_join(handle: u64, timeout: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let exit = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(handle))?;
+        let KernelObject::Thread(exit) = &entry.object else {
+            return Err(Error::WrongType);
+        };
+        if !entry.rights.contains(Rights::WAIT) {
+            return Err(Error::AccessDenied);
+        }
+        Arc::clone(exit)
+    };
+    let deadline = match timeout {
+        u64::MAX => None,
+        t => Some(frame::time::now_ns().saturating_add(t)),
+    };
+    exit.join(deadline)
 }
 
 /// The calling process (system calls from kernel threads do not happen,
@@ -507,6 +539,7 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::Capability(_) => k::CAPABILITY,
         KernelObject::PipeRead(_) => k::PIPE_READ,
         KernelObject::PipeWrite(_) => k::PIPE_WRITE,
+        KernelObject::Thread(_) => k::THREAD,
     })
 }
 

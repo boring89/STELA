@@ -45,7 +45,7 @@ pub mod wait;
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
-use sys::{syscall0, syscall1, syscall3};
+use sys::{syscall0, syscall1, syscall2, syscall3};
 
 /// The bytes of the STELA note, 4-byte aligned as notes must be.
 #[repr(C, align(4))]
@@ -84,9 +84,10 @@ pub fn exit(code: i64) -> ! {
     }
 }
 
-/// Ends the calling thread. The process ends with its last thread.
-pub fn thread_exit() -> ! {
-    let _ = syscall0(abi::Syscall::ThreadExit);
+/// Ends the calling thread with `value` (what [`JoinHandle::join`]
+/// returns). The process ends with its last thread.
+pub fn thread_exit(value: u64) -> ! {
+    let _ = syscall1(abi::Syscall::ThreadExit, value);
     loop {
         core::hint::spin_loop();
     }
@@ -209,12 +210,13 @@ macro_rules! println {
 /// What a new thread runs, kept at the start of its [`ThreadStack`].
 #[repr(C)]
 struct Start {
-    entry: fn(u64),
+    entry: fn(u64) -> u64,
     arg: u64,
 }
 
-/// Memory for one extra thread's stack (`N` bytes), usable once. Put it in
-/// a `static`; [`spawn`] takes it.
+/// Memory for one extra thread's stack (`N` bytes). Put it in a `static`;
+/// [`spawn`] takes it, and a successful [`JoinHandle::join`] gives it
+/// back (a thread never joined keeps it).
 #[repr(C, align(16))]
 pub struct ThreadStack<const N: usize> {
     /// Must stay the first field: the new thread finds it at the address
@@ -224,12 +226,15 @@ pub struct ThreadStack<const N: usize> {
     memory: UnsafeCell<[u8; N]>,
 }
 
-// SAFETY: `start` is written once, by the `spawn` call that wins `taken`,
-// before the thread that reads it exists; `memory` is only used as that
+// SAFETY: `start` is written only by the `spawn` call that wins `taken`,
+// before the thread that reads it exists (`taken` is cleared again only
+// once that thread is gone, by `JoinHandle`); `memory` is only used as that
 // thread's stack, through the stack pointer, never through references.
 unsafe impl<const N: usize> Sync for ThreadStack<N> {}
 
-fn no_entry(_: u64) {}
+fn no_entry(_: u64) -> u64 {
+    0
+}
 
 impl<const N: usize> ThreadStack<N> {
     /// An unused stack.
@@ -252,24 +257,68 @@ impl<const N: usize> Default for ThreadStack<N> {
 }
 
 /// Where every thread made by [`spawn`] begins: runs the entry with its
-/// argument, then ends the thread.
+/// argument, then ends the thread with what the entry returned.
 extern "C" fn thread_start(start: u64) -> ! {
     // SAFETY: `start` is the address of the `Start` at the head of the
     // ThreadStack that `spawn` filled in before creating this thread, and
-    // which lives in a static (it is never written again).
+    // which lives in a static (it is not written again before the thread
+    // is joined).
     let start = unsafe { &*(start as *const Start) };
-    (start.entry)(start.arg);
-    thread_exit()
+    let value = (start.entry)(start.arg);
+    thread_exit(value)
 }
 
-/// Starts a thread of this process running `entry(arg)` on `stack`.
-/// Returns its thread id, or `InvalidArgument` if the stack was already
-/// used.
+/// A started thread (P11): wait for it with [`JoinHandle::join`] or put
+/// [`JoinHandle::handle`] in a [`wait::WaitSet`] (`EXITED`). Dropping it
+/// closes the handle; the thread runs on.
+pub struct JoinHandle {
+    handle: Handle,
+    /// The stack's `taken`, cleared once the thread is known to be gone.
+    taken: &'static AtomicBool,
+    joined: bool,
+}
+
+impl JoinHandle {
+    /// The thread's handle (`WAIT | DUPLICATE | TRANSFER`).
+    pub fn handle(&self) -> Handle {
+        self.handle
+    }
+
+    /// Waits until the thread ended and returns what its entry returned
+    /// ([`abi::EXIT_KILLED`] if it ended with the process). The stack can
+    /// be used again afterwards.
+    pub fn join(self) -> Result<u64, Error> {
+        let mut me = self;
+        me.join_timeout(u64::MAX)
+    }
+
+    /// [`JoinHandle::join`], waiting at most `timeout_ns` (`TimedOut`).
+    pub fn join_timeout(&mut self, timeout_ns: u64) -> Result<u64, Error> {
+        let value = syscall2(abi::Syscall::ThreadJoin, self.handle.raw(), timeout_ns)?;
+        if !self.joined {
+            self.joined = true;
+            // The kernel finishes the thread after its last switch: nothing
+            // runs on the stack any more.
+            self.taken.store(false, Ordering::Release);
+        }
+        Ok(value)
+    }
+}
+
+impl Drop for JoinHandle {
+    fn drop(&mut self) {
+        let _ = ipc::handle_close(self.handle);
+    }
+}
+
+/// Starts a thread of this process running `entry(arg)` on `stack`; the
+/// thread ends with the value `entry` returns. `InvalidArgument` if the
+/// stack is in use (its thread was not joined).
 pub fn spawn<const N: usize>(
-    entry: fn(u64),
+    entry: fn(u64) -> u64,
     arg: u64,
     stack: &'static ThreadStack<N>,
-) -> Result<u64, Error> {
+) -> Result<JoinHandle, Error> {
     if stack.taken.swap(true, Ordering::AcqRel) {
         return Err(Error::InvalidArgument);
     }
@@ -277,12 +326,22 @@ pub fn spawn<const N: usize>(
     // reads `start` before the ThreadCreate below.
     unsafe { *stack.start.get() = Start { entry, arg } };
     let top = stack.memory.get() as u64 + N as u64;
-    syscall3(
+    match syscall3(
         abi::Syscall::ThreadCreate,
         thread_start as *const () as u64,
         top,
         stack as *const ThreadStack<N> as u64,
-    )
+    ) {
+        Ok(handle) => Ok(JoinHandle {
+            handle: Handle::from_raw(handle),
+            taken: &stack.taken,
+            joined: false,
+        }),
+        Err(e) => {
+            stack.taken.store(false, Ordering::Release);
+            Err(e)
+        }
+    }
 }
 
 #[cfg(target_os = "none")]

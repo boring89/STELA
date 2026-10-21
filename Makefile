@@ -191,7 +191,8 @@ test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 		--expect "STELA boot loader" --expect "time: RTC " \
 		--expect "STELA kernel" --expect "input: OK" --expect "mouse: OK" \
 		--expect "user: hello from built-in user code" --expect "hello from user mode" \
-		--expect "hello from a second thread" --expect "fault: reading address 0" \
+		--expect "hello from a second thread" --expect "hello: thread returned 42" \
+		--expect "fault: reading address 0" \
 		--expect "spin: " --expect "ipc_client: OK" --expect "net: raw frames work" --expect "proctest: OK" \
 		--expect "linux: hello from raw system calls" --expect "selftest: OK" \
 		-- $(QEMU) $(QEMU_TEST_FLAGS)

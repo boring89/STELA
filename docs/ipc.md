@@ -335,9 +335,9 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 | 2 | `WRITABLE` | socket 可以送；tty master（永遠）；音效的環至少一半是空的 |
 | 4 | `CONNECTED` | TCP 連線已建立 |
 | 8 | `CLOSED` | port 已關閉（擁有者結束；佇列裡還有訊息也算）；連線結束、被 reset 或失敗 |
-| 16 | `EXITED` | 行程已結束 |
+| 16 | `EXITED` | 行程已結束；執行緒已結束（Thread handle，P11 K23） |
 
-可以加入的物件：Port、Socket、Tty、TtyMaster、Process、Audio；其他（包括 WaitSet 自己）→ `WrongType`。**只有 `SEND` 的 port 只能等 `CLOSED`**（mask 有別的位元 → `AccessDenied`）：用來發現對方行程結束（視窗伺服器用它看 client 的回覆 port，`docs/window.md` §3），但看不到別人信箱裡有沒有信。
+可以加入的物件：Port、Socket、Tty、TtyMaster、Process、Audio、PipeRead、PipeWrite、Thread；其他（包括 WaitSet 自己）→ `WrongType`。**只有 `SEND` 的 port 只能等 `CLOSED`**（mask 有別的位元 → `AccessDenied`）：用來發現對方行程結束（視窗伺服器用它看 client 的回覆 port，`docs/window.md` §3），但看不到別人信箱裡有沒有信。
 
 ### 13.4 kernel 端（`kernel/src/object/waitset.rs`）
 
@@ -369,7 +369,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 |---|---|
 | host `abi` | 編號 49–52、`WAIT_SET` = 11、`wait::ALL` = 31、`Ready` 的編碼往返 |
 | host `net` | `Stack::readiness`：連線中、已連線可寫、listener 有連線、有資料可讀、對方關閉後 `readable + closed`、UDP 可寫 |
-| selftest（`proctest` 的第 15–22 步） | port + tty master（`READABLE`）+ 子行程一起等：不等 → `TimedOut`；送信 → key 1；印到 tty → key 2；kill 子行程 → key 3 `EXITED`；移除兩次 → `NotFound`；另一個執行緒 5 ms 後送信叫醒正在等的主執行緒（至少等了 4 ms）；關掉的 port 自動移出；WaitSet 放進自己 → `WrongType`；未定義的 mask → `InvalidArgument` |
+| selftest（`proctest` 的第 15–22 步；P11 K23 加第 29–30 步：Thread handle 進 WaitSet 等到 `EXITED`） | port + tty master（`READABLE`）+ 子行程一起等：不等 → `TimedOut`；送信 → key 1；印到 tty → key 2；kill 子行程 → key 3 `EXITED`；移除兩次 → `NotFound`；另一個執行緒 5 ms 後送信叫醒正在等的主執行緒（至少等了 4 ms）；關掉的 port 自動移出；WaitSet 放進自己 → `WrongType`；未定義的 mask → `InvalidArgument` |
 
 ## 14. Pipe（P11，使用者尚未審核）
 

@@ -272,14 +272,22 @@ pub fn create_with(
 
 /// Records the end of process `id` and wakes its waiters.
 fn finish(id: ProcessId, code: i64) {
-    let waiters = {
+    let (waiters, _gone) = {
         let mut table = TABLE.lock();
         match table.get_mut(&id) {
-            Some(record) => match core::mem::replace(&mut record.status, Status::Exited(code)) {
-                Status::Running { waiters } => waiters,
-                Status::Exited(_) => Vec::new(),
-            },
-            None => Vec::new(),
+            Some(record) => {
+                let waiters = match core::mem::replace(&mut record.status, Status::Exited(code)) {
+                    Status::Running { waiters } => waiters,
+                    Status::Exited(_) => Vec::new(),
+                };
+                // The record keeps the name and the exit code only: a
+                // `Weak` left here would keep the `Process` allocation
+                // after its last `Arc` (P11 K46: `make test-stress` saw
+                // about 600 bytes of kernel heap per ended process). It
+                // is dropped after the lock (`_gone`).
+                (waiters, core::mem::take(&mut record.process))
+            }
+            None => (Vec::new(), Weak::new()),
         }
     };
     for waiter in waiters {

@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
@@ -65,7 +65,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox bin $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -434,6 +434,25 @@ bench: esp test-images $(BUILD)/OVMF_VARS.fd
 	python3 tools/bench_report.py $(BUILD)/bench.log $(ESP)/STELA/kernel.elf > $(BUILD)/bench.md
 	cat $(BUILD)/bench.md
 
+# Stress (P11 K46, docs/testing.md §4; local only, not in make test or
+# CI): the normal kernel, four processors, the AHCI test disk and user
+# networking; the shell runs stress (100 processes, 1000 files, 64 MiB
+# through a pipe, 50 downloads at once, 20 windows) three times and checks
+# that frames, kernel heap, handles and processes came back after the
+# third round to where the second left them.
+test-stress: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-stress.img
+	mkdir -p $(BUILD)/www
+	head -c 262144 /dev/urandom > $(BUILD)/www/stress.bin
+	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- \
+		python3 tools/qemu_test.py --timeout 900 --log $(BUILD)/test-stress.log \
+		--type "STELA shell" "stress http://10.0.2.2:$(NET_PORT)/stress.bin\n" \
+		--expect "mouseion: ready" --expect "stress: round 1 windows OK" --expect "stress: round 2 windows OK" \
+		--expect "stress: round 3 windows OK" --expect "stress: OK" \
+		-- $(QEMU) $(QEMU_FLAGS) -smp 4 -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-stress.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+
 test-net-cards:
 	for card in $(NET_CARDS); do \
 		python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-net-$$card.log \
@@ -500,7 +519,7 @@ WINDOW_CHECKS := --expect-rect 1000,1100,300,300,\#5b7b86 --expect-rect 1300,8,4
 test-window: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --timeout 90 --screendump $(BUILD)/screen.ppm --log $(BUILD)/test-window.log \
 		--type "STELA shell" "uptime\n" --type "uptime:" "run Echo.app\n" \
-		--type "> run Echo.app" "hello\n" \
+		--type "echo_win: ready" "hello\n" \
 		--send-keys "echo_win: hello" "ctrl-c" \
 		--send-keys "echo_win: copied hello" "ctrl-v ret" \
 		--expect "windowserver: " --expect "STELA shell" --expect "uptime:" \

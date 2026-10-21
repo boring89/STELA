@@ -63,6 +63,11 @@ pub mod request {
     pub const SET_CLIPBOARD: u32 = 0x109;
     /// 0: the server answers with `CLIPBOARD`.
     pub const GET_CLIPBOARD: u32 = 0x10A;
+    /// 0: the client is done (toolbox: when its `Connection` is dropped);
+    /// its windows close and the server forgets it, as when its program
+    /// ends (P11 K46: a program that connected again and again left a
+    /// client behind each time).
+    pub const DISCONNECT: u32 = 0x10B;
 }
 
 /// Server to client.

@@ -1,6 +1,6 @@
 # 測試
 
-STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機的整合測試（serial 輸出、QMP 打字與點滑鼠、截圖檢查），以及 P11 加的 fuzz（host）。`make test` 跑 host 測試、fuzz 與所有 QEMU 測試，CI 也跑同一組；需要使用者自己的檔案（Mac ROM）或很久的測試只在本機跑。
+STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機的整合測試（serial 輸出、QMP 打字與點滑鼠、截圖檢查），以及 P11 加的 fuzz（host）與壓力測試（本機）。`make test` 跑 host 測試、fuzz 與所有 QEMU 測試，CI 也跑同一組；需要使用者自己的檔案（Mac ROM）或很久的測試只在本機跑。
 
 ## 1. 比喻：三種檢查
 
@@ -37,6 +37,7 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 | `test-classic` | 本機 | 使用者的 Mac ROM 與 System（`~/mac/`，只讀，複製進 `build/`）：開到 Finder、截圖、電源與第二顆磁碟 |
 | `test-ehfs-compat` | 本機 | 與 68k_HAL 的 eHFS 工具交叉檢查 |
 | `bench` | 本機 | 量測（記憶體、syscall、執行緒切換、eHFS、TCP），`build/bench.md`（`docs/bench.md`） |
+| `test-stress` | 本機 | §4：壓力測試與資源洩漏檢查（`-smp 4`） |
 
 ## 3. fuzz（`make test-fuzz`，P11 K45，使用者尚未審核）
 
@@ -75,3 +76,29 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 1. `abi::time::parse_offset`：`+` 後面接一個 3 位元組的字（`+中a`）時，`&rest[..2]` 切在字元中間而 panic。時區檔 `Data:/.stela/timezone` 是使用者可寫的，kernel 的 Linux 人格（`TZ`）也讀它——這會讓 kernel panic。修法：不是 ASCII 就回 `None`（abi 的 host 測試加了這個例子）。
 2. eHFS 的 B-tree：節點的 CRC 對，但 count／offset 表／記錄長度指到節點外面時，`key_of`、`value_of` 越界 panic（一顆壞掉的磁碟就能讓 kernel panic）。修法：`read_node` 在 CRC 之後檢查節點**結構完整**（`btree::well_formed`：記錄都在 `DATA`..`FREE` 之間且不重疊、offset 表放得下、index 節點的值至少 8 位元組放得下子節點編號），不完整就是 `Corrupt`。
 
+## 4. 壓力測試（`make test-stress`，本機，P11 K46，使用者尚未審核）
+
+一般 kernel、`-smp 4`、AHCI 測試磁碟、user 網路（host 的 `tools/with_http.py` serve `build/www/stress.bin`，256 KiB 亂數）；桌面的 shell 打 `stress http://10.0.2.2:PORT/stress.bin`。`user/stress` 每一輪：
+
+```text
+ procs    100 個行程（Initrd:/bin/true）一起啟動，再一個一個 wait，exit code 都是 0
+ files    Data:/stress 建 1000 個檔（各 100 位元組）、列出檢查、全部刪掉、刪資料夾
+ pipe     64 MiB 經過一條 pipe：寫的執行緒（64 KiB 一塊、計數的花樣），這個執行緒讀並逐位元組檢查
+ tcp      50 個執行緒，各一條 TCP 連線同時下載同一個檔，長度都一樣
+ windows  20 個視窗，每個填色、畫方塊、damage，20 次；然後關掉
+```
+
+- 跑三輪：前兩輪暖機（kernel 的區塊快取、兩邊 heap 的空閒清單、handle 表、ARP 表），第三輪結束後與第二輪結束時比較——空閒頁框（容許 64 頁）、kernel heap 使用量（容許 64 KiB）、handle 表（一次複製 600 個 handle 拿到的最高槽位不能變高：表只有在沒有空槽時才長，600 比任何一段同時拿著的都多）、執行中的行程數（不能多：沒有殭屍）。每次量之前等 2.5 秒（關掉的 TCP 連線要過 TIME_WAIT 的 2 秒）。超過就印 `stress: LEAK` 並 exit 1。
+- 每個部分印 `stress: round N part OK (ms)`，第二輪起加上這一段的頁框與 kernel heap 變化；最後 `stress: OK`。
+- 不進 `make test`／CI：要 5–7 分鐘（TCG 下 1000 個檔的建刪要 35–70 秒：每次都是一個 eHFS 交易、讀寫 16 KiB 的節點並算 CRC），而且 50 條連線在慢的機器上可能逾時。
+
+### 4.1 找到的問題（P11 K46）
+
+第一次跑：第二輪比第一輪多了 256 頁框、80 KB kernel heap、一個 handle 槽。改成三輪、每段分開量之後：
+
+| 段 | 每輪（修之前） | 原因與修法 | 修之後 |
+|---|---|---|---|
+| 頁框 | +256（只在第一次的兩輪比較） | stress 自己的 heap 長了一塊（1 MiB），不是洩漏；改成比第二、三輪 | +0 |
+| `procs` | +59 KB／100 個行程 | 行程表的紀錄用 `Weak<Process>`：`Weak` 讓整個 `Process` 的配置在最後一個 `Arc` 之後還留著。`process::finish` 時把它換成空的 `Weak` | +13.7 KB（每個約 137 bytes：名字與 exit code，已知問題「Exited 紀錄永遠不清」，process handle 只記 id，要回收得先改 handle） |
+| `windows` | +11 KB／連線、handle 槽 +1 | toolbox 的 `Connection` 沒有 `Drop`：伺服器只在程式結束時才清 client，同一個程式反覆連線就每次留下一個（port、佇列、紀錄）。新的請求 `DISCONNECT`（0x10B，`docs/window.md`），`Connection` 被 drop 時送 | +16 bytes、handle 不變 |
+| `files`、`pipe`、`tcp` | 幾十 bytes 以內 | — | — |

@@ -1,0 +1,22 @@
+[package]
+name = "stress"
+description = "STELA stress test (P11 K46): processes, files, pipes, TCP, windows; leaks checked"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "stress"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+toolbox = { path = "../toolbox" }
+
+[lints]
+workspace = true

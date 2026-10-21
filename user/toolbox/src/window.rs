@@ -33,6 +33,20 @@ pub struct Connection {
     returned: VecDeque<Event>,
 }
 
+impl Drop for Connection {
+    /// Tells the server this client is done (its windows close) and lets
+    /// go of the request port.
+    fn drop(&mut self) {
+        if self.server != Handle::NONE {
+            let _ = port_send(
+                self.server,
+                &Message::with_data(abi::window::request::DISCONNECT, &[0; 4]),
+            );
+            let _ = handle_close(self.server);
+        }
+    }
+}
+
 impl Connection {
     /// Connects through the bootstrap handle `[2]` (what the window server
     /// gives the programs it starts).

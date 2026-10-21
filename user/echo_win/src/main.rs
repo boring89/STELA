@@ -45,6 +45,9 @@ fn main() -> i64 {
     menus.add("File", &["Clear", "-", "Quit^Q"]);
     menus.add("Edit", &["Copy^C", "Paste^V"]);
     let _ = conn.set_menubar(&menus.to_text());
+    // The window has the keyboard now (the server focuses new windows):
+    // tests type after this line.
+    println!("echo_win: ready");
     let line = fh + 4;
     let mut field = TextField::new(Rect::new(8, 8, w - 16, fh + 8), 38);
     let mut list = List::new(Rect::new(8, fh + 24, w - 16, h - 3 * fh - 40), Vec::new());

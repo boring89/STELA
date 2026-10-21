@@ -71,6 +71,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `FOCUS_WINDOW` 0x108 | 0、window | — |
 | `SET_CLIPBOARD` 0x109（P11） | 0、長度；長度 > 0 時夾帶裝著 UTF-8 文字的 Memory（最多 `CLIPBOARD_MAX` = 1 MiB） | — |
 | `GET_CLIPBOARD` 0x10A（P11） | 0 | `CLIPBOARD` |
+| `DISCONNECT` 0x10B（P11 K46） | 0 | —（伺服器關掉它的視窗、忘掉這個 client；toolbox 的 `Connection` 被 drop 時送。以前只有程式結束（主 port 關掉）才清，同一個程式反覆連線會每次留下一個 client：`make test-stress` 看到每輪約 11 KB 的 kernel heap） |
 
 | 事件（server → client） | 內容 |
 |---|---|

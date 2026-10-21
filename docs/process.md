@@ -473,7 +473,7 @@ static TABLE: SpinLock<BTreeMap<ProcessId, Status>>;   // Running { waiters } | 
 - `process::create(name)`、`spawn_user(&process, entry, rsp, arg)`（行程正在結束就拒絕）。
 - `process::create_with(name, initial)`（P4，P6 改成給 `[1]`–`[3]`）：建立時放好初始 handle `[0]` 主 port 與 `[1]`–`[3]`（`standard_initial(bootstrap)`：console、bootstrap、Data 的根）。
 - P6：行程表的每一筆另外記名稱與 `Weak<Process>`（`find(id)`、`list()` 給 `ProcessKill` 與 `SysInfo`）；`wait_until(id, deadline)` 可逾時、等待者被 kill 時放棄（`docs/userland.md` §2）。
-- 最後一個執行緒被回收 → `release()`（放掉所有 handle、close 它建立的 port）→ `finish(id, code)`：表裡改成 `Exited`、叫醒所有 waiter。
+- 最後一個執行緒被回收 → `release()`（放掉所有 handle、close 它建立的 port）→ `finish(id, code)`：表裡改成 `Exited`、叫醒所有 waiter，並把 `Weak<Process>` 換成空的（P11 K46：`Weak` 會讓 `Process` 的配置一直留著，每個結束的行程約 600 bytes；之後 `find` 回 `None`）。
 - `wait_process(id) -> Option<i64>`：kernel 內部的（不是 syscall）；`Exited` 就回傳，否則登記成 waiter 後 `block()`，醒來再檢查。狀態會留著，再等一次還是同一個值。未知 id 回 `None`。
 - `exit_status(id)`：不等待，只看。
 - 從沒有執行緒的行程（載入失敗）drop 時以 −1 結束，等它的人不會永遠等。
@@ -583,5 +583,5 @@ P4 起 echo 是使用者程式（`user/echo`，`docs/ipc.md` §8），kernel 的
 - 使用者 FPU 只有 FXSAVE（x87/SSE），沒有 XSAVE/AVX。
 - NMI、#MC 若剛好發生在 `swapgs` 前後或 `sysret` 前（使用者 RSP 已載入）會用錯 GS／堆疊；它們沒有 IST（NMI 現在被遮蔽在 LINT1）。之後給 NMI/#MC/#DB 各自的 IST，並在 stub 裡用 GS_BASE 的值判斷而不是 CS。
 - 被 kill 的行程的其他執行緒要等到下一次回 ring 3 才結束；`kill` 會把 blocked／sleeping 的搬回 ready，每個阻塞點醒來後要檢查 `current_killed()`（P4 的 `Port::receive` 有做；之後新增的阻塞點也要做）。SMP 時，正在別顆 CPU 上跑的執行緒要靠 IPI 讓它進 kernel。
-- 行程表的 `Exited` 狀態永遠不清（沒有「回收狀態」的動作，P4 有 handle 之後再定）。
+- 行程表的 `Exited` 狀態永遠不清（沒有「回收狀態」的動作；process handle 只記 id，`input.rs`、WaitSet 靠 `exit_status` 判斷結束）：每個結束的行程留下約 137 bytes（名字、exit code、B-tree 的位置；`make test-stress` 量的，`docs/testing.md` §4.1）。
 - 使用者程式的 `.data`／`.bss` 若是空的，連結出來的空 PT_LOAD 會被 `elfload` 拒絕（目前三個程式都有資料，未實際遇到）。

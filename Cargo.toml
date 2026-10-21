@@ -38,6 +38,7 @@ members = [
     "user/kalamos",
     "user/monitor",
     "user/periplus",
+    "user/stress",
     "classic",
     "tools/ehfs",
     "tools/fuzz",

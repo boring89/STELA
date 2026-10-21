@@ -852,6 +852,10 @@ impl Server {
             request::FOCUS_WINDOW => self.focus_window(client, msg),
             request::SET_CLIPBOARD => self.set_clipboard(msg),
             request::GET_CLIPBOARD => self.get_clipboard(client),
+            request::DISCONNECT => {
+                self.drop_client(client);
+                Ok(())
+            }
             _ => {
                 // CONNECT again, or something unknown.
                 release(msg);

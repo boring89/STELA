@@ -62,7 +62,12 @@ second disk and `classic.cfg`; faster storage (several commands at once, read-ah
 `verbose` and `waitkey`, `make bench`; and everyday programs: a clipboard, dialogs and a
 multi-line text view in the toolbox, command-line tools in `Initrd:/bin/` (`grep`, `sort`,
 `find`, `tar`...), a text editor (Kalamos), a system monitor (Monitor) and a small HTTP-only web
-browser (Periplus) — working names. See
+browser (Periplus) — working names. Later in P11: text beyond ASCII (UTF-8 drawn with the
+Fusion Pixel 12px font, Chinese characters taking two cells), a local time zone, USB sticks
+and disks (Bulk-Only mass storage, MBR, FAT writing; volumes appear and disappear while
+running), a trash, zoom box, list sorting and menu shortcuts on the desktop, Tab completion and
+`*`/`?` wildcards in the shell, a fuzzer for the parsers (`make test-fuzz`) and a stress test
+(`make test-stress`). See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
@@ -73,7 +78,8 @@ browser (Periplus) — working names. See
 [docs/mouseion.md](docs/mouseion.md), [docs/identity.md](docs/identity.md),
 [docs/p520.md](docs/p520.md), [docs/classic.md](docs/classic.md), [docs/net.md](docs/net.md),
 [docs/sound.md](docs/sound.md), [docs/smp.md](docs/smp.md), [docs/hwinfo.md](docs/hwinfo.md),
-[docs/bench.md](docs/bench.md) and [docs/apps.md](docs/apps.md).
+[docs/bench.md](docs/bench.md), [docs/apps.md](docs/apps.md) and
+[docs/testing.md](docs/testing.md).
 
 ## Building
 
@@ -93,6 +99,8 @@ make ehfs-tools  # mkfs.ehfs, fsck.ehfs, ehfs-cp, ehfs-ls for image files, in bu
 make disk-image  # build/stela.img for a USB stick (writing it is your own step: docs/p520.md)
 make test-classic  # local only: boots your own Mac IIci ROM and System to the Finder
 make bench  # measurements without KVM (docs/bench.md)
+make test-fuzz    # the parsers fuzzed on the host (part of make test, about a minute)
+make test-stress  # local only: many processes, files, pipes, connections and windows; leaks checked
 ```
 
 ## License

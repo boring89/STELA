@@ -137,6 +137,13 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Archive (eHFS, rw,
 - QEMU 的 `fat:rw:` ESP 沒有 GPT（vvfat 是 MBR）→ 不掛載；`make run` 與一般的 `make test-qemu` 沒有卷宗（`vfs: no volumes`），程式照常從 initrd 啟動。
 - 關機：selftest 結束前 `vfs::unmount_all()`（eHFS 標成 clean 並 flush）。P6.5 起一般 kernel 的 `SystemPower`（shell 的 `shutdown`／`reboot`）也先 `unmount_all()`（`docs/acpi.md`）；直接關掉 QEMU 不會壞（有日誌），只是 fsck 會說「沒有正常卸載」。
 
+### 6.2 可移除的磁碟（P11 K41）
+
+- **分割表**：GPT；沒有 GPT 時看 **MBR**（`block::mbr`：四個項目、`55 AA`、保護用的 `EE` 不算；開始的扇區要對齊 4 KiB）；都沒有就整顆。開機時的磁碟也走這條（QEMU 的 `fat:rw` ESP 有一個從扇區 63 開始的 MBR 分割區，對不齊，印一行略過——它本來就不掛）。
+- **USB 磁碟**（`mount_removable`）：每個分割區是 eHFS 就用它的卷宗名稱掛（可寫），是 FAT 就用 FAT 的卷標（沒有卷標叫 `USB`，ESP 叫 `EFI`），FAT 目前唯讀；**不會**變成 `Data`。印 `vfs: mounted STICK (FAT, 62 MiB) from usb1`。
+- **卸載**（`unmount_removable` → `vfs::unmount(name)`）：卷宗從清單拿掉（之後開不到），先 flush；已經開著的 handle 還留著那個卷宗，之後的讀寫得到 `IoError`（磁碟不在了）。
+- **卷宗編號**：以前是清單裡的位置；P11 起卷宗會來來去去，編號改成不重複的計數（`VolumeInfo::index`、`Stat::volume`）。`VolumeList(i)` 仍是第 i 個；用編號找卷宗要 libstela 的 `fs::volume_by_index`（`cli::sys`、Classic 的 `datafs` 改用它）。
+
 ### 6.1 `Initrd`（P6）與 `Tmp`（P7）
 
 P7 起 `InitrdFs` 是一棵資料夾樹（`initrd::Tree`：成員路徑 `linux/hello` → 資料夾 `linux` 裡的 `hello`），`Tmp` 卷宗是 kernel 記憶體裡的檔案系統（`vfs/tmpfs.rs`，≤ 16 MiB，關機就沒了；Linux 程式的 `/tmp`），見 `docs/linux.md` §7.1、§10。

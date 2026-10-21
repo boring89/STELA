@@ -168,6 +168,9 @@ pub struct Node {
 }
 
 static VOLUMES: SpinLock<Vec<Arc<Volume>>> = SpinLock::new(Vec::new());
+/// The next volume's index: indices are never reused, since volumes come
+/// and go (P11 K41: USB disks).
+static NEXT_INDEX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Adds a volume under `name` (made unique: "Name 2", ...); returns it.
 pub fn mount(name: &str, fs: Arc<dyn FileSystem>) -> Arc<Volume> {
@@ -179,7 +182,7 @@ pub fn mount(name: &str, fs: Arc<dyn FileSystem>) -> Arc<Volume> {
         n += 1;
     }
     let volume = Arc::new(Volume {
-        index: volumes.len() as u32,
+        index: NEXT_INDEX.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
         name: unique,
         fs,
     });
@@ -199,6 +202,24 @@ pub fn find(name: &str) -> Option<Arc<Volume>> {
         .iter()
         .find(|v| v.name.eq_ignore_ascii_case(name))
         .cloned()
+}
+
+/// Takes the volume called `name` away (P11 K41: its disk was unplugged
+/// or is going): new opens do not find it; handles already open keep it
+/// and get `IoError` from a gone disk. Flushes it first (an unplugged disk
+/// fails that, which is printed).
+pub fn unmount(name: &str) -> Option<Arc<Volume>> {
+    let volume = {
+        let mut volumes = VOLUMES.lock();
+        let at = volumes
+            .iter()
+            .position(|v| v.name.eq_ignore_ascii_case(name))?;
+        volumes.remove(at)
+    };
+    if let Err(e) = volume.fs.unmount() {
+        frame::kprintln!("vfs: unmounting {}: {}", volume.name, e.name());
+    }
+    Some(volume)
 }
 
 /// Unmounts every volume (marks eHFS volumes clean). Errors are printed.

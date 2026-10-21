@@ -143,3 +143,16 @@ usb: 7: hub (0409:55aa, full speed)
 - 沒有 USB 儲存、音訊、isochronous、電源管理（U1/U2、suspend）。
 - endpoint stall 不復原；控制傳輸一次 4 KiB 以內；裝置路徑最多 5 層。
 - 沒有在實機上驗證。
+
+## 12. 隨身碟：Bulk-Only 大量儲存（P11 K41，使用者尚未審核）
+
+**比喻**：隨身碟是一個只會聽 SCSI 指令的小倉庫。USB 只是把「信封」送過去：每個指令裝在一個 31 bytes 的信封（CBW）裡從 bulk OUT 送出，貨物（資料）走 bulk IN 或 OUT，最後倉庫回一張 13 bytes 的收據（CSW）說成功沒有（USB Mass Storage Class Bulk-Only Transport 1.0 §5）。
+
+- **辨認**：介面 class 08（mass storage）、subclass 06（SCSI transparent）、protocol 50（Bulk-Only）；一個 bulk OUT、一個 bulk IN endpoint。Configure Endpoint：兩個 endpoint context（type 2 = bulk OUT、6 = bulk IN，CErr 3，最大封包，各自一個 ring；xHCI 1.2 §6.2.3）。
+- **初始化**：INQUIRY（廠商／產品名稱）、TEST UNIT READY（最多試 10 次）、READ CAPACITY (10)（區塊數與 512／4096 bytes 的區塊大小）。印 `usb: 7.2: storage usb1: QEMU QEMU HARDDISK, 64 MiB in 512-byte sectors`。
+- **讀寫**：`storage::UsbDisk` 實作 `BlockDevice`（4 KiB 的區塊）。xHCI 驅動由 USB 執行緒獨占，所以每個 4 KiB 的請求是一個 `Job`：放進 `storage::JOBS`、叫醒 USB 執行緒（`xhci::kick`）、等它做完（最多 10 秒）。USB 執行緒在每一圈服務佇列：READ (10)／WRITE (10) 一次一個 4 KiB 區塊（512-byte 扇區時 8 個），CBW → 資料 → CSW。一次只有一個指令在途，沒有 UAS、沒有一次多個區塊（慢，但簡單）。
+- **純邏輯**（host 測試）：`cbw`、`csw_status`、`scsi::{inquiry, rw10, capacity, names}`。
+- **插入**：kernel 註冊的 `StorageHooks::attach` 把磁碟加進 `kernel::block`（名字 `usb1`、`usb2`…），**另開一個執行緒**掛載（掛載要讀磁碟，而讀磁碟要 USB 執行緒服務——在 USB 執行緒裡掛載會自己等自己）。
+- **拔除**：`detach` 把磁碟標成 gone（之後的請求一律 `IoError`），另開執行緒卸載它的卷宗（`docs/vfs.md` §6.2）。
+- 測試：`make test-usb` 的 QEMU 多一個 `usb-storage`（接在 hub 的 port 2，全速），映像是 `build/images/usb-stick.img`（64 MiB，MBR 一個 FAT32 分割區、卷標 STICK、`HELLO.TXT`；mtools 只寫這個檔）；看到 `vfs: mounted STICK (FAT, 62 MiB) from usb1`，shell `cat STICK:/hello.txt` 印出內容。
+- 限制：只有 Bulk-Only（沒有 UAS）；只看 LUN 0；STALL 不復原（指令失敗就算失敗）；READ CAPACITY (16)（2 TiB 以上）沒有做；寫入時沒有 SYNCHRONIZE CACHE；一次 4 KiB。

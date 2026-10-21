@@ -15,6 +15,7 @@ extern crate alloc;
 
 pub mod crc32;
 pub mod gpt;
+pub mod mbr;
 pub mod mem;
 pub mod partition;
 

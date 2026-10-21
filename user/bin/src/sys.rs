@@ -42,7 +42,7 @@ pub fn describe(e: Error) -> &'static str {
 pub fn cwd() -> Location {
     let volume = fs::stat(bootstrap::CWD)
         .ok()
-        .and_then(|st| fs::volume_list(u64::from(st.volume)).ok().flatten())
+        .and_then(|st| fs::volume_by_index(st.volume))
         .map_or_else(|| String::from("Data"), |v| String::from(v.name()));
     let mut loc = Location::root(&volume);
     if let Ok(p) = fs::path_of(bootstrap::CWD) {

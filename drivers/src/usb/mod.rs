@@ -9,6 +9,7 @@
 //! chapter 10 "Keyboard/Keypad Page").
 
 pub mod hid;
+pub mod storage;
 pub mod trb;
 #[cfg(target_os = "none")]
 pub mod xhci;

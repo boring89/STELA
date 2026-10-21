@@ -634,20 +634,37 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 # motion sent to the mouse must arrive as reports; then hot plugging: the
 # mouse and the hub's keyboard are removed and added back (on another hub
 # port).
-USB_FLAGS := -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0,id=kbd \
+# P11 K41: a USB stick too (Bulk-Only mass storage) on the hub's port 2
+# (so the root ports stay as they were; the keyboard added back goes to
+# hub port 3): an MBR with one FAT32 partition at 1 MiB, labelled STICK,
+# holding HELLO.TXT (made with mtools in build/images); it is mounted as
+# STICK: and read from the shell.
+USB_STICK = $(IMAGES)/usb-stick.img
+USB_FLAGS = -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0,id=kbd \
 	-device usb-mouse,bus=xhci.0,id=mouse -device usb-hub,bus=xhci.0,id=hub \
-	-device usb-kbd,bus=xhci.0,port=3.1,id=kbd2
+	-device usb-kbd,bus=xhci.0,port=3.1,id=kbd2 \
+	-drive if=none,id=stick,format=raw,file=$(USB_STICK) \
+	-device usb-storage,bus=xhci.0,port=3.2,drive=stick,id=stick
 test-usb: esp $(BUILD)/OVMF_VARS.fd
+	mkdir -p $(IMAGES)
+	rm -f $(USB_STICK)
+	truncate -s 64M $(USB_STICK)
+	python3 -c "import sys,struct; f=open(sys.argv[1],'r+b'); f.seek(446); f.write(bytes([0,0,0,0,0x0C,0,0,0])+struct.pack('<II',2048,129024)); f.seek(510); f.write(b'\x55\xaa')" $(USB_STICK)
+	mformat -i $(USB_STICK)@@1M -T 129024 -F -v STICK ::
+	printf 'hello from the USB stick\n' > $(BUILD)/stick-hello.txt
+	mcopy -i $(USB_STICK)@@1M $(BUILD)/stick-hello.txt ::/HELLO.TXT
 	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-usb.log \
 		--type "usb: 7: hub" "uptime\n" \
 		--qmp "uptime:" input-send-event '{"events":[{"type":"rel","data":{"axis":"x","value":30}}]}' \
 		--qmp "usb: 6: first report" device_del '{"id":"mouse"}' \
 		--qmp "usb: 6: removed" device_add '{"driver":"usb-mouse","bus":"xhci.0","id":"mouse2"}' \
 		--qmp "usb: 8: mouse" device_del '{"id":"kbd2"}' \
-		--qmp "usb: 7.1: removed" device_add '{"driver":"usb-kbd","bus":"xhci.0","port":"3.2","id":"kbd3"}' \
+		--qmp "usb: 7.1: removed" device_add '{"driver":"usb-kbd","bus":"xhci.0","port":"3.3","id":"kbd3"}' \
 		--expect "usb: xhci0" --expect "usb: 7: hub" --expect "uptime:" \
 		--expect "usb: 6: first report" --expect "usb: 6: removed" --expect "usb: 8: mouse" \
-		--expect "usb: 7.1: removed" --expect "usb: 7.2: keyboard" \
+		--type "usb: 7.3: keyboard" "cat STICK:/hello.txt\n" \
+		--expect "usb: 7.1: removed" --expect "usb: 7.3: keyboard" \
+		--expect "hello from the USB stick" \
 		-- $(QEMU) $(subst -machine q35,-machine q35$(comma)i8042=off,$(QEMU_FLAGS)) \
 		-display none -serial stdio $(USB_FLAGS)
 

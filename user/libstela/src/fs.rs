@@ -138,6 +138,20 @@ pub fn set_size(file: Handle, size: u64) -> Result<(), Error> {
     syscall2(Syscall::FileSetSize, file.raw(), size).map(|_| ())
 }
 
+/// The volume whose index (`VolumeInfo::index`, `Stat::volume`) is
+/// `index`: volumes come and go (P11 K41), so the list's position is not
+/// the index.
+pub fn volume_by_index(index: u32) -> Option<VolumeInfo> {
+    let mut i = 0;
+    while let Ok(Some(v)) = volume_list(i) {
+        if v.index == index {
+            return Some(v);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Volume `index` (`None` past the last).
 pub fn volume_list(index: u64) -> Result<Option<VolumeInfo>, Error> {
     let mut b = [0u8; VOLUME_INFO_SIZE];

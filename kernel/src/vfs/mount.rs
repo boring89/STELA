@@ -8,7 +8,9 @@
 //! writable eHFS volume is `Data` (a volume named otherwise is renamed,
 //! with a warning). A disk without a GPT that starts with an eHFS
 //! superblock is mounted whole. Partitions must start on a 4 KiB
-//! boundary. The initrd is mounted as the read-only `Initrd`, then the
+//! boundary. P11 K41: a disk without a GPT may have an MBR; USB disks are
+//! mounted when they arrive (eHFS and FAT under their labels) and
+//! unmounted when they go. The initrd is mounted as the read-only `Initrd`, then the
 //! memory file system as `Tmp` (`tmpfs.rs`).
 
 use super::{EhfsFs, FatFs, VolumeDevice, mount};
@@ -32,29 +34,117 @@ fn mib(bytes: u64) -> String {
     }
 }
 
+/// The partitions of `disk`: (GPT type, first block, blocks) from its
+/// GPT, else (P11 K41) its MBR, else the whole disk.
+fn partitions(disk_name: &str, disk: &Disk) -> Vec<(Option<Guid>, u64, u64)> {
+    if let Ok(table) = gpt::read(&**disk) {
+        return table
+            .partitions
+            .iter()
+            .filter_map(|p| match table.blocks_of(p) {
+                Some((start, count)) => Some((Some(p.kind), start, count)),
+                None => {
+                    frame::kprintln!(
+                        "vfs: {disk_name} partition {}: not 4 KiB aligned; skipped",
+                        p.index + 1
+                    );
+                    None
+                }
+            })
+            .collect();
+    }
+    let mut first = vec![0u8; BLOCK_SIZE];
+    if disk.read(0, &mut first).is_ok()
+        && let Some(table) = block::mbr::read(&first[..512])
+    {
+        return table
+            .iter()
+            .filter_map(|p| match p.blocks() {
+                Some(b) => Some((None, b.0, b.1)),
+                None => {
+                    frame::kprintln!(
+                        "vfs: {disk_name} MBR partition {}: not 4 KiB aligned; skipped",
+                        p.index + 1
+                    );
+                    None
+                }
+            })
+            .collect();
+    }
+    vec![(None, 0, disk.block_count())]
+}
+
+/// Which volumes each removable disk has (P11 K41).
+static REMOVABLE: frame::sync::SpinLock<Vec<(String, Vec<String>)>> =
+    frame::sync::SpinLock::new(Vec::new());
+
+/// Mounts the volumes of a disk that just arrived (a USB disk): eHFS and
+/// FAT, under their labels. Never `Data`. Prints what it mounted.
+pub fn mount_removable(disk_name: &str, disk: Disk) {
+    let mut names = Vec::new();
+    for (kind, start, count) in partitions(disk_name, &disk) {
+        let Some(part) = Partition::new(Arc::clone(&disk), start, count, false) else {
+            continue;
+        };
+        let mut first = vec![0u8; BLOCK_SIZE];
+        if part.read(0, &mut first).is_err() {
+            continue;
+        }
+        let mounted = if ehfs::is_ehfs(&first) {
+            let device: VolumeDevice = CachedDevice::new(part, DEFAULT_BLOCKS);
+            EhfsFs::mount(device, false).ok().map(|(fs, label)| {
+                let what = alloc::format!("eHFS, {}", mib(super::FileSystem::space(&fs).0));
+                (mount(&label, Arc::new(fs)), what)
+            })
+        } else {
+            let device: VolumeDevice = CachedDevice::new(part, FAT_CACHE);
+            FatFs::mount(device).ok().map(|(fs, label)| {
+                let label = if label.trim().is_empty() || kind == Some(Guid::ESP) {
+                    String::from(if kind == Some(Guid::ESP) {
+                        "EFI"
+                    } else {
+                        "USB"
+                    })
+                } else {
+                    String::from(label.trim())
+                };
+                let what = alloc::format!("FAT, {}", mib(super::FileSystem::space(&fs).0));
+                (mount(&label, Arc::new(fs)), what)
+            })
+        };
+        match mounted {
+            Some((volume, what)) => {
+                frame::kprintln!("vfs: mounted {} ({what}) from {disk_name}", volume.name);
+                names.push(volume.name.clone());
+            }
+            None => frame::kprintln!("vfs: {disk_name}: a partition without eHFS or FAT; skipped"),
+        }
+    }
+    REMOVABLE.lock().push((String::from(disk_name), names));
+}
+
+/// Unmounts the volumes of a disk that went away (P11 K41).
+pub fn unmount_removable(disk_name: &str) {
+    let names = {
+        let mut r = REMOVABLE.lock();
+        match r.iter().position(|(d, _)| d == disk_name) {
+            Some(at) => r.remove(at).1,
+            None => Vec::new(),
+        }
+    };
+    for name in names {
+        if super::unmount(&name).is_some() {
+            frame::kprintln!("vfs: unmounted {name} ({disk_name} went away)");
+        }
+    }
+}
+
 /// Mounts what the disks hold and prints one line per volume.
 pub fn mount_all() {
     let mut have_data = false;
     let mut summary: Vec<String> = Vec::new();
     for (disk_name, disk) in disks() {
-        let parts: Vec<(Option<Guid>, u64, u64)> = match gpt::read(&*disk) {
-            Ok(table) => table
-                .partitions
-                .iter()
-                .filter_map(|p| match table.blocks_of(p) {
-                    Some((start, count)) => Some((Some(p.kind), start, count)),
-                    None => {
-                        frame::kprintln!(
-                            "vfs: {disk_name} partition {}: not 4 KiB aligned; skipped",
-                            p.index + 1
-                        );
-                        None
-                    }
-                })
-                .collect(),
-            Err(_) => vec![(None, 0, disk.block_count())],
-        };
-        for (kind, start, count) in parts {
+        for (kind, start, count) in partitions(&disk_name, &disk) {
             let Some(part) = Partition::new(Arc::clone(&disk), start, count, false) else {
                 continue;
             };

@@ -18,6 +18,17 @@ pub fn start() {
     let Some(controller) = drivers::usb::xhci::probe() else {
         return;
     };
+    // USB disks (P11 K41): mounted when they come, unmounted when they go.
+    drivers::usb::xhci::set_storage_hooks(drivers::usb::xhci::StorageHooks {
+        attach: |name, disk| crate::block::attach(name, disk),
+        detach: |name| {
+            let name = alloc::string::String::from(name);
+            // Not on the USB thread: unmounting may flush the disk.
+            if let Err(e) = task::spawn("unmount", move || crate::block::detach(&name)) {
+                frame::kprintln!("usb: cannot unmount: {e:?}");
+            }
+        },
+    });
     if let Err(e) = task::spawn("usb", move || drivers::usb::xhci::run(controller)) {
         frame::kprintln!("usb: cannot start the thread: {e:?}");
     }

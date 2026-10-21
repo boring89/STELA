@@ -193,9 +193,9 @@ impl Store for DataStore {
         let Ok(st) = fs::stat(self.root) else {
             return (0, 0);
         };
-        match fs::volume_list(u64::from(st.volume)) {
-            Ok(Some(v)) => (v.total, v.free),
-            _ => (0, 0),
+        match fs::volume_by_index(st.volume) {
+            Some(v) => (v.total, v.free),
+            None => (0, 0),
         }
     }
 }

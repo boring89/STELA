@@ -162,6 +162,44 @@ enum Role {
         ports: u8,
         children: Vec<Option<u8>>,
     },
+    /// Mass storage, Bulk-Only Transport (P11 K41, `storage`).
+    Storage {
+        out_dci: u8,
+        in_dci: u8,
+        out_ring: Ring,
+        in_ring: Ring,
+        /// The CBW and CSW.
+        wrapper: DmaBuffer,
+        /// The data stage (4 KiB).
+        data: DmaBuffer,
+        tag: u32,
+        /// Bytes of a sector (512 or 4096).
+        sector: u32,
+        disk: Arc<super::storage::UsbDisk>,
+        name: String,
+    },
+}
+
+/// What the kernel does when a disk comes and goes (P11 K41).
+#[derive(Clone, Copy)]
+pub struct StorageHooks {
+    /// A disk arrived: its name (`usb1`...) and the device.
+    pub attach: fn(String, Arc<dyn block::BlockDevice + Send + Sync>),
+    /// The disk of that name went away.
+    pub detach: fn(&str),
+}
+
+static STORAGE_HOOKS: SpinLock<Option<StorageHooks>> = SpinLock::new(None);
+static NEXT_DISK: AtomicU64 = AtomicU64::new(1);
+
+/// Sets what happens when a USB disk comes and goes.
+pub fn set_storage_hooks(hooks: StorageHooks) {
+    *STORAGE_HOOKS.lock() = Some(hooks);
+}
+
+/// Wakes the USB thread (a disk request is waiting).
+pub fn kick() {
+    wake(WAITER.load(Ordering::Acquire));
 }
 
 /// One device in a slot.
@@ -437,6 +475,7 @@ impl Controller {
                     Role::Hid { mouse: true, .. } => "mouse",
                     Role::Hid { mouse: false, .. } => "keyboard",
                     Role::Hub { .. } => "hub",
+                    Role::Storage { .. } => "storage",
                     Role::Other => "other",
                 },
             })
@@ -571,6 +610,12 @@ impl Controller {
             frame::kprintln!("usb: {path}: hub ({ids}, {} speed)", speed.name());
         } else if let Some(kind) = self.setup_hid(slot, &config)? {
             frame::kprintln!("usb: {path}: {kind} ({ids}, {} speed)", speed.name());
+        } else if let Some(what) = self.setup_storage(slot, &config)? {
+            frame::kprintln!(
+                "usb: {path}: storage {what} ({ids}, {} speed)",
+                speed.name()
+            );
+            self.publish();
         } else {
             frame::kprintln!(
                 "usb: {path}: device {ids} (class {}) not used",
@@ -654,6 +699,253 @@ impl Controller {
         }
         self.queue_report(slot);
         Ok(Some(if mouse { "mouse" } else { "keyboard" }))
+    }
+
+    /// Sets up a Bulk-Only mass storage device (class 08, SCSI 06, BOT
+    /// 50): both bulk endpoints, then INQUIRY, TEST UNIT READY and READ
+    /// CAPACITY; tells the kernel. `None` if it is not one.
+    fn setup_storage(
+        &mut self,
+        slot: u8,
+        config: &Configuration,
+    ) -> Result<Option<String>, UsbError> {
+        let Some(iface) = config
+            .interfaces
+            .iter()
+            .find(|i| i.class == 8 && i.subclass == 6 && i.protocol == 0x50)
+        else {
+            return Ok(None);
+        };
+        let (Some(ep_out), Some(ep_in)) = (
+            iface
+                .endpoints
+                .iter()
+                .find(|e| !e.is_in() && e.kind == 2)
+                .copied(),
+            iface
+                .endpoints
+                .iter()
+                .find(|e| e.is_in() && e.kind == 2)
+                .copied(),
+        ) else {
+            return Ok(None);
+        };
+        let out_ring = Ring::new()?;
+        let in_ring = Ring::new()?;
+        let wrapper = DmaBuffer::new(1).ok_or(UsbError::NoMemory)?;
+        let data = DmaBuffer::new(1).ok_or(UsbError::NoMemory)?;
+        let (out_dci, in_dci) = (ep_out.dci(), ep_in.dci());
+        let c = self.ctx;
+        let input_phys = {
+            let dev = self.devices.get(&slot).ok_or(UsbError::BadDescriptor)?;
+            let input = &dev.input;
+            input.zero();
+            Self::write_ctx(input, c, 0, 1, 1 | 1 << out_dci | 1 << in_dci);
+            Self::write_ctx(
+                input,
+                c,
+                1,
+                0,
+                dev.route | (dev.speed as u32) << 20 | u32::from(out_dci.max(in_dci)) << 27,
+            );
+            Self::write_ctx(input, c, 1, 1, u32::from(dev.root_port) << 16);
+            // Endpoint contexts: CErr 3, type 2 (bulk OUT) or 6 (bulk IN),
+            // the largest packet; the ring with DCS = 1 (xHCI 1.2 6.2.3).
+            for (ep, ring, ty) in [(ep_out, &out_ring, 2u32), (ep_in, &in_ring, 6u32)] {
+                let at = usize::from(ep.dci()) + 1;
+                let mp = u32::from(ep.max_packet);
+                Self::write_ctx(input, c, at, 0, 0);
+                Self::write_ctx(input, c, at, 1, 3 << 1 | ty << 3 | mp << 16);
+                Self::write_ctx(input, c, at, 2, ring.phys() as u32 | 1);
+                Self::write_ctx(input, c, at, 3, (ring.phys() >> 32) as u32);
+                Self::write_ctx(input, c, at, 4, 3072);
+            }
+            input.phys()
+        };
+        self.command(Trb::command(kind::CONFIGURE_ENDPOINT, slot, input_phys))?;
+        let name = format!("usb{}", NEXT_DISK.fetch_add(1, Ordering::Relaxed));
+        if let Some(dev) = self.devices.get_mut(&slot) {
+            dev.role = Role::Storage {
+                out_dci,
+                in_dci,
+                out_ring,
+                in_ring,
+                wrapper,
+                data,
+                tag: 1,
+                sector: 512,
+                disk: Arc::new(super::storage::UsbDisk {
+                    slot,
+                    blocks: 0,
+                    gone: core::sync::atomic::AtomicBool::new(false),
+                }),
+                name: name.clone(),
+            };
+        }
+        use super::storage::scsi;
+        let mut inquiry = [0u8; 36];
+        self.bot(slot, &scsi::inquiry(36), true, &mut inquiry)?;
+        let (vendor, product) = scsi::names(&inquiry);
+        // A medium may need a moment.
+        for _ in 0..10 {
+            if self
+                .bot(slot, &scsi::TEST_UNIT_READY, false, &mut [])
+                .is_ok()
+            {
+                break;
+            }
+            spin(50_000_000);
+        }
+        let mut cap = [0u8; 8];
+        self.bot(slot, &scsi::READ_CAPACITY_10, true, &mut cap)?;
+        let (sectors, sector) = scsi::capacity(&cap).ok_or(UsbError::BadDescriptor)?;
+        let blocks = sectors * u64::from(sector) / super::storage::BLOCK as u64;
+        let disk = Arc::new(super::storage::UsbDisk {
+            slot,
+            blocks,
+            gone: core::sync::atomic::AtomicBool::new(false),
+        });
+        if let Some(Role::Storage {
+            sector: s, disk: d, ..
+        }) = self.devices.get_mut(&slot).map(|d| &mut d.role)
+        {
+            *s = sector;
+            *d = Arc::clone(&disk);
+        }
+        if let Some(h) = *STORAGE_HOOKS.lock() {
+            (h.attach)(name.clone(), disk);
+        }
+        Ok(Some(format!(
+            "{name}: {vendor} {product}, {} MiB in {sector}-byte sectors",
+            (sectors * u64::from(sector)) >> 20
+        )))
+    }
+
+    /// One bulk transfer of `len` bytes at `phys` on `slot`'s endpoint
+    /// `dci`; the bytes moved.
+    fn bulk(&mut self, slot: u8, dci: u8, phys: u64, len: u32) -> Result<u32, UsbError> {
+        let at = {
+            let dev = self.devices.get_mut(&slot).ok_or(UsbError::BadDescriptor)?;
+            let Role::Storage {
+                out_dci,
+                out_ring,
+                in_ring,
+                ..
+            } = &mut dev.role
+            else {
+                return Err(UsbError::BadDescriptor);
+            };
+            let ring = if dci == *out_dci { out_ring } else { in_ring };
+            ring.push(Trb::normal(phys, len))
+        };
+        self.ring_doorbell(slot, dci);
+        let e = self.wait_event(|e| {
+            e.kind() == kind::TRANSFER_EVENT
+                && e.slot() == slot
+                && e.endpoint() == dci
+                && e.parameter == at
+        })?;
+        match e.completion() {
+            completion::SUCCESS | completion::SHORT_PACKET => {
+                Ok(len.saturating_sub(e.status & 0xFF_FFFF))
+            }
+            c => Err(UsbError::Completion(c)),
+        }
+    }
+
+    /// One SCSI command over Bulk-Only Transport: CBW, `data` (IN or OUT,
+    /// at most 4 KiB), CSW; an error unless the status is good.
+    fn bot(
+        &mut self,
+        slot: u8,
+        cdb: &[u8],
+        data_in: bool,
+        data: &mut [u8],
+    ) -> Result<(), UsbError> {
+        use super::storage::{cbw, csw_status};
+        let (out_dci, in_dci, wrapper, buffer, tag) = {
+            let dev = self.devices.get_mut(&slot).ok_or(UsbError::BadDescriptor)?;
+            let Role::Storage {
+                out_dci,
+                in_dci,
+                wrapper,
+                data,
+                tag,
+                ..
+            } = &mut dev.role
+            else {
+                return Err(UsbError::BadDescriptor);
+            };
+            *tag = tag.wrapping_add(1);
+            (*out_dci, *in_dci, wrapper.phys(), data.phys(), *tag)
+        };
+        let len = data.len().min(4096) as u32;
+        let block = cbw(tag, len, data_in, cdb);
+        self.storage_buffer(slot, true, |w| {
+            let _ = w.write(0, &block);
+        });
+        self.bulk(slot, out_dci, wrapper, 31)?;
+        if len > 0 {
+            if !data_in {
+                self.storage_buffer(slot, false, |d| {
+                    let _ = d.write(0, &data[..len as usize]);
+                });
+            }
+            self.bulk(slot, if data_in { in_dci } else { out_dci }, buffer, len)?;
+            if data_in {
+                self.storage_buffer(slot, false, |d| {
+                    let _ = d.read(0, &mut data[..len as usize]);
+                });
+            }
+        }
+        self.bulk(slot, in_dci, wrapper + 512, 13)?;
+        let mut csw = [0u8; 13];
+        self.storage_buffer(slot, true, |w| {
+            let _ = w.read(512, &mut csw);
+        });
+        match csw_status(&csw, tag) {
+            Some(0) => Ok(()),
+            Some(s) => Err(UsbError::Completion(0x80 | s)),
+            None => Err(UsbError::BadDescriptor),
+        }
+    }
+
+    /// Runs `f` on a storage device's wrapper page (`wrapper`) or data page.
+    fn storage_buffer(&self, slot: u8, wrapper: bool, f: impl FnOnce(&DmaBuffer)) {
+        if let Some(Role::Storage {
+            wrapper: w, data, ..
+        }) = self.devices.get(&slot).map(|d| &d.role)
+        {
+            f(if wrapper { w } else { data });
+        }
+    }
+
+    /// Serves the disk requests that are waiting.
+    fn serve_storage(&mut self) {
+        use super::storage::Op;
+        for job in super::storage::take_jobs() {
+            let sector = match self.devices.get(&job.slot).map(|d| &d.role) {
+                Some(Role::Storage { sector, .. }) => *sector,
+                _ => {
+                    *job.result.lock() = Some(false);
+                    wake(job.waiter.load(Ordering::Acquire));
+                    continue;
+                }
+            };
+            let per = (super::storage::BLOCK as u32 / sector).max(1);
+            let (write, block) = match job.op {
+                Op::Read(b) => (false, b),
+                Op::Write(b) => (true, b),
+            };
+            let lba = (block * u64::from(per)) as u32;
+            let cdb = super::storage::scsi::rw10(write, lba, per as u16);
+            let mut data = core::mem::take(&mut *job.data.lock());
+            data.resize(super::storage::BLOCK, 0);
+            let ok = self.bot(job.slot, &cdb, !write, &mut data).is_ok();
+            *job.data.lock() = data;
+            *job.result.lock() = Some(ok);
+            wake(job.waiter.load(Ordering::Acquire));
+        }
     }
 
     /// Queues a Normal TRB for the next report of `slot`'s HID endpoint.
@@ -936,6 +1228,13 @@ impl Controller {
         let Some(path) = self.devices.get(&slot).map(|d| d.path.clone()) else {
             return;
         };
+        if let Some(Role::Storage { disk, name, .. }) = self.devices.get(&slot).map(|d| &d.role) {
+            disk.gone.store(true, Ordering::Release);
+            let name = name.clone();
+            if let Some(h) = *STORAGE_HOOKS.lock() {
+                (h.detach)(&name);
+            }
+        }
         if let Some((hub, port)) = self.devices.get(&slot).and_then(|d| d.parent)
             && let Some(Role::Hub { children, .. }) =
                 self.devices.get_mut(&hub).map(|d| &mut d.role)
@@ -1130,10 +1429,11 @@ pub fn run(mut c: Controller) -> ! {
     let mut last_hub_poll = 0;
     loop {
         c.service(&mut last_hub_poll);
+        c.serve_storage();
         wait_for(
             50_000_000,
             |me| WAITER.store(me, Ordering::Release),
-            || c.peek_event().is_some(),
+            || c.peek_event().is_some() || !super::storage::JOBS.lock().is_empty(),
         );
     }
 }

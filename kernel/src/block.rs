@@ -38,3 +38,21 @@ pub fn probe() {
 pub fn disks() -> Vec<(String, Disk)> {
     DISKS.lock().clone()
 }
+
+/// A disk arrived (a USB disk, P11 K41): kept, and its volumes mounted by
+/// a thread of its own (mounting reads the disk, which the USB thread
+/// that calls this serves).
+pub fn attach(name: String, disk: Disk) {
+    DISKS.lock().push((name.clone(), Arc::clone(&disk)));
+    if let Err(e) = task::spawn("mount", move || {
+        crate::vfs::mount::mount_removable(&name, disk)
+    }) {
+        frame::kprintln!("block: cannot mount the new disk: {e:?}");
+    }
+}
+
+/// The disk `name` went away: its volumes are unmounted.
+pub fn detach(name: &str) {
+    DISKS.lock().retain(|(n, _)| n != name);
+    crate::vfs::mount::unmount_removable(name);
+}

@@ -49,6 +49,11 @@ int classic_start(uint8_t *rom, uint32_t rom_size, uint8_t *ram, uint32_t ram_si
     {
         mac_fsm_attach(&machine, (const mac_fs_ops_t *)ops->fs);
     }
+    if (ops->card_vram != NULL &&
+        mac_card_attach(&machine, ops->card_vram, ops->card_res, ops->card_depth) != 0)
+    {
+        return CLASSIC_BAD_ARGS;
+    }
     mac_reset(&machine);
     return CLASSIC_OK;
 }
@@ -119,6 +124,12 @@ int classic_sysbeep(void)
 uint32_t classic_instructions(void)
 {
     return machine.insn_count;
+}
+
+
+int classic_card_resolution(uint32_t width, uint32_t height)
+{
+    return mac_card_find_resolution(width, height);
 }
 
 

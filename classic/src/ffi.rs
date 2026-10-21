@@ -73,6 +73,9 @@ struct HostOps {
     audio: extern "C" fn(ctx: *mut c_void, samples: *const u8, count: u32, rate: u32),
     audio_ctx: *mut c_void,
     fs: *const FsOps,
+    card_vram: *mut u8,
+    card_res: u32,
+    card_depth: u32,
 }
 
 /// `mac_fs_item_t` (`c/mac/fsm.h`).
@@ -142,6 +145,7 @@ unsafe extern "C" {
     fn classic_milestones() -> u32;
     fn classic_sysbeep() -> c_int;
     fn classic_fs_status(install: *mut i32, mounted: *mut bool, requests: *mut u32);
+    fn classic_card_resolution(width: u32, height: u32) -> c_int;
     fn mac_roman_to_unicode(c: u8) -> u32;
     fn mac_roman_from_unicode(u: u32) -> c_int;
     fn m68k_vm_init(ram: *mut u8, size: u32, cpu: u32) -> c_int;
@@ -594,6 +598,32 @@ extern "C" fn fs_set_length(ctx: *mut c_void, id: u32, rsrc: bool, length: u32) 
     unsafe { fs_of(ctx).set_length(id, rsrc, length).err().unwrap_or(0) }
 }
 
+/// Size of the NuBus card's video RAM (`CLASSIC_CARD_VRAM_SIZE`).
+const CARD_VRAM_SIZE: usize = 0x200_0000;
+
+/// The NuBus video card's starting mode (P11, `docs/classic.md` §8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Card {
+    /// Index of the resolution in the card's list ([`card_resolution`]).
+    pub resolution: u32,
+    /// 0-5 = 1, 2, 4, 8, 16, 32 bits per pixel.
+    pub depth: u32,
+}
+
+/// The card's index of resolution `width` x `height`, if it offers it.
+pub fn card_resolution(width: u32, height: u32) -> Option<u32> {
+    // SAFETY: a pure function over a table.
+    u32::try_from(unsafe { classic_card_resolution(width, height) }).ok()
+}
+
+/// The depth index of `bits` per pixel (1, 2, 4, 8, 16 or 32).
+pub fn card_depth(bits: u32) -> Option<u32> {
+    [1, 2, 4, 8, 16, 32]
+        .iter()
+        .position(|&b| b == bits)
+        .map(|i| i as u32)
+}
+
 /// The file system's state (`Mac::fs_status`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FsStatus {
@@ -706,6 +736,7 @@ pub struct Mac {
     _disk: Box<Box<dyn MacDisk>>,
     audio: Box<AudioSink>,
     _fs: Option<FsParts>,
+    _card_vram: Option<Box<[u8]>>,
 }
 
 impl Mac {
@@ -717,6 +748,7 @@ impl Mac {
         ram_size: u32,
         disk: Box<dyn MacDisk>,
         fs: Option<(Box<dyn MacFs>, &str)>,
+        card: Option<Card>,
         xpram: &[u8; 256],
         rtc_seconds: u32,
     ) -> Result<Mac, StartError> {
@@ -755,7 +787,13 @@ impl Mac {
             });
             (fs, ops, cname)
         });
+        let mut card_vram = card.map(|_| vec![0u8; CARD_VRAM_SIZE].into_boxed_slice());
         let ops = HostOps {
+            card_vram: card_vram
+                .as_mut()
+                .map_or(core::ptr::null_mut(), |v| v.as_mut_ptr()),
+            card_res: card.map_or(0, |c| c.resolution),
+            card_depth: card.map_or(0, |c| c.depth),
             fs: fs
                 .as_ref()
                 .map_or(core::ptr::null(), |(_, ops, _)| &**ops as *const FsOps),
@@ -776,7 +814,8 @@ impl Mac {
         // until it is dropped; `ops` is copied by the callee and its `ctx`
         // points at the boxed disk the Mac also keeps; `xpram` is 256
         // bytes; the file system's ops (kept, with their ctx and name, by
-        // the Mac) stay valid while it lives; no other machine uses the C
+        // the Mac) stay valid while it lives, and so does the card's video
+        // RAM (CLASSIC_CARD_VRAM_SIZE bytes); no other machine uses the C
         // globals (VM_IN_USE).
         let r = unsafe {
             classic_start(
@@ -798,6 +837,7 @@ impl Mac {
                 _disk: disk,
                 audio,
                 _fs: fs,
+                _card_vram: card_vram,
             }),
             e => {
                 VM_IN_USE.store(false, Ordering::Release);

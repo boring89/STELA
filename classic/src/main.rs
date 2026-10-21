@@ -41,7 +41,7 @@ use abi::window::{AUTO, flags};
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use classic::ffi::{Mac, MacDisk, MacFs, Power, StartError};
+use classic::ffi::{Card, Mac, MacDisk, MacFs, Power, StartError, card_depth, card_resolution};
 use classic::hostfs::HostFs;
 use classic::keys::adb_code;
 use classic::screen::{Screen, mac_seconds};
@@ -148,8 +148,31 @@ fn save_pram(xpram: &[u8; 256]) {
     }
 }
 
+/// The NuBus card asked for with `resolution=WxH` (and `depth=N`) among
+/// the arguments; `None`: the built-in video.
+fn card_from_args() -> Option<Card> {
+    let args = process::args();
+    let value = |key: &str| {
+        args.iter().find_map(|a| {
+            a.strip_prefix(key)?
+                .strip_prefix('=')
+                .map(alloc::string::String::from)
+        })
+    };
+    let (w, h) = value("resolution")?
+        .split_once('x')
+        .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))?;
+    let Some(resolution) = card_resolution(w, h) else {
+        println!("classic: the card has no {w}x{h} mode; the built-in video it is");
+        return None;
+    };
+    let bits = value("depth").and_then(|d| d.parse().ok()).unwrap_or(8);
+    let depth = card_depth(bits).unwrap_or(3);
+    Some(Card { resolution, depth })
+}
+
 /// Starts the Mac from the files; prints why it cannot.
-fn start() -> Option<Mac> {
+fn start(card: Option<Card>) -> Option<Mac> {
     let rom = match read_all("ROM", ROM_SIZE) {
         Ok(r) if r.len() == ROM_SIZE => r,
         Ok(r) => {
@@ -194,6 +217,7 @@ fn start() -> Option<Mac> {
         RAM_SIZE,
         Box::new(disk),
         data_volume().map(|fs| (fs, "Data")),
+        card,
         &xpram,
         clock,
     ) {
@@ -345,7 +369,8 @@ fn main() -> i64 {
         println!("classic: turned off by the boot option classic=off");
         return 1;
     }
-    let Some(mut mac) = start() else {
+    let card = card_from_args();
+    let Some(mut mac) = start(card) else {
         return 1;
     };
     let mut conn = match Connection::open() {
@@ -355,7 +380,8 @@ fn main() -> i64 {
             return 1;
         }
     };
-    let (w, h) = mac.screen_size();
+    let (mut w, mut h) = mac.screen_size();
+    println!("classic: screen {w}x{h}");
     let Ok(mut window) = conn.create_window(
         w,
         h,
@@ -444,6 +470,15 @@ fn main() -> i64 {
             // time under emulation; better a gap than a growing delay).
             out.write(&frames);
         }
+        // The Monitors control panel switched the card's resolution: the
+        // window follows.
+        let (nw, nh) = mac.screen_size();
+        if (nw, nh) != (w, h) && conn.resize(&mut window, nw, nh).is_ok() {
+            (w, h) = (nw, nh);
+            screen = Screen::new(w as usize, h as usize);
+            picture = vec![0u32; (w * h) as usize];
+            println!("classic: screen {w}x{h}");
+        }
         if frame.is_multiple_of(2) && mac.render(&mut picture) {
             show(&conn, &mut window, &mut screen, &picture);
         }
@@ -525,7 +560,7 @@ fn main() -> i64 {
                 save_pram(&xpram);
                 println!("classic: restarting");
                 drop(mac);
-                let Some(m) = start() else {
+                let Some(m) = start(card) else {
                     return 1;
                 };
                 mac = m;

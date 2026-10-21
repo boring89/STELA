@@ -34,7 +34,21 @@ typedef struct
      * (mac/fsm.h; P11): a STELA folder as a Mac volume. NULL = none. It
      * must stay valid until the next classic_start. */
     const void *fs;
+    /* The NuBus video card in slot $C (mac/mac.h; P11): its video RAM
+     * (CLASSIC_CARD_VRAM_SIZE bytes; NULL = the built-in video only), the
+     * resolution it starts in (an index of the card's list,
+     * classic_card_resolution) and the depth (0-5 = 1, 2, 4, 8, 16, 32
+     * bits). */
+    uint8_t *card_vram;
+    uint32_t card_res;
+    uint32_t card_depth;
 } classic_host_ops;
+
+/* Size of the card's video RAM. */
+#define CLASSIC_CARD_VRAM_SIZE 0x2000000u
+
+/* The index of resolution width x height in the card's list, or -1. */
+int classic_card_resolution(uint32_t width, uint32_t height);
 
 /* Results of classic_start. */
 #define CLASSIC_OK 0

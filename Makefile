@@ -277,6 +277,10 @@ CLASSIC_WAV := $(BUILD)/classic.wav
 # bar (white, 20 rows) on top, the desktop pattern below it.
 CLASSIC_CHECKS := --expect-rect 340,142,200,10,\#ffffff \
 	--expect-pattern 120,200,400,300,\#000000,\#ffffff
+# With the NuBus card at 800x600 (P11): the menu bar and the pattern
+# beyond the built-in 640x480.
+CLASSIC_CARD_CHECKS := --expect-rect 600,142,250,10,\#ffffff \
+	--expect-pattern 400,640,200,80,\#000000,\#ffffff
 classic: user
 
 test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
@@ -307,6 +311,13 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0 \
 		-audiodev wav,id=a0,path=$(CLASSIC_WAV) -device intel-hda -device hda-duplex,audiodev=a0
 	python3 tools/check_wav.py $(CLASSIC_WAV) 0.05 0
+	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic-card.ppm --log $(BUILD)/test-classic-card.log \
+		--type "STELA shell" "run Classic.app resolution=800x600 depth=1\n" \
+		--expect "classic: screen 800x600" --expect "classic: finder desktop shown" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
+		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
+	python3 tools/fb_check.py $(BUILD)/classic-card.ppm $(CLASSIC_CARD_CHECKS)
 	python3 tools/qemu_test.py --exit-code 0 --timeout 600 --log $(BUILD)/test-classic-fs.log \
 		--type "STELA shell" "run Classic.app --test-fs\n" \
 		--type "Classic exited" "ls Data:/\n" --type "untitled folder" "shutdown\n" \

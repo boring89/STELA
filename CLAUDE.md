@@ -203,7 +203,7 @@ Claude 依照上方工作規則直接實作。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。
 - 使用者空間：沒有 Thread 物件；shell 的管線與重新導向只接程式（不接內建指令）、沒有 Tab 補完；heap 不還記憶體（docs/userland.md §9）。
 - Mouseion：拖曳沒有影子、不能多選、沒有刪除與改名、資料夾圖示位置不存、開機不重開上次的視窗；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
-- 視窗：拖外框不即時移動；選單一層；terminal 沒有 ANSI 顏色與捲回（docs/window.md §10）。
+- 視窗：拖外框不即時移動；選單一層；terminal 只有 SGR 顏色、沒有其他 ANSI 序列（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。
 - 儲存：一個 port 一次一個請求（但一個請求一次發出多個命令；沒有 NCQ）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；FAT／Initrd／Tmp 的 `DirRead` 仍每次重新列出；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。
 - 實機：kernel 會把看到的任何 GPT 磁碟上的 eHFS 分割區掛成可寫，包括 P520 上 68k_HAL 磁碟（sda）的 Data 分割區（格式相容，不會損壞，但 Mouseion 會寫入 Finder 資訊）；實機測試時留意或先拔掉（docs/p520.md §1）。

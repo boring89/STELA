@@ -63,6 +63,7 @@
 | 49–52 | `WaitSetCreate`、`WaitSetAdd`、`WaitSetRemove`、`WaitSetWait` | | | 同時等多個物件，見 `docs/ipc.md` §13（P11，使用者尚未審核） |
 | 53 | `FilePath` | 檔案或資料夾, buf, len | 路徑長度 | 卷宗內的路徑，見 `docs/vfs.md` §4.4（P11） |
 | 54–56 | `PipeCreate`、`PipeRead`、`PipeWrite` | | | pipe，見 `docs/ipc.md` §14（P11） |
+| 57 | `TtySetSize` | master, 欄, 列 | 0 | 給 Linux 的 `TIOCGWINSZ`，見 `docs/window.md` §7（P11） |
 
 P7 起沒有 STELA ELF note 的程式用 **Linux 人格**：同一個進入點，號碼與回傳慣例是 Linux 的（`docs/linux.md`）。
 

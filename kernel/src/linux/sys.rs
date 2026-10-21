@@ -430,10 +430,12 @@ fn ioctl(p: &Process, fd: u64, request: u64, arg: u64) -> LinuxResult {
             Ok(0)
         }
         TIOCGWINSZ => {
-            // 25 rows, 80 columns, no pixel sizes.
+            // Rows, columns (what the terminal set; 25 x 80 at first), no
+            // pixel sizes.
+            let (cols, rows) = tty.size();
             let mut w = [0u8; 8];
-            w[0..2].copy_from_slice(&25u16.to_le_bytes());
-            w[2..4].copy_from_slice(&80u16.to_le_bytes());
+            w[0..2].copy_from_slice(&rows.to_le_bytes());
+            w[2..4].copy_from_slice(&cols.to_le_bytes());
             write_user(p, arg, &w)?;
             Ok(0)
         }

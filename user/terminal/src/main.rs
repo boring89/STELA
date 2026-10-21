@@ -32,7 +32,19 @@ use libstela::ipc::{FOREVER, handle_close, handle_duplicate, port_send};
 use libstela::process::{self, pass};
 use libstela::wait::{self, Ready, WaitSet};
 use libstela::{Error, Handle, Message, Rights, bootstrap, console_write, println, tag, tty};
-use terminal::grid::Grid;
+use terminal::grid::{self, Grid};
+
+/// The 16 ANSI colours (SGR 30-37, 90-97), toned for the parchment
+/// background.
+const PALETTE: [u32; 16] = [
+    0x1A_1410, 0xA0_281E, 0x3C_6E28, 0xA0_7814, 0x2E_4A62, 0x82_3C78, 0x28_6E78, 0xD8_CDB8,
+    0x6E_645A, 0xD2_463C, 0x5A_9646, 0xC8_A028, 0x4A_78A0, 0xAA_5AA0, 0x46_A0AA, 0xF2_E8D5,
+];
+
+/// The colour of palette entry `index` (`grid::DEFAULT`: `default`).
+fn ansi(index: u8, default: u32) -> u32 {
+    PALETTE.get(usize::from(index)).copied().unwrap_or(default)
+}
 use toolbox::draw::{Font, Rect, color, font_for};
 use toolbox::event::Event;
 use toolbox::window::{Connection, Window};
@@ -79,12 +91,17 @@ impl Terminal {
                 let y = PAD + row as i32 * font.height;
                 let line = Rect::new(0, y, cols as i32 * font.width + 2 * PAD, font.height);
                 canvas.fill(line, color::PARCHMENT);
-                for (col, &c) in self.grid.row(row).iter().enumerate() {
+                // The cursor only on the live screen.
+                let live = self.grid.scrolled() == 0;
+                for (col, cell) in self.grid.view_row(row).iter().enumerate() {
                     let x = PAD + col as i32 * font.width;
-                    if row == cy && col == cx.min(cols - 1) && self.active {
-                        canvas.char(x, y, c, font, color::PARCHMENT, Some(color::BLACK));
-                    } else if c != ' ' {
-                        canvas.char(x, y, c, font, color::BLACK, None);
+                    let (fg, bg) = (ansi(cell.fg, color::BLACK), ansi(cell.bg, color::PARCHMENT));
+                    if live && row == cy && col == cx.min(cols - 1) && self.active {
+                        canvas.char(x, y, cell.c, font, bg, Some(fg));
+                    } else if cell.bg != grid::DEFAULT {
+                        canvas.char(x, y, cell.c, font, fg, Some(bg));
+                    } else if cell.c != ' ' {
+                        canvas.char(x, y, cell.c, font, fg, None);
                     }
                 }
                 damaged = damaged.union(&line);
@@ -158,6 +175,22 @@ impl Terminal {
     }
 
     fn key(&mut self, key: &KeyEvent) {
+        // Shift+PgUp/PgDn: the scrollback (P11).
+        use abi::key::KeyCode;
+        if key.modifiers.shift && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
+            if key.pressed {
+                let page = self.grid.size().1 as isize - 1;
+                let lines = if key.code == KeyCode::PageUp {
+                    page
+                } else {
+                    -page
+                };
+                if self.grid.scroll_by(lines) {
+                    self.redraw();
+                }
+            }
+            return;
+        }
         if let Some(port) = self.shell_port {
             let msg = Message::with_data(tag::INPUT_KEY, &key.encode());
             let _ = port_send(port, &msg);
@@ -238,6 +271,7 @@ impl Terminal {
         );
         if self.conn.resize(&mut self.window, w, h).is_ok() {
             self.grid.resize(cols, rows);
+            let _ = tty::set_size(self.master, cols as u16, rows as u16);
             self.redraw_all();
         }
     }
@@ -271,6 +305,7 @@ fn main() -> i64 {
             return 1;
         }
     };
+    let _ = tty::set_size(master, COLS as u16, ROWS as u16);
     let set = match WaitSet::new() {
         Ok(set) => set,
         Err(e) => {

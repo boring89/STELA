@@ -32,6 +32,17 @@ pub fn read(master: Handle, buf: &mut [u8], timeout_ns: u64) -> Result<usize, Er
     .map(|n| n as usize)
 }
 
+/// Tells the terminal's programs its size (Linux's `TIOCGWINSZ`).
+pub fn set_size(master: Handle, cols: u16, rows: u16) -> Result<(), Error> {
+    syscall3(
+        Syscall::TtySetSize,
+        master.raw(),
+        u64::from(cols),
+        u64::from(rows),
+    )
+    .map(|_| ())
+}
+
 /// Types `text` into the terminal (up to 4096 bytes).
 pub fn write(master: Handle, text: &[u8]) -> Result<usize, Error> {
     syscall3(

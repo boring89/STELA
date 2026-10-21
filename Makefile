@@ -517,6 +517,7 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "memory: OK" --expect "memory exited with code 0" \
 		--expect "time: OK" --expect "time exited with code 0" \
 		--expect "nosys: OK" --expect "nosys exited with code 0" \
+		--expect "tty: 25 rows, 80 columns" \
 		--expect "tty: you typed: stela rocks" --expect "tty exited with code 0" \
 		--expect "poll: you typed: poll works" --expect "poll: OK" \
 		--expect "poll exited with code 0" \

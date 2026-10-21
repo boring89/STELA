@@ -63,6 +63,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::TtyCreate) => tty_create(a0),
         Some(Syscall::TtyRead) => tty_read(a0, a1, a2, args[3]),
         Some(Syscall::TtyWrite) => tty_write(a0, a1, a2),
+        Some(Syscall::TtySetSize) => tty_set_size(a0, a1, a2),
         Some(Syscall::HandleKind) => handle_kind(a0),
         Some(Syscall::WaitSetCreate) => wait_set_create(),
         Some(Syscall::WaitSetAdd) => wait_set_add(a0, a1, a2, args[3]),
@@ -470,6 +471,20 @@ fn tty_write(handle: u64, buf: u64, len: u64) -> Result<u64, Error> {
         tty.feed_str(chunk.valid());
     }
     Ok(len as u64)
+}
+
+/// `TtySetSize(master, columns, rows)`.
+fn tty_set_size(handle: u64, cols: u64, rows: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let tty = master_of(&process, handle, Rights::WRITE)?;
+    let (Ok(cols), Ok(rows)) = (u16::try_from(cols), u16::try_from(rows)) else {
+        return Err(Error::InvalidArgument);
+    };
+    if cols == 0 || rows == 0 {
+        return Err(Error::InvalidArgument);
+    }
+    tty.set_size(cols, rows);
+    Ok(0)
 }
 
 /// `HandleKind(handle) -> kind`.

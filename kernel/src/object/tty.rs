@@ -46,6 +46,8 @@ struct Inner {
     watchers: WaitQueue,
     /// Linux processes that use the tty (interrupted by Ctrl-C).
     users: Vec<ProcessId>,
+    /// Columns and rows (P11, `TtySetSize`).
+    size: (u16, u16),
 }
 
 /// A terminal.
@@ -67,6 +69,7 @@ impl Tty {
                 readers: WaitQueue::new(),
                 master_readers: WaitQueue::new(),
                 watchers: WaitQueue::new(),
+                size: (80, 25),
                 users: Vec::new(),
             }),
         })
@@ -217,6 +220,16 @@ impl Tty {
     /// Undoes [`Tty::watch`].
     pub fn unwatch(&self, id: task::ThreadId) {
         self.inner.lock().watchers.remove(id);
+    }
+
+    /// (columns, rows).
+    pub fn size(&self) -> (u16, u16) {
+        self.inner.lock().size
+    }
+
+    /// Sets (columns, rows).
+    pub fn set_size(&self, cols: u16, rows: u16) {
+        self.inner.lock().size = (cols, rows);
     }
 
     /// The line discipline's mode: (canonical, echo, signals).

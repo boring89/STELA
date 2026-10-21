@@ -154,7 +154,10 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 - 視窗：80×25 格（16x32 字型時 1288×808，四邊 4 像素）、`DOCUMENT`、標題 `Terminal`；選單 `Terminal > Clear`。
 - `TtyCreate(MASTER)`：slave 給 shell 當 `[1]`；master 和主 port 放在同一個 WaitSet（P11；P8 時沒有同時等兩個東西的 syscall，用一個輸出執行緒把 tty 輸出轉成主 port 的訊息，現在拿掉了）。toolbox 等回覆時先收下的事件（`Connection::has_pending()`）在每次等待前處理掉。shell 行程也在集合裡（`EXITED`），不再每 500 ms 檢查一次；行程成員以 id 記，換新 shell 前先 `remove`。
 - **serial 鏡像**：輸出也送到 terminal 自己的 `[1]`（console 服務 → serial），所以 `make test-shell`、`test-linux`、`test-shutdown` 在桌面模式下照樣從 serial 檢查 shell 的輸出（鍵盤經 QMP → PS/2 → 視窗伺服器 → terminal → shell）。
-- 文字格（`grid.rs`）：UTF-8 可以在任何地方被切開；`\n` 換行（底部捲動）、`\r`、Backspace、Tab（8 的倍數）、`ESC [ … 結尾字元` 略過；記錄改過的列。游標是反白的格子（失去焦點時不畫）。
+- 文字格（`grid.rs`）：UTF-8 可以在任何地方被切開；`\n` 換行（底部捲動）、`\r`、Backspace、Tab（8 的倍數）；記錄改過的列。游標是反白的格子（失去焦點時不畫）。
+- **P11（使用者尚未審核）**：每格是 `Cell { c, fg, bg }`；`ESC [ … m`（SGR）設顏色：30–37／90–97 前景、40–47／100–107 背景、1 粗體（前景用亮色）、22、39、49、0 或空的重設；其他 `ESC [ …` 照舊略過。16 色的調色盤配羊皮紙底色調過（`PALETTE`，0 是釉黑、15 是羊皮紙）；預設前景釉黑、背景羊皮紙。
+- **捲回**：捲出上緣的行存起來（`SCROLLBACK` = 1000 行）；Shift+PgUp／PgDn 一次一頁，捲回時不畫游標；有新的輸出就跳回最下面。改大小時歷史保留（截斷或補空白到新寬度）。
+- **視窗大小**：terminal 開始時與每次改大小後 `TtySetSize(master, 欄, 列)`（syscall 57），Linux 程式的 `TIOCGWINSZ` 拿到的就是它（以前固定 25×80）。
 - shell 結束時印 `[shell exited with code N]` 並啟動新的；關閉鈕：kill shell、結束 terminal。
 - `RESIZE_REQUESTED`：換成放得下的格數（至少 10×3）。
 - shell 收到 `WINDOW_SERVER`（`abi::tag` 6，夾帶視窗伺服器的 SEND）後，`run` 的程式的 `[2]` 就是它，所以在 terminal 裡 `run echo_win` 會開視窗。
@@ -172,7 +175,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | host `abi::key` | `MouseEvent` 編碼往返 |
 | host `frame::input::mouse` | 封包、負值、重新同步、overflow |
 | host `windowserver::compose` | P11：矩形相減（不相交、全蓋住、四塊不重疊、沿邊一塊）、每個視窗看得到的部分與桌面；框的幾何、堆疊與命中測試（關閉鈕、grow box、標題列、邊框、桌面視窗留在後面）、髒矩形合併與上限、選單解析與配置、雙擊、自動放置 |
-| host `terminal::grid` | 寫入與換行、捲動、控制字元、ESC 序列、UTF-8 切開、改大小 |
+| host `terminal::grid` | 寫入與換行、捲動、控制字元、ESC 序列、UTF-8 切開、改大小；P11：SGR 顏色（前景、背景、粗體變亮、重設、其他序列略過）、捲回（翻頁、到頂、新輸出跳回、1000 行上限） |
 | selftest "mouse" | IRQ 12 已接；`qemu_test.py --mouse` 經 QMP `input-send-event` 移動 (40, 30) 並按左鍵 |
 | `make test-window` | 一般 kernel：看到 `STELA shell` 打 `uptime`、再 `run echo_win`、在 echo_win 打 `hello`（serial 看到 `echo_win: hello`）；截圖檢查（`fb_check.py --expect-rect/--expect-text`）：桌面色、選單列、terminal 的標題列（非作用中）與文字（≥ 4 行）、echo_win 的標題列（作用中）與內容 |
 | `make test-shell`／`test-linux`／`test-shutdown` | 現在都經過桌面（serial 鏡像） |
@@ -184,5 +187,5 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 - 只有拖外框，不即時移動；沒有視窗最小化、縮放動畫、透明、陰影（選單除外）。
 - 選單只有一層，沒有快捷鍵；STELA 字樣不是選單。
 - 只有單一滑鼠按鍵（左鍵）有意義；滾輪不處理；沒有加速度。
-- terminal 不支援 ANSI 顏色與游標移動（只略過 ESC 序列）；沒有捲回歷史；選字複製沒有。
+- terminal 只有 SGR 顏色（P11），沒有游標移動、清除畫面等其他 ANSI 序列；捲回不能用滑鼠滾輪；選字複製沒有。
 - P11 起有遮擋剔除，但沒有「只有游標動」的特別處理（游標的舊位置仍從 back buffer 重新合成那一小塊）。

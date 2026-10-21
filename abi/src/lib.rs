@@ -213,11 +213,14 @@ pub enum Syscall {
     /// `PipeWrite(write_end, buf, len, timeout_ns) -> bytes`: waits for
     /// room; `PeerClosed` once every reading handle is gone.
     PipeWrite = 56,
+    /// `TtySetSize(master, columns, rows)`: what the terminal shows, for
+    /// Linux's `TIOCGWINSZ` (P11; 80 x 25 until set).
+    TtySetSize = 57,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 56] = [
+    pub const ALL: [Syscall; 57] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -274,6 +277,7 @@ impl Syscall {
         Syscall::PipeCreate,
         Syscall::PipeRead,
         Syscall::PipeWrite,
+        Syscall::TtySetSize,
     ];
 
     /// The call with number `raw`, if any.
@@ -1807,6 +1811,7 @@ mod tests {
         assert_eq!(Syscall::FilePath.raw(), 53);
         assert_eq!(Syscall::PipeCreate.raw(), 54);
         assert_eq!(Syscall::PipeWrite.raw(), 56);
+        assert_eq!(Syscall::TtySetSize.raw(), 57);
         assert_eq!((object_kind::PIPE_READ, object_kind::PIPE_WRITE), (13, 14));
         assert_eq!(PIPE_BUFFER, 65536);
         assert_eq!(object_kind::WAIT_SET, 11);

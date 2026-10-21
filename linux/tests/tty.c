@@ -2,11 +2,13 @@
  * Copyright (C) 2026 YuanChi Hsieh
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Linux personality test: the terminal. Reads one line (canonical mode:
- * the kernel echoes and edits it) and prints it back.
+ * Linux personality test: the terminal. Prints its size and a coloured
+ * word, reads one line (canonical mode: the kernel echoes and edits it)
+ * and prints it back.
  */
 #include <fcntl.h>
 #include <stdio.h>
+#include <sys/ioctl.h>
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
@@ -22,6 +24,15 @@ int main(void)
         printf("tty: FAIL terminal\n");
         return 1;
     }
+    struct winsize w;
+    if (ioctl(1, TIOCGWINSZ, &w) != 0) {
+        printf("tty: FAIL TIOCGWINSZ\n");
+        return 1;
+    }
+    /* The terminal's size (P11: what it set with TtySetSize). */
+    printf("tty: %d rows, %d columns\n", w.ws_row, w.ws_col);
+    /* A coloured word: the terminal shows it red (ANSI SGR 31). */
+    printf("tty: \033[31mred\033[0m and plain\n");
     printf("tty: type a line\n");
     fflush(stdout);
     if (fgets(line, sizeof line, stdin) == NULL) {

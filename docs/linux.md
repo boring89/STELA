@@ -70,7 +70,7 @@ musl 的程式（`-static -no-pie -Wl,-z,max-page-size=4096`）是四個 PT_LOAD
 | 檔案 | `read` 0、`write` 1、`open` 2、`close` 3、`stat` 4、`fstat` 5、`lstat` 6、`lseek` 8、`readv` 19、`writev` 20、`access` 21、`dup` 32、`dup2` 33、`fcntl` 72、`getcwd` 79、`chdir` 80、`rename` 82、`mkdir` 83、`rmdir` 84、`unlink` 87、`getdents64` 217、`openat` 257、`mkdirat` 258、`newfstatat` 262、`unlinkat` 263、`renameat` 264、`faccessat` 269 | §5、§7 |
 | 連結 | `readlink` 89、`readlinkat` 267 | 永遠 `ENOENT`（沒有符號連結） |
 | 等待 | `poll` 7、`select` 23、`pselect6` 270、`ppoll` 271 | §5.3（P11） |
-| 終端機 | `ioctl` 16 | tty：`TCGETS`、`TCSETS(W/F)`（ICANON／ECHO／ISIG）、`TIOCGWINSZ`（25×80）、`TIOCGPGRP`／`TIOCSPGRP`；其他 fd → `ENOTTY` |
+| 終端機 | `ioctl` 16 | tty：`TCGETS`、`TCSETS(W/F)`（ICANON／ECHO／ISIG）、`TIOCGWINSZ`（P11：terminal 用 `TtySetSize` 設的大小，預設 25×80）、`TIOCGPGRP`／`TIOCSPGRP`；其他 fd → `ENOTTY` |
 | 記憶體 | `mmap` 9、`mprotect` 10、`munmap` 11、`brk` 12 | §8 |
 | 訊號 | `rt_sigaction` 13、`rt_sigprocmask` 14 | 只回 0（舊值讀成預設）；訊號永遠不遞送 |
 | 時間 | `nanosleep` 35、`gettimeofday` 96、`clock_gettime` 228、`clock_nanosleep` 230 | REALTIME = `wall_clock_ns()`（`docs/time.md` §5.5）；MONOTONIC、BOOTTIME、CPUTIME 等 = `now_ns()` |

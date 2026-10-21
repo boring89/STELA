@@ -161,9 +161,23 @@ impl Process {
     pub(crate) fn thread_reaped(&self) {
         if self.live.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.release();
-            let code = self.exit_code.lock().unwrap_or(0);
+            // A Linux process whose threads all ended with `exit` ends
+            // with the last one's code.
+            let last = self
+                .linux
+                .as_ref()
+                .map_or(0, |l| l.last_exit.load(Ordering::Relaxed));
+            let code = self.exit_code.lock().unwrap_or(last);
             finish(self.id, code);
+            if self.linux.is_some() {
+                crate::linux::process_ended(self, code);
+            }
         }
+    }
+
+    /// Threads created and not yet reaped.
+    pub fn live_threads(&self) -> usize {
+        self.live.load(Ordering::Acquire)
     }
 }
 
@@ -234,7 +248,35 @@ pub fn create_with(
     initial: Initial,
     linux: Option<crate::linux::State>,
 ) -> Result<Arc<Process>, MapError> {
-    let space = AddressSpace::new()?;
+    create_in(name, initial, linux, AddressSpace::new()?)
+}
+
+/// A Linux `fork` child: `space` (a copy of the parent's) and the
+/// parent's map area.
+pub fn create_fork(
+    name: &str,
+    initial: Initial,
+    linux: crate::linux::State,
+    space: AddressSpace,
+    maps: Regions,
+) -> Result<Arc<Process>, MapError> {
+    let process = create_in(name, initial, Some(linux), space)?;
+    *process.maps.lock() = maps;
+    Ok(process)
+}
+
+/// A number from the process-id counter (Linux thread ids, which share
+/// the pid space).
+pub fn new_id() -> u64 {
+    NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn create_in(
+    name: &str,
+    initial: Initial,
+    linux: Option<crate::linux::State>,
+    space: AddressSpace,
+) -> Result<Arc<Process>, MapError> {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let main_port = Port::new(id);
     let main = Entry {

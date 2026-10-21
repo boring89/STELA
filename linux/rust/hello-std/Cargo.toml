@@ -1,0 +1,15 @@
+[package]
+name = "hello-std"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+description = "A Rust std program for STELA's Linux personality (P12 test)"
+publish = false
+
+# Built on its own (x86_64-unknown-linux-musl), not in the STELA workspace.
+[workspace]
+
+[profile.release]
+opt-level = "s"
+panic = "abort"
+strip = true

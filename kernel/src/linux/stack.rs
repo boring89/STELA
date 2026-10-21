@@ -17,6 +17,7 @@
 //!  rsp ─► argc                           ┘ rsp is 16-byte aligned
 //! ```
 
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -96,6 +97,28 @@ pub fn build(
     Image { rsp, bytes }
 }
 
+/// The interpreter line of a `#!` script (at most 255 bytes, like
+/// Linux's `BINPRM_BUF_SIZE` limit): the interpreter and one optional
+/// argument (the rest of the line, trimmed).
+pub fn shebang(image: &[u8]) -> Option<(String, Option<String>)> {
+    let rest = image.strip_prefix(b"#!")?;
+    let end = rest
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(rest.len())
+        .min(255);
+    let line = core::str::from_utf8(&rest[..end]).ok()?.trim();
+    let (interp, arg) = match line.find([' ', '\t']) {
+        Some(i) => (&line[..i], Some(line[i..].trim())),
+        None => (line, None),
+    };
+    if interp.is_empty() {
+        return None;
+    }
+    let arg = arg.filter(|a| !a.is_empty()).map(String::from);
+    Some((String::from(interp), arg))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +184,23 @@ mod tests {
         assert_eq!(word(&image, image.rsp + 8), 0);
         assert_eq!(word(&image, image.rsp + 16), 0);
         assert_eq!(word(&image, image.rsp + 24), at::RANDOM);
+    }
+
+    #[test]
+    fn shebang_lines() {
+        assert_eq!(
+            shebang(b"#!/bin/sh\necho hi\n"),
+            Some((String::from("/bin/sh"), None))
+        );
+        assert_eq!(
+            shebang(b"#! /usr/bin/env  lua -x \n"),
+            Some((String::from("/usr/bin/env"), Some(String::from("lua -x"))))
+        );
+        assert_eq!(shebang(b"#!\n"), None);
+        assert_eq!(shebang(b"\x7fELF"), None);
+        assert_eq!(
+            shebang(b"#!/bin/dash"),
+            Some((String::from("/bin/dash"), None))
+        );
     }
 }

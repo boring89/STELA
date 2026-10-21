@@ -5,10 +5,10 @@
 //! or memory: process, time, identity, signals (recorded only), terminal
 //! control, the thread pointer.
 
-use super::errno::{self, EAGAIN, EBADF, EFAULT, EINVAL, ENOSYS, ENOTTY};
+use super::errno::{self, EBADF, EFAULT, EINTR, EINVAL, ENOSYS, ENOTTY, EPERM, ESRCH};
 use super::stack::{self, at};
 use super::state::OpenFile;
-use super::{files, memory, nr, poll, socket};
+use super::{files, futex, memory, nr, poll, process as lproc, signals, socket};
 use crate::task::{self, Process};
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
@@ -71,7 +71,8 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
     let [a0, a1, a2, a3, a4, a5] = frame.args();
     let p = &*process;
     let result = match number {
-        nr::EXIT | nr::EXIT_GROUP => {
+        nr::EXIT => lproc::exit_thread(process, a0),
+        nr::EXIT_GROUP => {
             drop(process);
             task::exit_process(a0 as i64 & 0xFF)
         }
@@ -87,7 +88,7 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::FSTAT => files::fstat(p, a0, a1),
         nr::LSEEK => files::lseek(p, a0, a1 as i64, a2),
         nr::ACCESS => files::access(p, files::AT_FDCWD, a0, a1),
-        nr::FACCESSAT => files::access(p, a0, a1, a2),
+        nr::FACCESSAT | nr::FACCESSAT2 => files::access(p, a0, a1, a2),
         nr::DUP => files::dup(p, a0),
         nr::DUP2 => files::dup2(p, a0, a1),
         nr::FCNTL => files::fcntl(p, a0, a1, a2),
@@ -112,25 +113,63 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::MMAP => memory::mmap(p, a0, a1, a2, a3, a4, a5),
         nr::MUNMAP => memory::munmap(p, a0, a1),
         nr::MPROTECT => memory::mprotect(p, a0, a1, a2),
-        nr::RT_SIGACTION => rt_sigaction(p, a2),
-        nr::RT_SIGPROCMASK => rt_sigprocmask(p, a2),
-        nr::NANOSLEEP => nanosleep(p, a0),
-        nr::CLOCK_NANOSLEEP => clock_nanosleep(p, a0, a1, a2),
+        nr::MADVISE => Ok(0),
+        nr::RT_SIGACTION => signals::rt_sigaction(p, a0, a1, a2),
+        nr::RT_SIGPROCMASK => signals::rt_sigprocmask(p, a0, a1, a2),
+        nr::RT_SIGRETURN => signals::rt_sigreturn(p, frame),
+        nr::RT_SIGPENDING => signals::rt_sigpending(p, a0),
+        nr::RT_SIGSUSPEND => signals::rt_sigsuspend(p, a0),
+        nr::SIGALTSTACK => signals::sigaltstack(p, a0, a1),
+        nr::PAUSE => signals::pause(),
+        nr::KILL => signals::kill(p, a0 as i32 as i64, a1),
+        nr::TKILL => signals::tgkill(p, 0, a0, a1),
+        nr::TGKILL => signals::tgkill(p, a0, a1, a2),
+        nr::ALARM => signals::alarm(p, a0),
+        nr::SETITIMER => signals::setitimer(p, a0, a1, a2),
+        nr::GETITIMER => signals::getitimer(p, a0, a1),
+        nr::NANOSLEEP => nanosleep(p, a0, a1),
+        nr::CLOCK_NANOSLEEP => clock_nanosleep(p, a0, a1, a2, a3),
         nr::CLOCK_GETTIME => clock_gettime(p, a0, a1),
         nr::GETTIMEOFDAY => gettimeofday(p, a0),
-        nr::GETPID | nr::GETTID => Ok(p.id()),
-        // The parent is not tracked; init's id stands in for it.
-        nr::GETPPID => Ok(1),
+        nr::GETPID => Ok(p.id()),
+        nr::GETTID => Ok(task::current_linux().map_or(p.id(), |t| t.tid)),
+        nr::GETPPID => Ok(p.linux().map_or(1, |l| l.parent.load(Ordering::Relaxed))),
         nr::GETUID | nr::GETGID | nr::GETEUID | nr::GETEGID => Ok(0),
+        nr::SETUID | nr::SETGID => Ok(0),
+        nr::GETGROUPS => Ok(0),
+        nr::SETPGID => setpgid(p, a0, a1),
+        nr::GETPGID => getpgid(p, a0),
+        nr::GETPGRP => getpgid(p, 0),
+        nr::SETSID => setsid(p),
+        nr::GETSID => Ok(p.linux().map_or(p.id(), |l| l.sid.load(Ordering::Relaxed))),
         nr::UNAME => uname(p, a0),
         nr::ARCH_PRCTL => arch_prctl(p, a0, a1),
         nr::SET_TID_ADDRESS => {
-            if let Some(linux) = p.linux() {
-                linux.tid_address.store(a0, Ordering::Relaxed);
+            let t = task::current_linux();
+            if let Some(t) = &t {
+                t.clear_child_tid.store(a0, Ordering::Relaxed);
             }
-            Ok(p.id())
+            Ok(t.map_or(p.id(), |t| t.tid))
         }
-        nr::FUTEX => futex(p, a0, a1, a2, a3),
+        nr::SET_ROBUST_LIST | nr::GET_ROBUST_LIST => Ok(0),
+        nr::FUTEX => futex::futex(p, [a0, a1, a2, a3, a4, a5]),
+        nr::SCHED_YIELD => {
+            task::yield_now();
+            Ok(0)
+        }
+        nr::SCHED_GETAFFINITY => sched_getaffinity(p, a1, a2),
+        nr::SCHED_SETAFFINITY | nr::SCHED_SETSCHEDULER => Ok(0),
+        nr::SCHED_GETSCHEDULER => Ok(0),
+        nr::SCHED_GETPARAM => write_user(p, a1, &[0u8; 4]).map(|_| 0),
+        nr::GETCPU => getcpu(p, a0, a1),
+        nr::PRCTL => prctl(p, a0, a1),
+        nr::CLONE => lproc::clone(&process, frame, a0, a1, a2, a3, a4),
+        nr::CLONE3 => lproc::clone3(&process, frame, a0, a1),
+        nr::FORK | nr::VFORK => lproc::fork(&process, frame, 17, 0, 0, 0, 0),
+        nr::EXECVE => lproc::execve(&process, frame, files::AT_FDCWD, a0, a1, a2, 0),
+        nr::EXECVEAT => lproc::execve(&process, frame, a0, a1, a2, a3, a4),
+        nr::WAIT4 => lproc::wait4(p, a0 as i32 as i64, a1, a2, a3),
+        nr::WAITID => lproc::waitid(p, a0, a1, a2, a3),
         nr::GETRANDOM => getrandom(p, a0, a1),
         nr::SOCKET => socket::socket(p, a0, a1, a2),
         nr::CONNECT => socket::connect(p, a0, a1, a2),
@@ -149,16 +188,128 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::GETSOCKOPT => socket::getsockopt(p, a0, a3, a4),
         nr::PIPE => files::pipe2(p, a0, 0),
         nr::PIPE2 => files::pipe2(p, a0, a1),
-        nr::CLONE | nr::CLONE3 | nr::FORK | nr::VFORK | nr::EXECVE => Err(ENOSYS),
+        // Probed by musl (pthread_getattr_np) and Rust's std: "no".
+        nr::MREMAP | nr::RSEQ | nr::MEMBARRIER | nr::STATX => Err(ENOSYS),
+        // No links of either kind.
+        nr::SYMLINK | nr::SYMLINKAT | nr::LINK | nr::LINKAT => Err(EPERM),
         _ => unknown(p, number),
     };
+    let result = signals::interrupted(number, result);
     drop(process);
     frame.set_rax(errno::encode(result));
 }
 
-/// The initial stack of a Linux program: its arguments, a few environment
-/// variables and the auxiliary vector.
-pub fn initial_stack(elf: &Elf, argv: &[Vec<u8>], state: Option<&super::State>) -> stack::Image {
+/// `sched_getaffinity(pid, len, mask)`: the one processor the process
+/// runs on (threads never move, `docs/smp.md`).
+fn sched_getaffinity(p: &Process, len: u64, mask: u64) -> LinuxResult {
+    if len < 8 || !len.is_multiple_of(8) {
+        return Err(EINVAL);
+    }
+    let cpu = p.cpu() as u64;
+    write_user(p, mask, &(1u64 << (cpu % 64)).to_le_bytes())?;
+    Ok(8)
+}
+
+/// `getcpu(cpu, node, cache)`.
+fn getcpu(p: &Process, cpu: u64, node: u64) -> LinuxResult {
+    if cpu != 0 {
+        write_user(p, cpu, &(p.cpu() as u32).to_le_bytes())?;
+    }
+    if node != 0 {
+        write_user(p, node, &0u32.to_le_bytes())?;
+    }
+    Ok(0)
+}
+
+/// `prctl(option, arg2, ...)`: the thread name requests do nothing.
+fn prctl(p: &Process, option: u64, arg: u64) -> LinuxResult {
+    const PR_SET_NAME: u64 = 15;
+    const PR_GET_NAME: u64 = 16;
+    match option {
+        PR_SET_NAME => Ok(0),
+        PR_GET_NAME => {
+            let mut name = [0u8; 16];
+            let n = p.name().len().min(15);
+            name[..n].copy_from_slice(&p.name().as_bytes()[..n]);
+            write_user(p, arg, &name)?;
+            Ok(0)
+        }
+        _ => Err(EINVAL),
+    }
+}
+
+/// The Linux process `pid` (0: the caller) if it is the caller or one of
+/// its children.
+fn self_or_child(p: &Process, pid: u64) -> Result<Option<Arc<Process>>, i64> {
+    if pid == 0 || pid == p.id() {
+        return Ok(None);
+    }
+    let linux = p.linux().ok_or(ESRCH)?;
+    if !linux.children.lock().iter().any(|c| c.pid == pid) {
+        return Err(ESRCH);
+    }
+    task::process::find(pid).map(Some).ok_or(ESRCH)
+}
+
+/// `setpgid(pid, pgid)`: the caller or a child joins (or starts) a
+/// process group.
+fn setpgid(p: &Process, pid: u64, pgid: u64) -> LinuxResult {
+    let target = self_or_child(p, pid)?;
+    let id = target.as_ref().map_or(p.id(), |t| t.id());
+    let pgid = if pgid == 0 { id } else { pgid };
+    let linux = match &target {
+        Some(t) => t.linux(),
+        None => p.linux(),
+    }
+    .ok_or(ESRCH)?;
+    if linux.sid.load(Ordering::Relaxed) == id {
+        // A session leader stays in its group.
+        return Err(EPERM);
+    }
+    linux.pgid.store(pgid, Ordering::Relaxed);
+    if target.is_some()
+        && let Some(mine) = p.linux()
+        && let Some(c) = mine.children.lock().iter_mut().find(|c| c.pid == id)
+    {
+        c.pgid = pgid;
+    }
+    Ok(0)
+}
+
+/// `getpgid(pid)`.
+fn getpgid(p: &Process, pid: u64) -> LinuxResult {
+    let target = if pid == 0 || pid == p.id() {
+        None
+    } else {
+        Some(task::process::find(pid).ok_or(ESRCH)?)
+    };
+    let linux = match &target {
+        Some(t) => t.linux(),
+        None => p.linux(),
+    }
+    .ok_or(ESRCH)?;
+    Ok(linux.pgid.load(Ordering::Relaxed))
+}
+
+/// `setsid()`: a new session and process group led by the caller.
+fn setsid(p: &Process) -> LinuxResult {
+    let linux = p.linux().ok_or(EPERM)?;
+    if linux.pgid.load(Ordering::Relaxed) == p.id() && linux.sid.load(Ordering::Relaxed) == p.id() {
+        return Err(EPERM);
+    }
+    linux.pgid.store(p.id(), Ordering::Relaxed);
+    linux.sid.store(p.id(), Ordering::Relaxed);
+    Ok(p.id())
+}
+
+/// The initial stack of a Linux program: its arguments, the environment
+/// (`env`, or a few standard variables) and the auxiliary vector.
+pub fn initial_stack(
+    elf: &Elf,
+    argv: &[Vec<u8>],
+    env: Option<&[Vec<u8>]>,
+    state: Option<&super::State>,
+) -> stack::Image {
     let (phnum, phent) = elf.program_headers();
     let aux = [
         (at::PHDR, elf.program_headers_address().unwrap_or(0)),
@@ -182,13 +333,17 @@ pub fn initial_stack(elf: &Elf, argv: &[Vec<u8>], state: Option<&super::State>) 
     let n = abi::time::posix_tz(timezone_minutes(), &mut tz);
     let mut tz_env = Vec::from(&b"TZ="[..]);
     tz_env.extend_from_slice(&tz[..n]);
-    let env: [&[u8]; 5] = [
+    let standard: [&[u8]; 5] = [
         b"HOME=/Data",
-        b"PATH=/Initrd/linux:/Initrd",
+        b"PATH=/Data/Programs/bin:/Initrd/linux:/Initrd",
         b"TERM=dumb",
         pwd.as_bytes(),
         &tz_env,
     ];
+    let env: Vec<&[u8]> = match env {
+        Some(e) => e.iter().map(Vec::as_slice).collect(),
+        None => standard.to_vec(),
+    };
     let args: Vec<&[u8]> = argv.iter().map(Vec::as_slice).collect();
     let mut random = [0u8; 16];
     fill_random(&mut random);
@@ -270,24 +425,6 @@ fn arch_prctl(p: &Process, code: u64, addr: u64) -> LinuxResult {
     }
 }
 
-/// `rt_sigaction(sig, act, oldact)`: signals are never delivered; the old
-/// action reads as the default.
-fn rt_sigaction(p: &Process, old: u64) -> LinuxResult {
-    if old != 0 {
-        write_user(p, old, &[0u8; 32])?;
-    }
-    Ok(0)
-}
-
-/// `rt_sigprocmask(how, set, oldset)`: recorded nowhere; the old mask is
-/// empty.
-fn rt_sigprocmask(p: &Process, old: u64) -> LinuxResult {
-    if old != 0 {
-        write_user(p, old, &[0u8; 8])?;
-    }
-    Ok(0)
-}
-
 /// A `struct timespec` of the caller: nanoseconds.
 fn timespec(p: &Process, ptr: u64) -> Result<u64, i64> {
     let sec = read_u64(p, ptr)? as i64;
@@ -340,15 +477,46 @@ fn gettimeofday(p: &Process, tv: u64) -> LinuxResult {
     Ok(0)
 }
 
-/// `nanosleep(req, rem)`: never interrupted, so `rem` is not written.
-fn nanosleep(p: &Process, req: u64) -> LinuxResult {
+/// Sleeps until `deadline` (`now_ns`) or a signal; `EINTR` with the time
+/// left in `rem` (when given).
+fn sleep_until(p: &Process, deadline: u64, rem: u64) -> LinuxResult {
+    loop {
+        let now = frame::time::now_ns();
+        if now >= deadline {
+            return Ok(0);
+        }
+        if task::current_killed() {
+            if rem != 0 {
+                put_timespec(p, rem, deadline - now)?;
+            }
+            return Err(EINTR);
+        }
+        task::block_until(Some(deadline));
+    }
+}
+
+/// `nanosleep(req, rem)`.
+fn nanosleep(p: &Process, req: u64, rem: u64) -> LinuxResult {
     let ns = timespec(p, req)?;
-    task::sleep_ns(ns);
-    Ok(0)
+    // At least the requested time, as `sleep_ns` (whole ticks).
+    let deadline = frame::time::now_ns()
+        .saturating_add(ns)
+        .saturating_add(tick_lag());
+    sleep_until(p, deadline, rem)
+}
+
+/// What the clock may lag behind real time (one tick without an
+/// invariant TSC).
+fn tick_lag() -> u64 {
+    if frame::time::tsc_invariant() {
+        0
+    } else {
+        1_000_000_000 / frame::time::TICK_HZ
+    }
 }
 
 /// `clock_nanosleep(clock, flags, req, rem)`.
-fn clock_nanosleep(p: &Process, clock: u64, flags: u64, req: u64) -> LinuxResult {
+fn clock_nanosleep(p: &Process, clock: u64, flags: u64, req: u64, rem: u64) -> LinuxResult {
     const TIMER_ABSTIME: u64 = 1;
     let ns = timespec(p, req)?;
     let now = clock_ns(clock)?;
@@ -357,38 +525,11 @@ fn clock_nanosleep(p: &Process, clock: u64, flags: u64, req: u64) -> LinuxResult
     } else {
         ns
     };
-    task::sleep_ns(wait);
-    Ok(0)
-}
-
-/// `futex(uaddr, op, val, timeout)`: a single-threaded process has nobody
-/// to wake it, so `FUTEX_WAIT` returns `EAGAIN` when the value differs and
-/// otherwise sleeps out its timeout (or until killed); `FUTEX_WAKE` wakes
-/// nobody.
-fn futex(p: &Process, uaddr: u64, op: u64, val: u64, timeout: u64) -> LinuxResult {
-    const FUTEX_WAIT: u64 = 0;
-    const FUTEX_WAKE: u64 = 1;
-    const FUTEX_CMD_MASK: u64 = 0x7F;
-    const ETIMEDOUT: i64 = errno::ETIMEDOUT;
-    match op & FUTEX_CMD_MASK {
-        FUTEX_WAIT => {
-            let current = read_user(p, uaddr, 4)?;
-            let current = u32::from_le_bytes([current[0], current[1], current[2], current[3]]);
-            if current != val as u32 {
-                return Err(EAGAIN);
-            }
-            if timeout == 0 {
-                while !task::current_killed() {
-                    task::sleep_ms(1000);
-                }
-                return Err(errno::EINTR);
-            }
-            task::sleep_ns(timespec(p, timeout)?);
-            Err(ETIMEDOUT)
-        }
-        FUTEX_WAKE => Ok(0),
-        _ => Err(ENOSYS),
-    }
+    let deadline = frame::time::now_ns()
+        .saturating_add(wait)
+        .saturating_add(tick_lag());
+    let rem = if flags & TIMER_ABSTIME != 0 { 0 } else { rem };
+    sleep_until(p, deadline, rem)
 }
 
 /// termios `c_lflag` bits (`include/uapi/asm-generic/termbits.h`).
@@ -459,10 +600,18 @@ fn ioctl(p: &Process, fd: u64, request: u64, arg: u64) -> LinuxResult {
             Ok(0)
         }
         TIOCGPGRP => {
-            write_user(p, arg, &(p.id() as u32).to_le_bytes())?;
+            let pgid = tty
+                .foreground()
+                .unwrap_or_else(|| p.linux().map_or(p.id(), |l| l.pgid.load(Ordering::Relaxed)));
+            write_user(p, arg, &(pgid as u32).to_le_bytes())?;
             Ok(0)
         }
-        TIOCSPGRP => Ok(0),
+        TIOCSPGRP => {
+            let b = read_user(p, arg, 4)?;
+            let pgid = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            tty.set_foreground(Some(u64::from(pgid)));
+            Ok(0)
+        }
         _ => Err(EINVAL),
     }
 }

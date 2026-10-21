@@ -35,6 +35,7 @@
 use super::process::Process;
 use super::queue::{RunQueue, SleepList};
 use super::{TIME_SLICE, ThreadId};
+use crate::linux::LinuxThread;
 use crate::object::thread::ThreadExit;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -83,6 +84,10 @@ pub struct Thread {
     start: Option<Box<dyn FnOnce() + Send>>,
     /// Where a user thread starts: (entry, stack pointer, argument).
     user_start: Option<(u64, u64, u64)>,
+    /// Or with every register given (Linux `clone`, `fork`).
+    user_regs: Option<frame::trap::UserRegs>,
+    /// The Linux side of a Linux process's thread (signals, tid).
+    linux: Option<Arc<LinuxThread>>,
     /// The process of a user thread; `None` for kernel threads.
     process: Option<Arc<Process>>,
     /// What the thread's handles see of its end (threads made by
@@ -163,6 +168,8 @@ fn new_scheduler(name: &'static str) {
         context: frame::task::current(),
         start: None,
         user_start: None,
+        user_regs: None,
+        linux: None,
         process: None,
         exit: None,
     });
@@ -181,6 +188,8 @@ fn new_scheduler(name: &'static str) {
             context,
             start: None,
             user_start: None,
+            user_regs: None,
+            linux: None,
             process: None,
             exit: None,
         }),
@@ -296,9 +305,14 @@ fn idle_entry(_: usize) -> ! {
 /// then runs the kernel thread's function (and exits), or enters user mode.
 fn thread_entry(_: usize) -> ! {
     reap();
-    let (start, user, killed) = with(|s| {
+    let (start, user, regs, killed) = with(|s| {
         let t = current_mut(s);
-        (t.start.take(), t.user_start.take(), t.killed)
+        (
+            t.start.take(),
+            t.user_start.take(),
+            t.user_regs.take(),
+            t.killed,
+        )
     });
     if killed {
         // Killed before it ever ran.
@@ -307,6 +321,9 @@ fn thread_entry(_: usize) -> ! {
     if let Some((entry, rsp, arg)) = user {
         // The scheduler activated the process's address space.
         frame::task::enter_user(entry, rsp, arg);
+    }
+    if let Some(regs) = regs {
+        frame::task::enter_user_regs(&regs);
     }
     if let Some(start) = start {
         start();
@@ -345,6 +362,8 @@ pub fn spawn_on(
         context,
         start: Some(Box::new(f)),
         user_start: None,
+        user_regs: None,
+        linux: None,
         process: None,
         exit: None,
     });
@@ -391,9 +410,54 @@ pub fn spawn_user_with(
     arg: u64,
     exit: Option<Arc<ThreadExit>>,
 ) -> Result<ThreadId, SpawnError> {
+    spawn_thread(process, Some((entry, rsp, arg)), None, 0, exit, None)
+}
+
+/// The first thread of a Linux process, with its Linux side.
+pub fn spawn_user_linux(
+    process: &Arc<Process>,
+    entry: u64,
+    rsp: u64,
+    linux: Arc<LinuxThread>,
+) -> Result<ThreadId, SpawnError> {
+    spawn_thread(process, Some((entry, rsp, 0)), None, 0, None, Some(linux))
+}
+
+/// A thread of `process` that enters user mode with `regs` and FS base
+/// `fs_base` (Linux `clone` and `fork`): it gets a copy of the calling
+/// thread's FPU state.
+pub fn spawn_user_regs(
+    process: &Arc<Process>,
+    regs: frame::trap::UserRegs,
+    fs_base: u64,
+    linux: Option<Arc<LinuxThread>>,
+) -> Result<ThreadId, SpawnError> {
+    if regs.sanitized().is_err() {
+        return Err(SpawnError::OutOfMemory);
+    }
+    spawn_thread(process, None, Some(regs), fs_base, None, linux)
+}
+
+fn spawn_thread(
+    process: &Arc<Process>,
+    user_start: Option<(u64, u64, u64)>,
+    user_regs: Option<frame::trap::UserRegs>,
+    fs_base: u64,
+    exit: Option<Arc<ThreadExit>>,
+    linux: Option<Arc<LinuxThread>>,
+) -> Result<ThreadId, SpawnError> {
     let context =
         TaskContext::new(thread_entry, 0, true).map_err(|OutOfMemory| SpawnError::OutOfMemory)?;
+    if user_regs.is_some() {
+        context.copy_fpu_from_current();
+        if context.set_initial_fs_base(fs_base).is_err() {
+            return Err(SpawnError::OutOfMemory);
+        }
+    }
     let id = new_id();
+    if let Some(l) = &linux {
+        l.thread.store(id, Ordering::Relaxed);
+    }
     let thread = Box::new(Thread {
         id,
         name: "user",
@@ -406,7 +470,9 @@ pub fn spawn_user_with(
         killed: false,
         context,
         start: None,
-        user_start: Some((entry, rsp, arg)),
+        user_start,
+        user_regs,
+        linux,
         process: Some(Arc::clone(process)),
         exit,
     });
@@ -431,6 +497,52 @@ pub fn spawn_user_with(
         frame::cpu::kick(cpu);
     }
     Ok(id)
+}
+
+/// The Linux side of the running thread, if it is a Linux thread.
+pub fn current_linux() -> Option<Arc<LinuxThread>> {
+    with(|s| current_mut(s).linux.clone())
+}
+
+/// Replaces the running thread's Linux side (`execve`).
+pub fn set_current_linux(linux: Arc<LinuxThread>) {
+    let old = with(|s| current_mut(s).linux.replace(linux));
+    drop(old);
+}
+
+/// Marks every thread of `process` except the running one as killed,
+/// without ending the process (`execve`: the other threads go, the
+/// process stays). They end on their way back to user mode.
+pub fn kill_other_threads(process: &Arc<Process>) {
+    let pid = process.id();
+    let cpu = process.cpu();
+    #[allow(clippy::borrowed_box)]
+    let ours = |t: &Box<Thread>| belongs_to(t, pid);
+    let me = current_id();
+    let remote = with_cpu(cpu, |s| {
+        let mut waiting = s.sleeping.take_where(|t| ours(t) && t.id != me);
+        let (mut blocked, others): (Vec<_>, Vec<_>) = core::mem::take(&mut s.blocked)
+            .into_iter()
+            .partition(|t| ours(t) && t.id != me);
+        s.blocked = others;
+        waiting.append(&mut blocked);
+        for mut t in waiting {
+            t.killed = true;
+            t.state = State::Ready;
+            s.ready.push(t);
+        }
+        for t in s.ready.iter_mut().filter(|t| ours(t) && t.id != me) {
+            t.killed = true;
+        }
+        s.current
+            .as_mut()
+            .filter(|t| ours(t) && t.id != me)
+            .map(|t| t.killed = true)
+            .is_some()
+    });
+    if remote == Some(true) {
+        frame::cpu::kick(cpu);
+    }
 }
 
 /// The process of the running thread (`None` for a kernel thread).
@@ -515,10 +627,24 @@ pub fn kill(process: &Arc<Process>, code: i64) {
 
 /// Registered with frame: runs on every way back to ring 3 (end of a
 /// system call, end of an interrupt that arrived in ring 3). A thread of a
-/// killed process ends here, where nothing is left on its kernel stack.
-fn user_return() {
-    if with(|s| current_mut(s).killed) {
+/// killed process ends here, where nothing is left on its kernel stack;
+/// a Linux thread gets its pending signals here (`docs/linux.md` §12).
+fn user_return(frame: &mut frame::syscall::UserFrame<'_>) {
+    let (killed, linux) = with(|s| {
+        let t = current_mut(s);
+        let linux = t
+            .linux
+            .as_ref()
+            .filter(|l| l.needs_attention())
+            .map(Arc::clone);
+        (t.killed, linux)
+    });
+    if killed {
+        drop(linux);
         exit();
+    }
+    if let Some(linux) = linux {
+        crate::linux::deliver(frame, linux);
     }
 }
 
@@ -527,9 +653,17 @@ fn belongs_to(thread: &Thread, pid: super::ProcessId) -> bool {
     thread.process.as_ref().is_some_and(|p| p.id() == pid)
 }
 
-/// The handler for exceptions in ring 3: reports them and ends the
-/// process with exit code 128 + vector.
-fn user_fault(frame: &frame::trap::TrapFrame, cr2: u64) -> ! {
+/// The handler for exceptions in ring 3: a Linux thread with a handler
+/// for the signal gets it (`docs/linux.md` §12); otherwise the fault is
+/// reported and the process ends with exit code 128 + vector.
+fn user_fault(frame: &mut frame::trap::TrapFrame, cr2: u64) {
+    let code = match current_linux() {
+        Some(linux) => match crate::linux::fault_signal(frame, cr2, linux) {
+            Ok(()) => return,
+            Err(code) => code,
+        },
+        None => 128 + frame.vector as i64,
+    };
     let process = current_process();
     let (pid, name) = process.as_ref().map_or((0, "?"), |p| (p.id(), p.name()));
     // CR2 only means something for a page fault.
@@ -546,7 +680,7 @@ fn user_fault(frame: &frame::trap::TrapFrame, cr2: u64) -> ! {
         frame.rsp,
     );
     drop(process);
-    exit_process(128 + frame.vector as i64)
+    exit_process(code)
 }
 
 /// The running thread's id.
@@ -636,10 +770,19 @@ pub fn block_until(deadline: Option<u64>) -> bool {
     })
 }
 
-/// Whether the running thread's process was killed: a thread blocked in a
-/// system call checks this after waking, and gives up so that it can end
-/// on its way back to user mode.
+/// Whether the running thread's process was killed (or, for a Linux
+/// thread, a signal waits for delivery): a thread blocked in a system
+/// call checks this after waking, and gives up so that it can end (or
+/// take the signal) on its way back to user mode.
 pub fn current_killed() -> bool {
+    with(|s| {
+        let t = current_mut(s);
+        t.killed || t.linux.as_ref().is_some_and(|l| l.needs_attention())
+    })
+}
+
+/// Whether the running thread's process was killed (signals aside).
+pub fn current_dying() -> bool {
     with(|s| current_mut(s).killed)
 }
 

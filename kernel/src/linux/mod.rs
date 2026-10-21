@@ -15,14 +15,21 @@ pub mod errno;
 pub mod fd;
 pub mod nr;
 pub mod path;
+pub mod signal;
 pub mod stack;
 
 #[cfg(target_os = "none")]
 mod files;
 #[cfg(target_os = "none")]
+mod futex;
+#[cfg(target_os = "none")]
 mod memory;
 #[cfg(target_os = "none")]
 mod poll;
+#[cfg(target_os = "none")]
+mod process;
+#[cfg(target_os = "none")]
+pub mod signals;
 #[cfg(target_os = "none")]
 mod socket;
 #[cfg(target_os = "none")]
@@ -31,6 +38,10 @@ mod state;
 mod sys;
 
 #[cfg(target_os = "none")]
-pub use state::{FileState, OpenFile, State};
+pub use process::process_ended;
+#[cfg(target_os = "none")]
+pub use signals::{deliver, fault_signal};
+#[cfg(target_os = "none")]
+pub use state::{FileState, LinuxThread, OpenFile, State};
 #[cfg(target_os = "none")]
 pub use sys::{dispatch, initial_stack};

@@ -106,7 +106,7 @@ pub fn count(vector: u8) -> u64 {
 }
 
 /// Called by the common stub for vectors 32-255.
-pub(crate) fn dispatch(frame: &TrapFrame) {
+pub(crate) fn dispatch(frame: &mut TrapFrame) {
     let vector = (frame.vector & 0xFF) as u8;
     COUNTS[usize::from(vector)].fetch_add(1, Ordering::Relaxed);
     if vector == SPURIOUS_VECTOR {
@@ -132,7 +132,7 @@ pub(crate) fn dispatch(frame: &TrapFrame) {
         crate::task::preempt();
     }
     if frame.cs & 3 == 3 {
-        crate::task::user_return();
+        crate::task::user_return(&mut crate::syscall::UserFrame::Trap(frame));
     }
 }
 

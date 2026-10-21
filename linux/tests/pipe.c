@@ -5,12 +5,14 @@
  * Pipes on STELA's Linux personality (P11, docs/linux.md): pipe, read and
  * write in order, poll, dup2, the end of the stream when the writer
  * closes, EPIPE when the reader is gone, pipe2 with O_NONBLOCK (EAGAIN)
- * and fstat's S_IFIFO. Prints "pipe: OK".
+ * and fstat's S_IFIFO. Prints "pipe: OK". SIGPIPE is ignored (P12: its
+ * default would end the program at the EPIPE write).
  */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -25,6 +27,7 @@ static int fail(const char *what)
 int main(void)
 {
     int fds[2];
+    signal(SIGPIPE, SIG_IGN);
     if (pipe(fds) != 0)
         return fail("pipe");
     struct stat st;

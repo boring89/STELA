@@ -1483,7 +1483,7 @@ fn processes(_: &'static BootInfo) {
 ///     jne  fail
 ///     cmp  rdx, len               ; Linux leaves RDX alone
 ///     jne  fail
-///     mov  eax, 57                ; fork() -> -ENOSYS
+///     mov  eax, 206               ; io_setup() -> -ENOSYS
 ///     syscall
 ///     neg  rax
 ///     mov  rdi, rax               ; exit_group(38)
@@ -1498,7 +1498,7 @@ fn processes(_: &'static BootInfo) {
 const LINUX_TEST: &[u8] = &[
     0x48, 0x8D, 0x35, 0x3D, 0x00, 0x00, 0x00, 0xBF, 0x01, 0x00, 0x00, 0x00, 0xBA, 0x23, 0x00, 0x00,
     0x00, 0xB8, 0x01, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0x83, 0xF8, 0x23, 0x75, 0x1A, 0x48, 0x83,
-    0xFA, 0x23, 0x75, 0x14, 0xB8, 0x39, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xF7, 0xD8, 0x48, 0x89,
+    0xFA, 0x23, 0x75, 0x14, 0xB8, 0xCE, 0x00, 0x00, 0x00, 0x0F, 0x05, 0x48, 0xF7, 0xD8, 0x48, 0x89,
     0xC7, 0xB8, 0xE7, 0x00, 0x00, 0x00, 0x0F, 0x05, 0xBF, 0x01, 0x00, 0x00, 0x00, 0xB8, 0xE7, 0x00,
     0x00, 0x00, 0x0F, 0x05, 0x6C, 0x69, 0x6E, 0x75, 0x78, 0x3A, 0x20, 0x68, 0x65, 0x6C, 0x6C, 0x6F,
     0x20, 0x66, 0x72, 0x6F, 0x6D, 0x20, 0x72, 0x61, 0x77, 0x20, 0x73, 0x79, 0x73, 0x74, 0x65, 0x6D,
@@ -1549,6 +1549,44 @@ fn linux_personality(_: &'static BootInfo) {
     let free = stable_frames();
     assert_eq!(run(), Some(3));
     assert_eq!(settled_frames(free), free, "a musl program leaked memory");
+    // P12: threads (clone, futex) and processes (fork, execve, wait,
+    // #!): their memory comes back too.
+    // Started like the shell does: `[4]` is the program's folder, so
+    // `/Initrd` is visible (for execve) even when `Data` is mounted.
+    let run_path = |name: &str| {
+        let folder = initrd
+            .fs
+            .lookup(initrd.fs.root(), "linux")
+            .expect("no linux folder");
+        let file = initrd.fs.lookup(folder.id, name).expect("no program");
+        let (_, image) = program::read_program(&initrd, file.id).expect("cannot read");
+        let mut initial = task::process::standard_initial(None);
+        initial[3] = Some(kernel::object::Entry {
+            object: kernel::object::KernelObject::Directory(kernel::vfs::Node {
+                volume: initrd.clone(),
+                id: folder.id,
+            }),
+            rights: abi::Rights::READ,
+        });
+        match program::spawn_process(name, &image, initial, None, Vec::new(), None) {
+            Ok(p) => {
+                let pid = p.id();
+                drop(p);
+                task::wait_process(pid)
+            }
+            Err(e) => panic!("cannot start {name}: {e:?}"),
+        }
+    };
+    assert_eq!(run_path("threads"), Some(4));
+    assert_eq!(run_path("procs"), Some(0));
+    let free = stable_frames();
+    assert_eq!(run_path("threads"), Some(4));
+    assert_eq!(run_path("procs"), Some(0));
+    assert_eq!(
+        settled_frames(free),
+        free,
+        "Linux threads or processes leaked memory"
+    );
 }
 
 fn framebuffer_object(_: &'static BootInfo) {

@@ -13,15 +13,26 @@
 //!  swapgs                         GS base = this processor's PerCpu
 //!  gs:[user_rsp_scratch] = rsp    park the user stack pointer
 //!  rsp = gs:[kernel_rsp]          the running thread's kernel stack
-//!  push user rsp, rcx (rip), r11 (rflags), rax, rdi, rsi, rdx, r10, r8, r9
+//!  push user rsp, rcx (rip), r11 (rflags), rcx, r11, rax, rdi, rsi, rdx,
+//!       r10, r8, r9, rbx, rbp, r12-r15, two zero words (flag, padding)
 //!  call syscall_dispatch(&mut SyscallFrame)
-//!  cli, pop them back (rax and rdx now hold the results)
-//!  rsp = user rsp, swapgs, sysretq
+//!  cli
+//!  flag zero: pop them back (rax and rdx now hold the results),
+//!             rsp = user rsp, swapgs, sysretq
+//!  flag set:  the kernel replaced the user state (a signal handler, a
+//!             new program): build an iretq frame (SS, RSP, RFLAGS, CS,
+//!             RIP) below the saved one, load every register from it
+//!             (RCX and R11 too, which sysret cannot restore), swapgs,
+//!             iretq (Vol. 3A 6.14.3 "IRET in IA-32e Mode")
 //! ```
 //!
-//! The callee-saved registers (rbx, rbp, r12-r15) are preserved by the Rust
-//! code itself; the other argument registers are restored from the frame,
-//! so no kernel value reaches user mode.
+//! Every register is restored from the frame, so no kernel value reaches
+//! user mode. `push` with an RSP-relative memory operand computes the
+//! address before RSP is decremented (Vol. 2B "PUSH"), which the offsets
+//! of the iretq path take into account: after k pushes the saved frame
+//! starts at `rsp + 8k`; its words are flag 0, padding 1, r15 2 .. rbx 7,
+//! r9 8, r8 9, r10 10, rdx 11, rsi 12, rdi 13, rax 14, r11 15, rcx 16,
+//! rflags 17, rip 18, rsp 19.
 
 use super::msr;
 use crate::cpu::{OFFSET_KERNEL_RSP, OFFSET_USER_RSP};
@@ -55,6 +66,8 @@ stela_syscall_entry:
     push qword ptr gs:[{user_rsp}]
     push rcx
     push r11
+    push rcx
+    push r11
     push rax
     push rdi
     push rsi
@@ -62,10 +75,27 @@ stela_syscall_entry:
     push r10
     push r8
     push r9
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    push 0
+    push 0
     mov rdi, rsp
     cld
     call {dispatch}
     cli
+    cmp qword ptr [rsp], 0
+    jne 2f
+    add rsp, 16
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
     pop r9
     pop r8
     pop r10
@@ -73,16 +103,42 @@ stela_syscall_entry:
     pop rsi
     pop rdi
     pop rax
+    add rsp, 16
     pop r11
     pop rcx
     pop rsp
     swapgs
     sysretq
+2:
+    push {user_ss}
+    push qword ptr [rsp + 8 + 19 * 8]
+    push qword ptr [rsp + 16 + 17 * 8]
+    push {user_cs}
+    push qword ptr [rsp + 32 + 18 * 8]
+    mov r15, [rsp + 40 + 2 * 8]
+    mov r14, [rsp + 40 + 3 * 8]
+    mov r13, [rsp + 40 + 4 * 8]
+    mov r12, [rsp + 40 + 5 * 8]
+    mov rbp, [rsp + 40 + 6 * 8]
+    mov rbx, [rsp + 40 + 7 * 8]
+    mov r9, [rsp + 40 + 8 * 8]
+    mov r8, [rsp + 40 + 9 * 8]
+    mov r10, [rsp + 40 + 10 * 8]
+    mov rdx, [rsp + 40 + 11 * 8]
+    mov rsi, [rsp + 40 + 12 * 8]
+    mov rdi, [rsp + 40 + 13 * 8]
+    mov rax, [rsp + 40 + 14 * 8]
+    mov r11, [rsp + 40 + 15 * 8]
+    mov rcx, [rsp + 40 + 16 * 8]
+    swapgs
+    iretq
 .text
 "#,
     user_rsp = const OFFSET_USER_RSP,
     kernel_rsp = const OFFSET_KERNEL_RSP,
     dispatch = sym crate::syscall::dispatch,
+    user_ss = const super::gdt::USER_DATA as u64,
+    user_cs = const super::gdt::USER_CODE as u64,
 );
 
 unsafe extern "C" {

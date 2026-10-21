@@ -185,7 +185,8 @@ fn with<T>(f: impl FnOnce(&mut Net) -> Result<T, Error>) -> Result<T, Error> {
 
 /// Calls `try_now` until it gives an answer (`Some`), sleeping between
 /// tries until something happens in the stack; `TimedOut` after
-/// `deadline` (`None`: forever).
+/// `deadline` (`None`: forever); `NotSupported` when the thread must give
+/// up (killed, or a Linux signal: EINTR).
 fn wait<T>(
     deadline: Option<u64>,
     mut try_now: impl FnMut(&mut Net) -> Option<Result<T, Error>>,
@@ -193,7 +194,7 @@ fn wait<T>(
     let me = task::current_id();
     loop {
         if task::current_killed() {
-            return Err(Error::TimedOut);
+            return Err(Error::NotSupported);
         }
         {
             let mut guard = NET.lock();

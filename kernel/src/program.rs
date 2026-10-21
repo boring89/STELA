@@ -76,7 +76,7 @@ fn map_zeroed(
 /// Copies the segments of `elf` into `space` and maps the stack. A page
 /// that two segments share (Linux programs) gets both permissions; a page
 /// that would be writable and executable is refused (W^X).
-fn load(space: &AddressSpace, elf: &Elf) -> Result<(), LoadError> {
+pub(crate) fn load(space: &AddressSpace, elf: &Elf) -> Result<(), LoadError> {
     let mut pages: BTreeMap<u64, UserFlags> = BTreeMap::new();
     for segment in elf.segments() {
         let start = segment.vaddr & !0xFFF;
@@ -326,13 +326,29 @@ fn spawn_linux(
     let process = task::process::create_with(name, initial, Some(state))?;
     load(process.space(), elf)?;
     let argv = message_args(args);
-    let stack = crate::linux::initial_stack(elf, &argv, process.linux());
+    let stack = crate::linux::initial_stack(elf, &argv, None, process.linux());
     process
         .space()
         .write(stack.rsp, &stack.bytes)
         .map_err(|_| LoadError::OutOfMemory)?;
     tty.add_user(process.id());
-    start(&process, elf.entry(), stack.rsp)
+    // Its own process group and session; its main thread's id is its pid
+    // (P12, docs/linux.md §11).
+    let main = crate::linux::LinuxThread::new(process.id(), 0);
+    if let Some(linux) = process.linux() {
+        linux
+            .pgid
+            .store(process.id(), core::sync::atomic::Ordering::Relaxed);
+        linux
+            .sid
+            .store(process.id(), core::sync::atomic::Ordering::Relaxed);
+        *linux.exe.lock() = alloc::format!("/{name}");
+        linux.threads.lock().push(Arc::clone(&main));
+    }
+    match task::spawn_user_linux(&process, elf.entry(), stack.rsp, main) {
+        Ok(_) => Ok(process),
+        Err(SpawnError::OutOfMemory | SpawnError::Exiting) => Err(LoadError::OutOfMemory),
+    }
 }
 
 /// The Linux path of a folder: `/Volume/a/b` (`/tmp/...` for `Tmp`).

@@ -448,6 +448,111 @@ impl AddressSpace {
         })
     }
 
+    /// A copy of the user half for `fork` (`docs/linux.md`): every page the
+    /// address space owns is copied into a new frame with the same
+    /// permissions; shared-memory and device pages are mapped again (the
+    /// same frames) and the objects cloned. Nothing is copied-on-write.
+    pub fn clone_user(&self) -> Result<AddressSpace, MapError> {
+        let copy = AddressSpace::new()?;
+        let _guard = self.lock.lock();
+        let _copy_guard = copy.lock.lock();
+        // SAFETY: this address space's user tables, read under its lock.
+        unsafe { self.clone_level(&copy, self.root, 4, 0)? };
+        drop(_copy_guard);
+        drop(_guard);
+        *copy.shared.lock() = self.shared.lock().clone();
+        *copy.devices.lock() = self.devices.lock().clone();
+        Ok(copy)
+    }
+
+    /// Copies the leaves under the table `phys` (level `level`, covering
+    /// addresses from `base`) into `copy`.
+    ///
+    /// # Safety
+    ///
+    /// `phys` must be a table of this address space's user half, and both
+    /// locks held.
+    unsafe fn clone_level(
+        &self,
+        copy: &AddressSpace,
+        phys: u64,
+        level: u32,
+        base: u64,
+    ) -> Result<(), MapError> {
+        let entries = if level == 4 { 0..256 } else { 0..512 };
+        let span = 1u64 << (12 + 9 * (level - 1));
+        for i in entries {
+            // SAFETY: the caller's guarantee; read only.
+            let entry = unsafe { table(phys) }[i];
+            if entry & PRESENT == 0 {
+                continue;
+            }
+            let virt = base + i as u64 * span;
+            if level > 1 {
+                // SAFETY: a lower table of the same hierarchy.
+                unsafe { self.clone_level(copy, entry & ADDR_MASK, level - 1, virt)? };
+                continue;
+            }
+            let leaf = if entry & SHARED != 0 {
+                entry
+            } else {
+                let frame = pmm::alloc_frame().ok_or(MapError::OutOfMemory)?;
+                // SAFETY: both frames are RAM reached through the HHDM; the
+                // new one is ours alone, the old one is only read.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        (HHDM_BASE + (entry & ADDR_MASK)) as *const u8,
+                        (HHDM_BASE + frame.addr()) as *mut u8,
+                        4096,
+                    )
+                };
+                (entry & !ADDR_MASK) | frame.addr()
+            };
+            if let Err(e) = copy.set_leaf(virt, leaf) {
+                if entry & SHARED == 0 {
+                    pmm::free_frame(PhysFrame::from_addr(leaf & ADDR_MASK));
+                }
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    /// Exchanges the user halves of `self` and `other` (with their
+    /// shared-memory and device mappings), for `execve`: the new program
+    /// is built in `other`, swapped in, and the old one leaves with
+    /// `other`. The TLB is flushed if `self` is active.
+    pub fn swap_user(&self, other: &AddressSpace) {
+        let _irq = crate::sync::IrqGuard::new();
+        {
+            let _a = self.lock.lock();
+            let _b = other.lock.lock();
+            // SAFETY: two distinct PML4s (each owned by its address
+            // space), edited under both locks; only the user slots move.
+            unsafe {
+                let mut mine = [0u64; 256];
+                mine.copy_from_slice(&table(self.root)[..256]);
+                let theirs = &mut table(other.root)[..256];
+                let saved: [u64; 256] = {
+                    let mut t = [0u64; 256];
+                    t.copy_from_slice(theirs);
+                    t
+                };
+                theirs.copy_from_slice(&mine);
+                table(self.root)[..256].copy_from_slice(&saved);
+            }
+        }
+        core::mem::swap(&mut *self.shared.lock(), &mut *other.shared.lock());
+        core::mem::swap(&mut *self.devices.lock(), &mut *other.devices.lock());
+        for space in [self, other] {
+            if space.is_active() {
+                // SAFETY: reloading the same root flushes the user
+                // half's TLB entries; the kernel half is unchanged.
+                unsafe { paging::load_root(space.root) };
+            }
+        }
+    }
+
     /// Makes this the processor's address space (writes CR3 if it is not
     /// already).
     pub fn activate(&self) {

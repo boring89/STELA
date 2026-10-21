@@ -35,10 +35,15 @@ MUSL_DIR    := $(BUILD)/musl
 MUSL_GCC    := $(MUSL_DIR)/install/bin/musl-gcc
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys net poll pipe
+LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs
 LINUX_DIR   := $(USER_DIR)/linux
 LINUX_CFLAGS := -static -O2 -no-pie -fno-pie -Wall -Wextra -Werror \
                -Wl,-z,max-page-size=4096 -Wl,--build-id=none
+# A Rust std program (P12, linux/rust/hello-std): x86_64-unknown-linux-musl
+# (`rustup target add x86_64-unknown-linux-musl`, in rust-toolchain.toml),
+# static and not position independent (STELA loads ET_EXEC only).
+LINUX_RUSTFLAGS := -C relocation-model=static -C target-feature=+crt-static \
+               -C link-arg=-Wl,-z,max-page-size=4096 -C link-arg=-Wl,--build-id=none
 
 OVMF_CODE   := /usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS   := /usr/share/OVMF/OVMF_VARS_4M.fd
@@ -65,7 +70,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox bin $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -125,7 +130,13 @@ $(MUSL_GCC): $(MUSL_DOWNLOAD)
 	$(MAKE) -C $(MUSL_DIR)/src -j$$(nproc) > $(MUSL_DIR)/make.log
 	$(MAKE) -C $(MUSL_DIR)/src install > $(MUSL_DIR)/install.log
 
-linux-tests: $(addprefix $(LINUX_DIR)/,$(LINUX_TESTS))
+linux-tests: $(addprefix $(LINUX_DIR)/,$(LINUX_TESTS)) linux-rust
+
+linux-rust:
+	RUSTFLAGS="$(LINUX_RUSTFLAGS)" cargo build --release --target x86_64-unknown-linux-musl \
+		--manifest-path linux/rust/hello-std/Cargo.toml --target-dir $(BUILD)/target/linux-rust
+	mkdir -p $(LINUX_DIR)
+	cp $(BUILD)/target/linux-rust/x86_64-unknown-linux-musl/release/hello-std $(LINUX_DIR)/
 
 $(LINUX_DIR)/%: linux/tests/%.c $(MUSL_GCC)
 	mkdir -p $(LINUX_DIR)
@@ -632,7 +643,7 @@ test-shutdown: esp test-images $(BUILD)/OVMF_VARS.fd
 # working directory is Data:/), and a line is typed for linux/tty.
 test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-linux.img
-	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-linux.log \
+	python3 tools/qemu_test.py --timeout 180 --log $(BUILD)/test-linux.log \
 		--type "STELA shell" "run linux/hello a b\n" \
 		--type "hello exited with code" "mkdir linuxdir\n" \
 		--type "> mkdir linuxdir" "cd linuxdir\n" \
@@ -645,6 +656,11 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "tty exited with code" "run linux/poll\n" \
 		--type "poll: type a line" "poll works\n" \
 		--type "poll exited with code" "run linux/pipe\n" \
+		--type "pipe exited with code" "run linux/threads\n" \
+		--type "threads exited with code" "run linux/procs\n" \
+		--type "procs exited with code" "run linux/hello-std rust\n" \
+		--type "hello-std exited with code" "run linux/signals\n" \
+		--send-keys "signals: press Ctrl-C" "ctrl-c" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
 		--expect "files: working directory /Data/linuxdir" \
@@ -657,6 +673,15 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "poll: you typed: poll works" --expect "poll: OK" \
 		--expect "poll exited with code 0" \
 		--expect "pipe: OK" --expect "pipe exited with code 0" \
+		--expect "threads: 10 threads added up to 110000" --expect "threads: OK" \
+		--expect "threads exited with code 4" \
+		--expect "procs: child said: hello from the child" --expect "argv[1] = one" \
+		--expect "argv[2] = /tmp/script" --expect "procs: OK" --expect "procs exited with code 0" \
+		--expect "hello-std: 8 threads added up to 36000" --expect "hello-std: channel [0, 1, 4, 9, 16]" \
+		--expect "hello-std: OK" --expect "hello-std exited with code 0" \
+		--expect "signals: handlers, mask and timers work" \
+		--expect "signals: children, pipes, faults and restarts work" \
+		--expect "signals: got SIGINT" --expect "signals: OK" --expect "signals exited with code 0" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-linux.img \
 		-device ide-hd,drive=sata1,bus=ide.1

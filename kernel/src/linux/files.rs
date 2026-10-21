@@ -48,7 +48,7 @@ fn fd_error(e: FdError) -> i64 {
 }
 
 /// A NUL-terminated string of the caller (at most `PATH_MAX` bytes).
-fn user_string(p: &Process, ptr: u64) -> Result<String, i64> {
+pub(super) fn user_string(p: &Process, ptr: u64) -> Result<String, i64> {
     let mut out = Vec::new();
     let mut at = ptr;
     loop {
@@ -172,6 +172,29 @@ fn parent_of(p: &Process, parts: &[String]) -> Result<(Node, String), i64> {
         Found::Item(node, info) if info.is_dir => Ok((node, String::from(name))),
         Found::Item(..) => Err(ENOTDIR),
         // New names at the root or in /dev cannot be made.
+        _ => Err(errno::EACCES),
+    }
+}
+
+/// The file `path` names (relative to `dirfd`), for `execve`: its node
+/// and its normalised Linux path. Folders and synthetic files → `EACCES`.
+pub(super) fn exec_file(p: &Process, dirfd: u64, path: &str) -> Result<(Node, String), i64> {
+    let base = base_of(p, dirfd)?;
+    let parts = path::normalize(&base, path).map_err(|e| match e {
+        PathError::Empty => ENOENT,
+        PathError::TooLong => ENAMETOOLONG,
+    })?;
+    match resolve(p, &parts)? {
+        Found::Item(node, info) if !info.is_dir => Ok((node, path::join(&parts))),
+        _ => Err(errno::EACCES),
+    }
+}
+
+/// The file an open descriptor refers to (`execveat` with
+/// `AT_EMPTY_PATH`).
+pub(super) fn fd_node(p: &Process, fd: u64) -> Result<Node, i64> {
+    match &*file_of(p, fd)? {
+        OpenFile::File { node, .. } => Ok(node.clone()),
         _ => Err(errno::EACCES),
     }
 }
@@ -435,8 +458,12 @@ fn write_file(file: &OpenFile, data: &[u8]) -> Result<usize, i64> {
                     Ok(n) => done += n,
                     Err(abi::Error::TimedOut) if done > 0 => break,
                     Err(abi::Error::TimedOut) => return Err(errno::EAGAIN),
-                    // No signals: EPIPE alone (Linux also raises SIGPIPE).
-                    Err(abi::Error::PeerClosed) => return Err(errno::EPIPE),
+                    // EPIPE and SIGPIPE (P12; its default ends the
+                    // process).
+                    Err(abi::Error::PeerClosed) => {
+                        super::signals::sigpipe();
+                        return Err(errno::EPIPE);
+                    }
                     Err(e) => return Err(errno::from_error(e)),
                 }
             }

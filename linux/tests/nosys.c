@@ -2,23 +2,28 @@
  * Copyright (C) 2026 YuanChi Hsieh
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Linux personality test: what STELA does not do fails with ENOSYS
- * (pipe works since P11: linux/tests/pipe.c).
+ * Linux personality test: what STELA does not do fails with ENOSYS (fork
+ * and execve work since P12: linux/tests/procs.c), and links are refused
+ * (EPERM).
  */
+#define _GNU_SOURCE
 #include <errno.h>
 #include <stdio.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 int main(void)
 {
-    char *argv[] = {"x", NULL};
-
-    if (fork() != -1 || errno != ENOSYS) {
-        printf("nosys: FAIL fork\n");
+    if (syscall(SYS_io_setup, 1, NULL) != -1 || errno != ENOSYS) {
+        printf("nosys: FAIL io_setup\n");
         return 1;
     }
-    if (execv("/Initrd/linux/hello", argv) != -1 || errno != ENOSYS) {
-        printf("nosys: FAIL execve\n");
+    if (syscall(SYS_mremap, NULL, 4096, 8192, 0) != -1 || errno != ENOSYS) {
+        printf("nosys: FAIL mremap\n");
+        return 1;
+    }
+    if (symlink("/tmp/a", "/tmp/b") != -1 || errno != EPERM) {
+        printf("nosys: FAIL symlink\n");
         return 1;
     }
     printf("nosys: OK\n");

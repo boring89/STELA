@@ -201,3 +201,68 @@ pub(crate) unsafe fn enter_user(entry: u64, rsp: u64, arg: u64) -> ! {
         )
     }
 }
+
+/// Enters ring 3 with every register from `regs` (offsets of
+/// `trap::UserRegs`: rax 0, rbx 8, rcx 16, rdx 24, rsi 32, rdi 40, rbp 48,
+/// rsp 56, r8 64 .. r15 120, rip 128, rflags 136), through `iretq`.
+///
+/// # Safety
+///
+/// As [`enter_user`]; `regs` must be sanitized (RIP, RSP in the user half,
+/// RFLAGS with IF set and no privileged bits) and lie above the current
+/// stack pointer.
+pub(crate) unsafe fn enter_user_regs(regs: &crate::trap::UserRegs) -> ! {
+    // SAFETY: the caller's guarantee; rax holds the pointer until the last
+    // load, which replaces it.
+    unsafe {
+        asm!(
+            "cli",
+            "swapgs",
+            "push {ss}",
+            "push qword ptr [rax + 56]",
+            "push qword ptr [rax + 136]",
+            "push {cs}",
+            "push qword ptr [rax + 128]",
+            "mov rbx, [rax + 8]",
+            "mov rcx, [rax + 16]",
+            "mov rdx, [rax + 24]",
+            "mov rsi, [rax + 32]",
+            "mov rdi, [rax + 40]",
+            "mov rbp, [rax + 48]",
+            "mov r8, [rax + 64]",
+            "mov r9, [rax + 72]",
+            "mov r10, [rax + 80]",
+            "mov r11, [rax + 88]",
+            "mov r12, [rax + 96]",
+            "mov r13, [rax + 104]",
+            "mov r14, [rax + 112]",
+            "mov r15, [rax + 120]",
+            "mov rax, [rax]",
+            "iretq",
+            ss = const super::gdt::USER_DATA as u64,
+            cs = const super::gdt::USER_CODE as u64,
+            in("rax") regs as *const crate::trap::UserRegs,
+            options(noreturn)
+        )
+    }
+}
+
+/// The MXCSR bits FXRSTOR accepts: the MXCSR_MASK field of an FXSAVE
+/// image (offset 28), or 0xFFBF when it reads 0 (Vol. 1 11.6.6 "Guidelines
+/// for Writing to the MXCSR Register").
+pub(crate) fn mxcsr_mask() -> u32 {
+    static MASK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let known = MASK.load(core::sync::atomic::Ordering::Relaxed);
+    if known != 0 {
+        return known;
+    }
+    let mut area = FxArea([0; 512]);
+    // SAFETY: a local, aligned area; FXSAVE only writes it.
+    unsafe { fxsave(&mut area) };
+    let mut mask = u32::from_le_bytes([area.0[28], area.0[29], area.0[30], area.0[31]]);
+    if mask == 0 {
+        mask = 0xFFBF;
+    }
+    MASK.store(mask, core::sync::atomic::Ordering::Relaxed);
+    mask
+}

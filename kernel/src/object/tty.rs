@@ -48,6 +48,23 @@ struct Inner {
     users: Vec<ProcessId>,
     /// Columns and rows (P11, `TtySetSize`).
     size: (u16, u16),
+    /// The foreground process group (P12, `TIOCSPGRP`): Ctrl-C goes to
+    /// its members; `None`: to every user.
+    foreground: Option<u64>,
+}
+
+/// Whether process `pid` is in process group `group` (any group when
+/// `None`).
+fn in_group(pid: ProcessId, group: Option<u64>) -> bool {
+    let Some(group) = group else {
+        return true;
+    };
+    task::process::find(pid)
+        .and_then(|p| {
+            p.linux()
+                .map(|l| l.pgid.load(core::sync::atomic::Ordering::Relaxed))
+        })
+        .is_none_or(|g| g == group)
 }
 
 /// A terminal.
@@ -71,6 +88,7 @@ impl Tty {
                 watchers: WaitQueue::new(),
                 size: (80, 25),
                 users: Vec::new(),
+                foreground: None,
             }),
         })
     }
@@ -124,13 +142,15 @@ impl Tty {
             } else {
                 Vec::new()
             };
-            (fed, readers, users)
+            (fed, readers, (users, inner.foreground))
         };
         self.write(&fed.echo);
-        let me = task::current_process().map(|p| p.id());
-        for pid in users.into_iter().filter(|&p| Some(p) != me) {
-            if let Some(process) = task::process::find(pid) {
-                task::kill(&process, abi::EXIT_KILLED);
+        // SIGINT to the foreground group (P12; its default ends the
+        // process with 130).
+        let (users, foreground) = users;
+        for pid in users {
+            if in_group(pid, foreground) {
+                crate::linux::signals::interrupt(pid);
             }
         }
         for id in readers {
@@ -227,9 +247,31 @@ impl Tty {
         self.inner.lock().size
     }
 
-    /// Sets (columns, rows).
+    /// Sets (columns, rows); the users get `SIGWINCH` when it changed.
     pub fn set_size(&self, cols: u16, rows: u16) {
-        self.inner.lock().size = (cols, rows);
+        let users = {
+            let mut inner = self.inner.lock();
+            let changed = inner.size != (cols, rows);
+            inner.size = (cols, rows);
+            if changed {
+                inner.users.clone()
+            } else {
+                Vec::new()
+            }
+        };
+        for pid in users {
+            crate::linux::signals::send_kernel(pid, crate::linux::signal::sig::SIGWINCH);
+        }
+    }
+
+    /// The foreground process group (`TIOCGPGRP`).
+    pub fn foreground(&self) -> Option<u64> {
+        self.inner.lock().foreground
+    }
+
+    /// Sets the foreground process group (`TIOCSPGRP`).
+    pub fn set_foreground(&self, pgid: Option<u64>) {
+        self.inner.lock().foreground = pgid;
     }
 
     /// The line discipline's mode: (canonical, echo, signals).

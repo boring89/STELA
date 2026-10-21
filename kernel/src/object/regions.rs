@@ -11,7 +11,7 @@ use alloc::collections::BTreeMap;
 const PAGE: u64 = 4096;
 
 /// The ranges in use in one address area.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Regions {
     base: u64,
     end: u64,

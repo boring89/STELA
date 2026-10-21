@@ -37,7 +37,7 @@ pub enum FdError {
 }
 
 /// The table.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FdTable<T> {
     slots: Vec<Option<Slot<T>>>,
 }
@@ -136,6 +136,23 @@ impl<T: Clone> FdTable<T> {
             .map(|s| s.file)
             .collect()
     }
+
+    /// Removes the descriptors marked close-on-exec (`execve`) and returns
+    /// their files.
+    pub fn take_cloexec(&mut self) -> Vec<T> {
+        let mut out = Vec::new();
+        for slot in self.slots.iter_mut() {
+            if slot.as_ref().is_some_and(|s| s.cloexec)
+                && let Some(s) = slot.take()
+            {
+                out.push(s.file);
+            }
+        }
+        while self.slots.last().is_some_and(Option::is_none) {
+            self.slots.pop();
+        }
+        out
+    }
 }
 
 impl<T: Clone> Default for FdTable<T> {
@@ -196,5 +213,19 @@ mod tests {
         assert_eq!(t.drain().len(), FD_MAX);
         assert_eq!(t.count(), 0);
         assert_eq!(t.insert(1), Ok(0));
+    }
+
+    #[test]
+    fn cloexec_descriptors_go_on_exec() {
+        let mut t: FdTable<u32> = FdTable::new();
+        t.insert(1).unwrap();
+        t.insert_from(0, 2, true).unwrap();
+        t.insert(3).unwrap();
+        t.insert_from(0, 4, true).unwrap();
+        assert_eq!(t.take_cloexec(), vec![2, 4]);
+        assert_eq!(t.count(), 2);
+        assert!(t.get(1).is_err());
+        assert_eq!(t.get(2).unwrap().file, 3);
+        assert_eq!(t.insert(5).unwrap(), 1);
     }
 }

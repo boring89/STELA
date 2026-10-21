@@ -823,6 +823,10 @@ impl Shell {
         );
         // Wait, watching the keyboard for Ctrl-C (unless the program took
         // the keyboard for itself); other keys go to the program's tty.
+        // A Linux program gets Ctrl-C through its tty (SIGINT, P12); a
+        // second one within 2 s, or Ctrl-C for a STELA program, kills.
+        let linux = is_linux_program(file.0);
+        let mut interrupted: Option<u64> = None;
         let code = loop {
             match process::wait(child.0, 20_000_000) {
                 Ok(code) => break code,
@@ -835,8 +839,14 @@ impl Shell {
                     continue;
                 }
                 if KeyEvent::decode(msg.payload()).and_then(|e| key_to_char(&e)) == Some('\u{3}') {
-                    println!("^C");
-                    let _ = process::kill(child.0);
+                    let now = libstela::now_ns();
+                    if linux && interrupted.is_none_or(|t| now - t > 2_000_000_000) {
+                        interrupted = Some(now);
+                        let _ = port_send(tty.0, &msg);
+                    } else {
+                        println!("^C");
+                        let _ = process::kill(child.0);
+                    }
                 } else {
                     let _ = port_send(tty.0, &msg);
                 }
@@ -847,6 +857,53 @@ impl Shell {
         println!("{base} exited with code {code}");
         Ok(())
     }
+}
+
+/// Whether the program file has no STELA ELF note (so it runs as a Linux
+/// program, `docs/linux.md` §2): the note is looked for in the PT_NOTE
+/// segments.
+fn is_linux_program(file: Handle) -> bool {
+    let mut head = [0u8; 64];
+    if libstela::fs::read(file, &mut head, 0) != Ok(64) || &head[..4] != b"\x7fELF" {
+        return false;
+    }
+    let u16_at = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+    let u64_at = |b: &[u8], i: usize| {
+        let mut w = [0u8; 8];
+        w.copy_from_slice(&b[i..i + 8]);
+        u64::from_le_bytes(w)
+    };
+    let phoff = u64_at(&head, 32);
+    let phentsize = u16_at(&head, 54) as u64;
+    let phnum = u16_at(&head, 56) as u64;
+    for i in 0..phnum.min(32) {
+        let mut ph = [0u8; 56];
+        if libstela::fs::read(file, &mut ph, phoff + i * phentsize) != Ok(56) {
+            return false;
+        }
+        // PT_NOTE.
+        if u32::from_le_bytes([ph[0], ph[1], ph[2], ph[3]]) != 4 {
+            continue;
+        }
+        let size = u64_at(&ph, 32).min(4096) as usize;
+        let mut notes = vec![0u8; size];
+        if libstela::fs::read(file, &mut notes, u64_at(&ph, 8)) != Ok(size) {
+            return false;
+        }
+        let mut at = 0;
+        while at + 12 <= notes.len() {
+            let word = |i: usize| {
+                u32::from_le_bytes([notes[i], notes[i + 1], notes[i + 2], notes[i + 3]]) as usize
+            };
+            let (namesz, descsz, kind) = (word(at), word(at + 4), word(at + 8));
+            let name = notes.get(at + 12..at + 12 + namesz).unwrap_or(&[]);
+            if name == b"STELA\0" && kind == 1 {
+                return false;
+            }
+            at += 12 + namesz.next_multiple_of(4) + descsz.next_multiple_of(4);
+        }
+    }
+    true
 }
 
 /// The built-in commands (for Tab).

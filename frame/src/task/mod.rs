@@ -157,43 +157,49 @@ pub(crate) fn preempt() {
 
 /// What the kernel does with an exception in ring 3, see
 /// [`set_user_fault_handler`].
-pub type UserFaultHandler = fn(&crate::trap::TrapFrame, u64) -> !;
+pub type UserFaultHandler = fn(&mut crate::trap::TrapFrame, u64);
 
 static USER_FAULT: Once<UserFaultHandler> = Once::new();
 
 /// Registers the function called for an exception raised in ring 3, with
 /// the saved registers and CR2. It runs with interrupts disabled on the
-/// thread's kernel stack, and must not return (it ends the process and
-/// switches away). Only the first registration counts.
+/// thread's kernel stack. It either ends the thread (never returns) or
+/// changes the registers (a Linux signal handler, `docs/linux.md`) and
+/// returns; the thread then goes back to ring 3 through the user-return
+/// hook. Only the first registration counts.
 pub fn set_user_fault_handler(handler: UserFaultHandler) {
     let _ = USER_FAULT.set(handler);
 }
 
 /// Called by the exception dispatcher for a ring-3 exception.
-pub(crate) fn user_fault(frame: &crate::trap::TrapFrame, cr2: u64) -> ! {
+pub(crate) fn user_fault(frame: &mut crate::trap::TrapFrame, cr2: u64) {
     match USER_FAULT.get() {
         Some(handler) => handler(frame, cr2),
         None => panic!("{}", crate::trap::Report { frame, cr2 }),
     }
+    user_return(&mut crate::syscall::UserFrame::Trap(frame));
 }
 
 /// The kernel's check before returning to ring 3, see
 /// [`set_user_return_hook`].
-static USER_RETURN: Once<fn()> = Once::new();
+pub type UserReturnHook = fn(&mut crate::syscall::UserFrame<'_>);
+
+static USER_RETURN: Once<UserReturnHook> = Once::new();
 
 /// Registers a function called on every return to ring 3 from a system
-/// call or an interrupt, with interrupts disabled, after any reschedule.
-/// Nothing of the kernel is on the thread's stack below it then, so it may
-/// end the thread (never return). Only the first registration counts.
-pub fn set_user_return_hook(hook: fn()) {
+/// call, an interrupt or an exception, with interrupts disabled, after any
+/// reschedule. Nothing of the kernel is on the thread's stack below it
+/// then, so it may end the thread (never return); it may also replace the
+/// user registers (signal delivery). Only the first registration counts.
+pub fn set_user_return_hook(hook: UserReturnHook) {
     let _ = USER_RETURN.set(hook);
 }
 
-/// Called by `irq::dispatch` and `syscall::dispatch` before going back to
-/// ring 3.
-pub(crate) fn user_return() {
+/// Called by `irq::dispatch`, `syscall::dispatch` and [`user_fault`]
+/// before going back to ring 3.
+pub(crate) fn user_return(frame: &mut crate::syscall::UserFrame<'_>) {
     if let Some(hook) = USER_RETURN.get() {
-        hook();
+        hook(frame);
     }
 }
 
@@ -227,6 +233,86 @@ pub fn enter_user(entry: u64, rsp: u64, arg: u64) -> ! {
     // above, interrupts off); nothing below it is needed since this never
     // returns. The current context stays alive in the per-CPU area.
     unsafe { context::enter_user(entry, rsp, arg) }
+}
+
+/// Like [`enter_user`], with every register given (a Linux thread made by
+/// `clone`, a `fork` child): the registers are sanitized first
+/// ([`UserRegs::sanitized`](crate::trap::UserRegs::sanitized)); invalid
+/// ones panic, so the caller checks them before.
+pub fn enter_user_regs(regs: &crate::trap::UserRegs) -> ! {
+    let Ok(regs) = regs.sanitized() else {
+        panic!("task: enter_user_regs outside the user half ({regs:x?})");
+    };
+    let current = current();
+    let Some(top) = current.stack_top() else {
+        panic!("task: enter_user_regs on a thread without its own kernel stack");
+    };
+    assert!(
+        current.has_fpu(),
+        "task: enter_user_regs on a thread without FPU state"
+    );
+    drop(current);
+    let _irq = crate::sync::IrqGuard::new();
+    gdt::set_kernel_stack(top);
+    cpu::current().set_kernel_rsp(top);
+    // SAFETY: as in `enter_user`; `regs` lives on this stack above the
+    // frame `iretq` uses, and RIP/RSP are in the user half (sanitized).
+    unsafe { context::enter_user_regs(&regs) }
+}
+
+/// The running user thread's x87/SSE state (FXSAVE format, Intel SDM
+/// Vol. 1 Table 10-2). The kernel never uses these registers, so while a
+/// user thread runs kernel code they still hold its state.
+pub fn fpu_state() -> [u8; 512] {
+    let mut area = context::FxArea::initial();
+    let _irq = crate::sync::IrqGuard::new();
+    // SAFETY: `area` is a local, aligned FXSAVE area.
+    unsafe { context::fxsave(&mut area) };
+    area.0
+}
+
+/// Loads `state` (FXSAVE format) into the running user thread's x87/SSE
+/// registers, e.g. from a signal frame. MXCSR's reserved bits are cleared
+/// first (FXRSTOR would raise #GP, Vol. 1 10.5.1.1).
+pub fn set_fpu_state(state: &[u8; 512]) {
+    let mut area = context::FxArea(*state);
+    let mask = context::mxcsr_mask();
+    let mxcsr = u32::from_le_bytes([area.0[24], area.0[25], area.0[26], area.0[27]]) & mask;
+    area.0[24..28].copy_from_slice(&mxcsr.to_le_bytes());
+    let _irq = crate::sync::IrqGuard::new();
+    // SAFETY: a full 512-byte aligned area with valid MXCSR; the other
+    // fields have no reserved bits FXRSTOR checks.
+    unsafe { context::fxrstor(&area) };
+}
+
+/// Resets the running user thread's x87/SSE state to the FNINIT state
+/// (`execve`).
+pub fn reset_fpu() {
+    let area = context::FxArea::initial();
+    let _irq = crate::sync::IrqGuard::new();
+    // SAFETY: the initial area is a valid FXSAVE image.
+    unsafe { context::fxrstor(&area) };
+}
+
+impl TaskContext {
+    /// Gives this (not yet running) context the running thread's FPU
+    /// state, as `clone` and `fork` do.
+    pub fn copy_fpu_from_current(&self) {
+        let Some(fpu) = &self.fpu else { return };
+        let _irq = crate::sync::IrqGuard::new();
+        // SAFETY: the context has not run yet, so nothing else uses its
+        // area; FXSAVE stores the live (current thread's) state.
+        unsafe { context::fxsave(fpu.get()) };
+    }
+
+    /// Sets the FS base this (not yet running) context starts with.
+    pub fn set_initial_fs_base(&self, base: u64) -> Result<(), BadFsBase> {
+        if base >= crate::mm::USER_END {
+            return Err(BadFsBase);
+        }
+        self.fs_base.store(base, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 /// Makes the code running now (the boot thread on the loader's stack) the

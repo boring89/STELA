@@ -207,7 +207,7 @@ fn read_cr2() -> u64 {
 ///
 /// Interrupts (vector 32 and up) go to `crate::irq`. An exception in ring 3
 /// goes to the kernel's user-fault handler (`crate::task`), which ends the
-/// process. In ring 0 a breakpoint is counted and execution resumes after
+/// process or redirects it to a signal handler. In ring 0 a breakpoint is counted and execution resumes after
 /// the `int3`; every other exception is fatal: it panics with a register
 /// dump.
 extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
@@ -217,7 +217,10 @@ extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
     }
     let cr2 = read_cr2();
     if frame.cs & 3 == 3 {
+        // Ends the thread, or returns with the registers changed (a
+        // signal handler).
         crate::task::user_fault(frame, cr2);
+        return;
     }
     if frame.vector == 3 {
         BREAKPOINTS.fetch_add(1, Ordering::Relaxed);

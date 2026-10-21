@@ -120,6 +120,8 @@ const CONSOLE_BG: Rgb = Rgb(0x10, 0x10, 0x14);
 /// Panic screen colours: parchment on a dark Pompeian red.
 const PANIC_FG: Rgb = Rgb(0xF2, 0xE8, 0xD5);
 const PANIC_BG: Rgb = Rgb(0x5C, 0x1A, 0x14);
+/// The last messages on the panic screen: a dimmer parchment.
+const PANIC_DIM: Rgb = Rgb(0xC8, 0xA8, 0x98);
 
 struct FbConsole {
     canvas: FbCanvas,
@@ -364,4 +366,37 @@ pub(crate) fn panic_screen(message: fmt::Arguments) {
         }
         y += font.height;
     }
+    // The kernel's last messages (P11), at the bottom of the screen, if
+    // they fit below the message and the ring is not locked by the
+    // panicking print.
+    let Some(ring) = super::RING.try_lock() else {
+        return;
+    };
+    let shown = ring.last(PANIC_LAST_LINES).count();
+    if shown == 0 {
+        return;
+    }
+    let top = h.saturating_sub((shown + 2) * font.height);
+    if top < y + font.height {
+        return;
+    }
+    let columns = (w / font.width).saturating_sub(4);
+    let mut y = top;
+    let x0 = 2 * font.width;
+    let mut x = x0;
+    for c in "last kernel messages:".chars() {
+        draw_char(&mut canvas, font, x, y, c, PANIC_DIM, PANIC_BG);
+        x += font.width;
+    }
+    for line in ring.last(PANIC_LAST_LINES) {
+        y += font.height;
+        let mut x = x0;
+        for c in line.chars().take(columns) {
+            draw_char(&mut canvas, font, x, y, c, PANIC_DIM, PANIC_BG);
+            x += font.width;
+        }
+    }
 }
+
+/// Lines of the kernel's last messages the panic screen shows.
+const PANIC_LAST_LINES: usize = 10;

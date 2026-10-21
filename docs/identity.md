@@ -80,7 +80,7 @@ Icon {
         不管畫面在誰手上都畫；畫完在 serial 印 (the panic screen is up)
 ```
 
-`make test-panic`：selftest kernel 配一個多了 `panic-test` 檔的 initrd：selftest 一開始看到它就故意 panic（`selftest: the panic screen test`），panic handler 停住而不結束 QEMU；截圖檢查左上角是 panic 底色、石碑左面是 terracotta。
+`make test-panic`：selftest kernel 配一個多了 `panic-test` 檔的 initrd：selftest 一開始看到它就故意 panic（`selftest: the panic screen test`），panic handler 停住而不結束 QEMU；截圖檢查左上角是 panic 底色、石碑左面是 terracotta；P11 起底部有 kernel 的最後 10 行訊息（`docs/p520.md` §3.1），截圖也檢查那一塊有至少 8 行字。
 
 ## 6. 替換流程（給使用者）
 

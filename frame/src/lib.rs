@@ -53,18 +53,22 @@ pub mod trap;
 pub fn init(info: &'static bootinfo::BootInfo) {
     let _ = BOOT_INFO.set(info);
     serial::init();
-    arch::x86_64::init();
-    arch::x86_64::pat::init();
-    mm::init(info);
-    console::fb::init(info);
-    acpi::init(info);
-    irq::init(acpi::madt());
-    task::init();
+    // With `verbose`, every step says when it starts and ends
+    // (`console::step`); the console reaches the screen from `fb::init`.
+    use console::step;
+    step("cpu tables (GDT, TSS, IDT)", arch::x86_64::init);
+    step("PAT", arch::x86_64::pat::init);
+    step("memory", || mm::init(info));
+    step("screen", || console::fb::init(info));
+    step("ACPI", || acpi::init(info));
+    step("interrupt controllers", || irq::init(acpi::madt()));
+    step("per-CPU area", task::init);
     arch::x86_64::syscall::init();
     arch::x86_64::enable_smep();
-    input::init();
-    time::init();
+    step("keyboard and mouse (PS/2)", input::init);
+    step("timer", time::init);
     irq::enable();
+    console::KEYS_READY.store(true, core::sync::atomic::Ordering::Release);
 }
 
 /// The boot information, kept for later readers (it lives in

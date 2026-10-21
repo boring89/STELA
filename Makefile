@@ -161,7 +161,7 @@ test-panic: esp-test $(BUILD)/OVMF_VARS.fd
 		--expect "the panic screen is up" \
 		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_PANIC) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/panic.ppm --expect-rect 0,0,300,300,\#5c1a14 \
-		--expect-rect $(PANIC_FACE),\#c8763c
+		--expect-rect $(PANIC_FACE),\#c8763c --expect-text 32,1216,1600,352,\#5c1a14,8
 
 $(BUILD)/OVMF_VARS.fd:
 	mkdir -p $(BUILD)
@@ -417,17 +417,24 @@ test-sound: esp $(BUILD)/OVMF_VARS.fd
 
 # Boot options (docs/p520.md): the normal kernel with a boot.cfg that
 # asks for text mode and no USB; init starts the shell without the window
-# server and the xHCI controller is left alone.
+# server and the xHCI controller is left alone. verbose and waitkey (P11,
+# docs/p520.md §3.1): every step reports, and each of the kernel's eight
+# steps waits for the Enter that QMP sends (none may time out).
 ESP_TEXT    := $(BUILD)/esp-text
 test-textmode: esp $(BUILD)/OVMF_VARS.fd
 	rm -rf $(ESP_TEXT)
 	cp -r $(ESP) $(ESP_TEXT)
-	printf 'textmode\n  nousb   # no xHCI\n' > $(ESP_TEXT)/STELA/boot.cfg
-	python3 tools/qemu_test.py --timeout 60 --type "STELA shell" "uptime\n" \
-		--expect "boot: options textmode nousb" --expect "usb: off (boot option nousb)" \
+	printf 'textmode\n  nousb   # no xHCI\nverbose\nwaitkey\n' > $(ESP_TEXT)/STELA/boot.cfg
+	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-textmode.log \
+		$(foreach i,1 2 3 4 5 6 7 8,--send-keys "boot: press any key" "ret") \
+		--type "STELA shell" "uptime\n" \
+		--expect "boot: options textmode nousb verbose waitkey" --expect "boot: memory done" \
+		--expect "boot: timer done" --expect "boot: PCI done" --expect "boot: press any key" \
+		--expect "usb: off (boot option nousb)" --expect "boot: volumes done" \
 		--expect "init: text mode (boot option)" --expect "STELA shell" --expect "uptime: " \
 		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEXT) -display none -serial stdio \
 		-device qemu-xhci
+	test $$(grep -c "boot: no key" $(BUILD)/test-textmode.log) -eq 0
 
 # The desktop: boot the normal kernel (init starts the window server and
 # the terminal, the terminal the shell), type a command, start echo_win

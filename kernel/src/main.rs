@@ -29,20 +29,25 @@ fn kernel_main(info: &'static BootInfo) -> ! {
     }
     frame::init(info);
     // The stela, until the window server takes the screen (or, in text
-    // mode, for a moment); boot messages go on to the serial port.
-    frame::console::boot_screen();
-    kernel::task::init();
-    frame::smp::start_aps();
+    // mode, for a moment); boot messages go on to the serial port. With
+    // `textmode` or `verbose` the messages stay on the screen instead
+    // (P11, docs/p520.md §3.1).
+    if !(frame::boot_flag("textmode") || frame::boot_flag("verbose")) {
+        frame::console::boot_screen();
+    }
+    use frame::console::step;
+    step("scheduler", kernel::task::init);
+    step("other processors", frame::smp::start_aps);
     kernel::syscall::init();
     kernel::console::start();
-    drivers::pci::system::init();
-    kernel::block::probe();
-    kernel::usb::start();
-    kernel::audio::start();
+    step("PCI", drivers::pci::system::init);
+    step("disks", kernel::block::probe);
+    step("USB", kernel::usb::start);
+    step("sound", kernel::audio::start);
     // The self test drives the card raw first, then starts the stack.
     #[cfg(not(feature = "selftest"))]
-    kernel::net::start();
-    kernel::vfs::mount::mount_all();
+    step("network", kernel::net::start);
+    step("volumes", kernel::vfs::mount::mount_all);
     kprintln!("STELA kernel {}", env!("CARGO_PKG_VERSION"));
     let usable: u64 = info
         .regions()

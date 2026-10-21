@@ -86,3 +86,33 @@ shell 的 `cp` 多了 `cp -r 來源 目的`：整個資料夾（遞迴，最深 
 - 沒有尋找／取代、多份文件、自動存檔、行號、語法顏色；Shift-點選不會延伸選取（視窗伺服器的滑鼠事件沒有帶修飾鍵）。
 - 非 ASCII 的字可以讀寫，但字型只畫得出 ASCII（其他字是方框）。
 - 對話框的互動沒有自動測試。
+
+## 3. 系統監視器 `Monitor.app`（P11 K35）
+
+**比喻**：儀表板。每秒看一次引擎（行程）、油箱（記憶體）、轉速（處理器）、里程（網路收送），必要時熄掉一個不聽話的引擎。
+
+```
+ Processes                                        [ End Process ]
+   pid  name                 threads  cpu  state      ← List，點一下選取
+ N running, M ended
+ Memory   用掉 / 全部 MiB；kernel heap 用掉 / 大小 KiB
+ CPUs     cpu0 1000/s  cpu1 1000/s                  ← 每顆每秒處理的 timer tick
+ Network  e1000e 10.0.2.15: in N frames (K KiB), out …
+ Up       時:分:秒
+```
+
+- 資料：`SysInfo(PROCESSES)`（執行中的；結束的只計數）、`PROCESS_CPUS`（每個行程在哪顆）、`MEMORY`、`CPUS`、`NetInfo`（K28 的計數）、`ClockNowNs`。每秒重讀一次（`next_event` 的逾時），選取依 pid 保留。
+- **CPU 欄不是使用率**：kernel 沒有記錄忙／閒的時間，每顆 CPU 每秒都處理約 1000 個 timer tick；這個數字只表示那顆還活著（計畫寫「≈ 使用率的替代」）。真正的使用率要 kernel 記 idle 執行緒的時間（之後的工作）。
+- **End Process**（按鈕或 File > End Process）：先問「End "x" (process N)?」（`alert`，Cancel／End），再 `ProcessOpen(pid, power)` + `ProcessKill`，印 `monitor: ended N (x)`。init、windowserver、mouseion 與 Monitor 自己不能從這裡結束（提示說明）。
+- **新 syscall `ProcessOpen`（62，P11）**：`ProcessOpen(pid, power) -> process`（`WAIT | KILL | DUPLICATE`）：用 pid 拿到任何執行中行程的 handle，要持有 `POWER` 能力（`docs/userland.md` §2.3）；不在執行 → `NotFound`。只有 Mouseion 的 **Special > Monitor** 啟動的 Monitor 拿得到 `POWER`（Mouseion 從視窗伺服器那裡有）；從 shell 啟動的 Monitor 只能看、按 End Process 會說明沒有權限。libstela `process::open(pid)`。
+- 印到 `[1]`：第一次畫好後 `monitor: showing N processes`。
+
+### 3.1 測試
+
+- `make test-shell` 最後打 `Monitor.app &`（背景），看到 `monitor: showing`。
+- proctest 第 25 步：沒有 `POWER` 時 `process::open(1)` 與用 port 冒充的 `ProcessOpen` 都是 `AccessDenied`。
+- End Process 的互動沒有自動測試（要點選清單與按鈕）。
+
+### 3.2 About STELA
+
+Mouseion 的 **Mouseion > About STELA**（K28）：版本、CPU、處理器數、記憶體、畫面、開機多久——資料來自硬體報告的摘要行（`docs/hwinfo.md`）。

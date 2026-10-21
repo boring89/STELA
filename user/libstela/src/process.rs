@@ -257,6 +257,13 @@ pub fn hardware() -> Result<alloc::string::String, Error> {
     }
 }
 
+/// A handle (`WAIT | KILL`) to running process `pid` (`ProcessOpen`,
+/// P11): needs the `POWER` capability; `AccessDenied` without it.
+pub fn open(pid: u64) -> Result<Handle, Error> {
+    let power = capability(capability::POWER).ok_or(Error::AccessDenied)?;
+    syscall2(Syscall::ProcessOpen, pid, power.raw()).map(Handle::from_raw)
+}
+
 /// The processors: each one's timer ticks (`SysInfo(CPUS)`).
 pub fn cpus() -> Vec<u64> {
     let mut b = vec![0u8; 8 * 64];

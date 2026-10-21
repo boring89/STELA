@@ -237,11 +237,15 @@ pub enum Syscall {
     /// its `ThreadExit` value, `EXIT_KILLED` if it ended with its process
     /// (P11).
     ThreadJoin = 61,
+    /// `ProcessOpen(pid, power) -> process`: a handle (`WAIT | KILL`) to a
+    /// running process by its id, for a system monitor; needs the `POWER`
+    /// capability (P11). `NotFound` when it is not running.
+    ProcessOpen = 62,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 61] = [
+    pub const ALL: [Syscall; 62] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -303,6 +307,7 @@ impl Syscall {
         Syscall::FileSetAttr,
         Syscall::FileListAttr,
         Syscall::ThreadJoin,
+        Syscall::ProcessOpen,
     ];
 
     /// The call with number `raw`, if any.
@@ -1888,6 +1893,7 @@ mod tests {
         );
         assert_eq!((ATTR_NAME_MAX, ATTR_VALUE_MAX), (255, 3072));
         assert_eq!(Syscall::ThreadJoin.raw(), 61);
+        assert_eq!(Syscall::ProcessOpen.raw(), 62);
         assert_eq!(object_kind::THREAD, 15);
         assert_eq!((object_kind::PIPE_READ, object_kind::PIPE_WRITE), (13, 14));
         assert_eq!(PIPE_BUFFER, 65536);

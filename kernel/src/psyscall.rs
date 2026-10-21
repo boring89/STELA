@@ -232,6 +232,22 @@ pub fn process_kill(process: &Process, handle: u64) -> Result<u64, Error> {
     Ok(0)
 }
 
+/// `ProcessOpen(pid, power) -> handle` (P11): any running process, for
+/// whoever holds `POWER` (a system monitor ends processes with it).
+pub fn process_open(process: &Process, pid: u64, power: u64) -> Result<u64, Error> {
+    crate::object::check_capability(process, power, abi::capability::POWER)?;
+    match task::process::find(pid) {
+        Some(p) if !p.exiting() => {}
+        _ => return Err(Error::NotFound),
+    }
+    let entry = Entry {
+        object: KernelObject::Process(pid),
+        rights: Rights::WAIT | Rights::KILL | Rights::DUPLICATE,
+    };
+    let h = process.handles().lock().insert(entry)?;
+    Ok(h.raw())
+}
+
 /// `ProcessSelf() -> handle`.
 pub fn process_self(process: &Process) -> Result<u64, Error> {
     let entry = Entry {

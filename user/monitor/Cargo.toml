@@ -1,0 +1,22 @@
+[package]
+name = "monitor"
+description = "Monitor: processes, memory, processors and the network, every second (working name)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "monitor"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+toolbox = { path = "../toolbox" }
+
+[lints]
+workspace = true

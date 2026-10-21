@@ -323,6 +323,22 @@ fn capabilities() -> Result<(), i64> {
         libstela::net::Socket::udp().err() == Some(Error::AccessDenied),
         "socket without NETWORK",
     )?;
+    // Nor another process by its id (P11, ProcessOpen).
+    check(
+        25,
+        process::open(1) == Err(Error::AccessDenied),
+        "open without POWER",
+    )?;
+    let raw = libstela::sys::syscall2(
+        libstela::abi::Syscall::ProcessOpen,
+        1,
+        bootstrap::MAIN_PORT.raw(),
+    );
+    check(
+        25,
+        raw == Err(Error::AccessDenied),
+        "a port is not POWER for open",
+    )?;
     Ok(())
 }
 

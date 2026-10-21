@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
@@ -19,7 +19,7 @@ INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
 # program at Name.app/exec with Name.app/info.txt; the rest sit in the
 # initrd's root.
-BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic kalamos:Kalamos
+BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic kalamos:Kalamos monitor:Monitor
 BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
 INITRD_ROOT := $(BUILD)/initrd-root
 
@@ -522,6 +522,7 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "grep exited with code 0" "cp -r Initrd:/linux /lx\n" \
 		--type "bytes copied" "find /lx -name n*\n" \
 		--type "find exited with code 0" "date\n" \
+		--type " UTC" "Monitor.app &\n" \
 		--expect "smp: 2 processor(s) online" --expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
@@ -534,6 +535,7 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "hwinfo exited with code 0" --expect "wc exited with code 0" \
 		--expect "1:Welcome to STELA's Data volume." --expect "file(s)," \
 		--expect "Data:/lx/nosys" --expect "find exited with code 0" --expect " UTC" \
+		--expect "monitor: showing" \
 		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
 		-device ide-hd,drive=sata1,bus=ide.1
@@ -648,8 +650,8 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 # Mouseion (2560x1600, 16x32 font, 64-pixel icons in 160x112 cells; the
 # desktop's volume icons on the right: Boot, Data, Initrd, Tmp): double
 # click Data, then welcome.txt in Data's window (Kalamos opens it, P11),
-# then Initrd, then Terminal.app (the fourth icon, after Classic.app,
-# Echo.app and Kalamos.app) in Initrd's window (a second terminal
+# then Initrd, then Terminal.app (the fifth icon, after Classic.app,
+# Echo.app, Kalamos.app and Monitor.app) in Initrd's window (a second terminal
 # starts). The screen shows the volume icons and the new terminal active.
 MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
 	--expect-rect 300,192,100,10,\#c8763c
@@ -665,7 +667,7 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--click "mouseion: opened Initrd:/" 296 274 1 \
 		--type "mouseion: selected Classic.app" "{delete}" \
 		--type "mouseion: asking" "\n" \
-		--click "mouseion: delete Classic.app" 776 272 2 \
+		--click "mouseion: delete Classic.app" 936 272 2 \
 		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
 		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
 		--expect "mouseion: asking: Delete \"Classic.app\"?" \

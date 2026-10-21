@@ -66,6 +66,7 @@
 | 58–60 | `FileGetAttr`、`FileSetAttr`、`FileListAttr` | | | 延伸屬性，見 `docs/vfs.md` §4.5（P11） |
 | 57 | `TtySetSize` | master, 欄, 列 | 0 | 給 Linux 的 `TIOCGWINSZ`，見 `docs/window.md` §7（P11） |
 | 61 | `ThreadJoin` | thread, timeout_ns | 執行緒的 value | 等執行緒結束（`u64::MAX` 永遠等；`TimedOut`）；跟著行程結束的 → `EXIT_KILLED`，見 `docs/process.md` §8.1（P11） |
+| 62 | `ProcessOpen` | pid, power | 行程 handle（`WAIT | KILL | DUPLICATE`） | 用 pid 拿任何執行中的行程，要 `POWER` 能力；見 `docs/apps.md` §3（P11） |
 
 P7 起沒有 STELA ELF note 的程式用 **Linux 人格**：同一個進入點，號碼與回傳慣例是 Linux 的（`docs/linux.md`）。
 

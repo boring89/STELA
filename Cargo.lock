@@ -214,6 +214,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
+name = "monitor"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "libstela",
+ "toolbox",
+]
+
+[[package]]
 name = "mouseion"
 version = "0.1.0"
 dependencies = [

@@ -36,6 +36,7 @@ members = [
     "user/hwinfo",
     "user/bench",
     "user/kalamos",
+    "user/monitor",
     "classic",
     "tools/ehfs",
 ]

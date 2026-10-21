@@ -725,6 +725,36 @@ impl Mouseion {
         }
     }
 
+    /// Special > Monitor (P11): the system monitor, with `POWER` so that
+    /// it can end processes (`docs/apps.md` §3).
+    fn monitor(&self) {
+        let Ok(initrd) = fs::volume_open("Initrd") else {
+            return;
+        };
+        let initrd = Owned(initrd);
+        let Ok(app) = fs::open(initrd.0, "Monitor.app", open::READ) else {
+            return;
+        };
+        let app = Owned(app);
+        let handles = [
+            pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
+            pass(bootstrap::BOOTSTRAP, Rights::SEND | Rights::DUPLICATE),
+            process::pass_dir(bootstrap::CWD),
+            process::pass_dir(initrd.0),
+        ];
+        let mut caps = process::inherited();
+        if let Some(power) = process::pass_capability(libstela::abi::capability::POWER) {
+            caps.push((libstela::abi::capability::POWER, power));
+        }
+        match process::spawn_with(app.0, &["Monitor"], &handles, &caps) {
+            Ok(p) => {
+                println!("mouseion: started Monitor");
+                let _ = handle_close(p);
+            }
+            Err(e) => println!("mouseion: cannot run Monitor: {}", describe(e)),
+        }
+    }
+
     /// Starts a terminal (the startup item, Special > Terminal).
     fn terminal(&self) {
         let Ok(initrd) = fs::volume_open("Initrd") else {
@@ -1285,6 +1315,7 @@ impl Mouseion {
                 }
             }
             Some("Terminal") => self.terminal(),
+            Some("Monitor") => self.monitor(),
             Some("Restart") => {
                 let all: Vec<usize> = (0..self.panes.len()).collect();
                 for p in all {
@@ -1455,7 +1486,10 @@ fn main() -> i64 {
     menus.add("File", &["New Folder", "Open", "Get Info", "-", "Close"]);
     menus.add("Edit", &[]);
     menus.add("View", &["Icons", "List"]);
-    menus.add("Special", &["Terminal", "-", "Restart", "Shut Down"]);
+    menus.add(
+        "Special",
+        &["Terminal", "Monitor", "-", "Restart", "Shut Down"],
+    );
     let _ = conn.set_menubar(&menus.to_text());
     let desktop = match conn.create_window(1, 1, flags::DESKTOP, 0, 0, "Desktop") {
         Ok(w) => w,

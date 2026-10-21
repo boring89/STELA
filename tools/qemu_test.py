@@ -127,10 +127,24 @@ PLAIN = {" ": "spc", "/": "slash", ".": "dot", "-": "minus", ";": "semicolon",
          ",": "comma", "=": "equal", "\n": "ret", "'": "apostrophe"}
 
 
+NAMED = {"up", "down", "left", "right", "home", "end", "delete", "pgup", "pgdn", "esc"}
+
+
 def text_to_keys(text):
-    """QKeyCode names that type `text` on a US layout."""
+    """QKeyCode names that type `text` on a US layout; `{up}`, `{left}`,
+    `{home}`... are those keys."""
     keys = []
-    for c in text.replace("\\n", "\n"):
+    text = text.replace("\\n", "\n")
+    i = 0
+    while i < len(text):
+        if text[i] == "{" and "}" in text[i:]:
+            name = text[i + 1:text.index("}", i)]
+            if name in NAMED:
+                keys.append(name)
+                i += len(name) + 2
+                continue
+        c = text[i]
+        i += 1
         if c.islower() or c.isdigit():
             keys.append(c)
         elif c.isupper():

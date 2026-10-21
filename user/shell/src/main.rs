@@ -37,7 +37,7 @@ use libstela::fs::{self, open};
 use libstela::ipc::{
     handle_close, handle_duplicate, handle_kind, input_attach, port_receive, port_send,
 };
-use libstela::line::{Edit, LineEditor};
+use libstela::line::{Edit, Key, LineEditor};
 use libstela::path::{self, Location};
 use libstela::process::{self, pass};
 use libstela::{Error, Handle, Message, Rights, bootstrap, print, println, tag, tty};
@@ -788,6 +788,42 @@ fn vols() -> Result<(), String> {
     Ok(())
 }
 
+/// Where the history is kept (P11).
+const HISTORY_FILE: &str = ".shell_history";
+
+/// The lines of `Data:/.shell_history` into the editor's history.
+fn load_history(editor: &mut LineEditor) {
+    let Ok(data) = fs::volume_open("Data").map(Owned) else {
+        return;
+    };
+    let Ok(file) = fs::open(data.0, HISTORY_FILE, open::READ).map(Owned) else {
+        return;
+    };
+    let size = fs::stat(file.0).map(|s| s.size).unwrap_or(0).min(64 * 1024) as usize;
+    let mut buf = vec![0u8; size];
+    let n = fs::read(file.0, &mut buf, 0).unwrap_or(0);
+    for line in String::from_utf8_lossy(&buf[..n]).lines() {
+        editor.remember(line);
+    }
+}
+
+/// Writes the history back (the whole file: at most HISTORY lines).
+fn save_history(editor: &LineEditor) {
+    let Ok(data) = fs::volume_open("Data").map(Owned) else {
+        return;
+    };
+    let flags = open::READ | open::WRITE | open::CREATE | open::TRUNCATE;
+    let Ok(file) = fs::open(data.0, HISTORY_FILE, flags).map(Owned) else {
+        return;
+    };
+    let mut text = String::new();
+    for line in editor.history() {
+        text.push_str(line);
+        text.push('\n');
+    }
+    let _ = fs::write(file.0, text.as_bytes(), 0);
+}
+
 /// The volume the working directory handle `[3]` is on, by its index.
 fn start_volume() -> String {
     let index = fs::stat(bootstrap::CWD).map(|s| s.volume);
@@ -822,6 +858,7 @@ fn main() -> i64 {
     println!("STELA shell; type help for the commands");
     shell.prompt();
     let mut editor = LineEditor::new(200);
+    load_history(&mut editor);
     let mut msg = Message::new();
     loop {
         if port_receive(bootstrap::MAIN_PORT, &mut msg, libstela::ipc::FOREVER).is_err() {
@@ -841,19 +878,32 @@ fn main() -> i64 {
             }
             continue;
         }
-        let Some(c) = KeyEvent::decode(msg.payload()).and_then(|e| key_to_char(&e)) else {
+        let Some(event) = KeyEvent::decode(msg.payload()) else {
             continue;
         };
-        match editor.feed(c) {
+        if !event.pressed {
+            continue;
+        }
+        use libstela::abi::key::KeyCode;
+        let key = match event.code {
+            KeyCode::Left => Key::Left,
+            KeyCode::Right => Key::Right,
+            KeyCode::Up => Key::Up,
+            KeyCode::Down => Key::Down,
+            KeyCode::Home => Key::Home,
+            KeyCode::End => Key::End,
+            KeyCode::Delete => Key::Delete,
+            _ => match key_to_char(&event) {
+                Some(c) => Key::Char(c),
+                None => continue,
+            },
+        };
+        match editor.feed_key(key) {
             Edit::None => {}
-            Edit::Echo(c) => print!("{c}"),
-            Edit::Erase(n) => {
-                for _ in 0..n {
-                    print!("\u{8} \u{8}");
-                }
-            }
+            Edit::Show(s) => print!("{s}"),
             Edit::Done(line) => {
                 println!();
+                save_history(&editor);
                 if !shell.run_line(&line) {
                     println!("bye");
                     return 0;

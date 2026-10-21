@@ -433,11 +433,14 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "hello exited with code" "ps\n" \
 		--type "ended)" "mem\n" \
 		--type "memory: " "uptime\n" \
+		--type "uptime: " "{up}{up}\n" \
+		--type "memory: " "vls{left}{left}o{end}\n" \
 		--expect "smp: 2 processor(s) online" --expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
 		--expect "hello from user mode" --expect "hello exited with code 0" \
 		--expect "shell" --expect "ended)" --expect "memory: " --expect "uptime: " \
+		--expect "memory: " --expect "Initrd     initrd" \
 		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
 		-device ide-hd,drive=sata1,bus=ide.1

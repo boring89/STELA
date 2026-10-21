@@ -201,7 +201,7 @@ Claude 依照上方工作規則直接實作。
 - 排程：每顆 CPU 單一等級 round-robin（10 ms 時間片），`priority` 只存不用；沒有 tickless；睡眠解析度 1 ms。
 - 位址空間只有 4 KiB 頁、沒有需求分頁／mmap；kernel 半部不能新增 PML4 項目（行程的 PML4 是建立時複製的）；使用者 FPU 只有 FXSAVE（無 XSAVE/AVX）；沒有 SMAP（kernel 不直接解參考使用者指標）。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。
-- 使用者空間：沒有 Thread 物件；shell 的管線與重新導向只接程式（不接內建指令）、沒有歷史；heap 不還記憶體（docs/userland.md §9）。
+- 使用者空間：沒有 Thread 物件；shell 的管線與重新導向只接程式（不接內建指令）、沒有 Tab 補完；heap 不還記憶體（docs/userland.md §9）。
 - Mouseion：拖曳沒有影子、不能多選、沒有刪除與改名、資料夾圖示位置不存、開機不重開上次的視窗；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
 - 視窗：拖外框不即時移動；選單一層；terminal 沒有 ANSI 顏色與捲回（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。

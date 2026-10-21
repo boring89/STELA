@@ -195,6 +195,14 @@ Data:/> ps
 - 背景：不能有 `<`／`>`（shell 不在旁邊灌與倒）；輸出照樣到 terminal；背景工作拿不到鍵盤。
 - 新程式 `wc`：數 `[5]` 的行、字、位元組（`wc: L lines, W words, B bytes`）；沒有輸入就說明後結束（1）。
 
+### 6.2 行編輯與歷史（P11，使用者尚未審核）
+
+`libstela::line::LineEditor`（純邏輯，host 測試）：游標可以在行中間——打字插入、Left／Right、Home／End（Ctrl-A／Ctrl-E）、Backspace 與 Delete、Ctrl-K（刪到行尾）、Ctrl-U（整行）；Up／Down 翻歷史（翻的時候正在打的那行記著，Down 翻過最新的就回來）。編輯器回傳**要印的字串**，只用 Backspace（游標左移一格、不擦）與空白：例如在中間插入 `x` 印 `x` + 後面的字 + 同樣多個 Backspace——任何 terminal（STELA 的文字格、kernel 的主控台、serial）都顯示得對，不需要 ANSI 的游標控制。
+
+- 歷史最多 200 行（`HISTORY`），空行與和上一行一樣的不記；每執行一行就整個寫回 `Data:/.shell_history`（沒有 Data 就只在記憶體），shell 啟動時讀回來。
+- shell 把 `KeyCode::Left/Right/Up/Down/Home/End/Delete` 對到 `Key`，其他鍵經 `key_to_char`；只看按下。
+- 測試：`tools/qemu_test.py` 的 `--type` 文字可以寫 `{up}`、`{left}`、`{home}`、`{end}` 等鍵（P11）；`make test-shell` 最後 `{up}{up}`（再跑一次 `mem`）與 `vls{left}{left}o{end}`（變成 `vols`）。
+
 ## 7. 怎麼寫一個程式
 
 ```rust
@@ -223,7 +231,7 @@ fn main() -> i64 {
 
 | 測試 | 內容 |
 |---|---|
-| host `libstela` | P11：管線的解析（段、`<`、`>>`、`&`、各種錯誤）；路徑解析（相對、`..`、根、卷宗、冒號在名字裡）、行編輯（Backspace、Ctrl-U、上限、控制字元、Tab、UTF-8）、參數切分 |
+| host `libstela` | P11：行編輯（游標移動與中間插入、Home／End／Delete／Ctrl-K、畫面模擬檢查印出的字串）、歷史（上下翻、記著正在打的行、200 行上限、不記重複）；管線的解析（段、`<`、`>>`、`&`、各種錯誤）；路徑解析（相對、`..`、根、卷宗、冒號在名字裡）、行編輯（Backspace、Ctrl-U、上限、控制字元、Tab、UTF-8）、參數切分 |
 | host `abi` | 編號 27–31、`KILL`、`ProcessInfo`／`MemInfo` 編碼、`BOOTSTRAP_ARGS`、`EXIT_KILLED` |
 | host `frame::console::text` | backspace 退一格、不會小於 0 |
 | `make test-pipe`（P11） | 一般 kernel + AHCI 測試磁碟：`hello | wc`（3 行）、`hello > out.txt`、`cat out.txt`、`hello >> out.txt`、`wc < out.txt`（6 行）、`run linux/hello x | wc`（5 行）、`proctest wait &`、`jobs`、`kill 1`（137）、`spin &`、`fg 2` |
@@ -238,7 +246,7 @@ fn main() -> i64 {
 
 - 沒有 Thread 物件（`ThreadCreate` 仍回 id；沒有 join）——目前沒有使用者，延後。
 - 沒有環境變數；管線與重新導向只接程式（內建指令不行，例如 `ls | wc`）、沒有 `2>`、引號與跳脫；背景工作不能重新導向；`run` 的程式拿不到鍵盤（除非它自己 `InputAttach`）。
-- shell 一行 200 字元、沒有歷史與游標移動；`cp` 整個檔案讀進記憶體。
+- shell 一行 200 字元（P11 起有歷史與游標移動，§6.2；沒有 Tab 補完、搜尋歷史）；`cp` 整個檔案讀進記憶體。
 - 行程表的已結束紀錄永遠不清（`ps` 只顯示數量）。
 - heap 不把記憶體還給 kernel；沒有 `realloc` 的就地成長（GlobalAlloc 的預設：配新的再複製）。
 - P6.5 加了 `shutdown`／`reboot`（`docs/acpi.md`）；關機前不通知其他程式。

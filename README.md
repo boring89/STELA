@@ -12,7 +12,7 @@ is a reduced 68k_HAL by definition (see [classic/README.md](classic/README.md)).
 
 ## Status
 
-Early (phase P10 of [the plan](docs/architecture.md); P10 is not reviewed yet): STELA's own UEFI boot loader loads the
+Early (phase P11 of [the plan](docs/architecture.md); P11 is not reviewed yet): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -51,7 +51,18 @@ image for real machines with boot options in `STELA/boot.cfg`; the Classic envir
 ROM and System 7 to the Finder); networking (e1000, e1000e/I219 and virtio-net drivers, a
 protocol stack with DHCP, ARP, ICMP, UDP and TCP, socket system calls and BSD sockets for Linux
 programs, `ifconfig`, `ping`, `fetch`); sound output (Intel HD Audio, `tone`); and SMP (the
-application processors start and run processes, each process on one processor). See
+application processors start and run processes, each process on one processor). P11 adds:
+waiting on several objects at once (wait sets; Linux `poll`/`select`), capabilities for power,
+input and the network, pipes with shell pipelines, redirections, background jobs, line editing
+and history, ANSI colours and scrollback in the terminal, extended attributes, thread handles
+and join; Mouseion renames, deletes and selects several items and reopens its windows; the
+Classic environment gets the Data volume as a Mac disk, a NuBus video card, integer scaling, a
+second disk and `classic.cfg`; faster storage (several commands at once, read-ahead) and TCP
+(RTT, congestion control, fast retransmit); a hardware report (`hwinfo`), the boot options
+`verbose` and `waitkey`, `make bench`; and everyday programs: a clipboard, dialogs and a
+multi-line text view in the toolbox, command-line tools in `Initrd:/bin/` (`grep`, `sort`,
+`find`, `tar`...), a text editor (Kalamos), a system monitor (Monitor) and a small HTTP-only web
+browser (Periplus) — working names. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
@@ -61,7 +72,8 @@ application processors start and run processes, each process on one processor). 
 [docs/window.md](docs/window.md), [docs/toolbox.md](docs/toolbox.md), [docs/usb.md](docs/usb.md),
 [docs/mouseion.md](docs/mouseion.md), [docs/identity.md](docs/identity.md),
 [docs/p520.md](docs/p520.md), [docs/classic.md](docs/classic.md), [docs/net.md](docs/net.md),
-[docs/sound.md](docs/sound.md) and [docs/smp.md](docs/smp.md).
+[docs/sound.md](docs/sound.md), [docs/smp.md](docs/smp.md), [docs/hwinfo.md](docs/hwinfo.md),
+[docs/bench.md](docs/bench.md) and [docs/apps.md](docs/apps.md).
 
 ## Building
 
@@ -70,7 +82,8 @@ Requirements: `rustup` (the pinned toolchain and targets are installed automatic
 `gdisk` (the last two make test disk images), `gcc` (builds musl, MIT, for the Linux test
 programs, and the Classic environment's C code; the musl tarball is copied, not downloaded: see
 [third_party/README.md](third_party/README.md)), `binutils-m68k-linux-gnu` (the Classic
-environment's 68k test programs).
+environment's 68k test programs); for the local `make test-classic` also `hfsutils` (it makes
+a blank HFS disk image).
 
 ```bash
 make        # build the loader, the kernel, the user programs and the initrd into build/esp/
@@ -79,6 +92,7 @@ make test   # host unit tests + QEMU self tests (keys typed via QMP) + a screen 
 make ehfs-tools  # mkfs.ehfs, fsck.ehfs, ehfs-cp, ehfs-ls for image files, in build/host/ehfs/
 make disk-image  # build/stela.img for a USB stick (writing it is your own step: docs/p520.md)
 make test-classic  # local only: boots your own Mac IIci ROM and System to the Finder
+make bench  # measurements without KVM (docs/bench.md)
 ```
 
 ## License

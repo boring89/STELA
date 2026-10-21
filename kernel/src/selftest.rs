@@ -1546,9 +1546,9 @@ fn linux_personality(_: &'static BootInfo) {
         Err(e) => panic!("cannot start linux/hello: {e:?}"),
     };
     assert_eq!(run(), Some(3));
-    let (free, _) = pmm::stats();
+    let free = stable_frames();
     assert_eq!(run(), Some(3));
-    assert_eq!(pmm::stats().0, free, "a musl program leaked memory");
+    assert_eq!(settled_frames(free), free, "a musl program leaked memory");
 }
 
 fn framebuffer_object(_: &'static BootInfo) {

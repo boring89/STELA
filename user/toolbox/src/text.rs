@@ -15,8 +15,8 @@
 //!  cursor = a byte index; (row, column) comes from the rows
 //! ```
 //!
-//! Columns count characters (wide characters take one column, like the
-//! rest of the toolbox); a tab shows as one blank (the Tab key inserts
+//! Columns are cells: a CJK character takes two (`crate::cjk`, P11 K39),
+//! everything else one; a tab shows as one blank (the Tab key inserts
 //! four spaces).
 
 use crate::control::ScrollBar;
@@ -233,19 +233,21 @@ impl TextBuffer {
     /// The rows of the text laid out `cols` wide: byte ranges, each
     /// without its line's `\n`. There is always at least one row.
     pub fn rows(&self, cols: usize) -> Vec<(usize, usize)> {
-        let cols = cols.max(1);
+        let cols = cols.max(2);
         let mut rows = Vec::new();
         let mut start = 0;
         for line in self.text.split('\n') {
             let mut row = start;
             let mut n = 0;
-            for (i, _) in line.char_indices() {
-                if n == cols {
+            for (i, c) in line.char_indices() {
+                // A CJK character takes two columns (P11, `crate::cjk`).
+                let w = crate::cjk::cells(c);
+                if n + w > cols {
                     rows.push((row, start + i));
                     row = start + i;
                     n = 0;
                 }
-                n += 1;
+                n += w;
             }
             rows.push((row, start + line.len()));
             start += line.len() + 1;
@@ -269,7 +271,7 @@ impl TextBuffer {
             }
         }
         let (s, _) = rows[row];
-        (row, self.text[s..at.max(s)].chars().count())
+        (row, crate::cjk::width(&self.text[s..at.max(s)]))
     }
 
     /// The byte at (row, column), clamped to the row.
@@ -277,10 +279,17 @@ impl TextBuffer {
         let Some(&(s, e)) = rows.get(row.min(rows.len().saturating_sub(1))) else {
             return 0;
         };
-        self.text[s..e]
-            .char_indices()
-            .nth(col)
-            .map_or(e, |(i, _)| s + i)
+        // The character that covers column `col` (the left half of a wide
+        // one counts), or the end of the row.
+        let mut n = 0;
+        for (i, c) in self.text[s..e].char_indices() {
+            let w = crate::cjk::cells(c);
+            if col < n + w {
+                return s + i;
+            }
+            n += w;
+        }
+        e
     }
 
     /// Moves the cursor one character left or right, a row up or down
@@ -576,12 +585,12 @@ impl TextView {
                 let at = s + off;
                 let selected = selection.is_some_and(|(p, q)| p <= at && at < q);
                 let ch = if ch == '\t' { ' ' } else { ch };
-                if selected {
-                    c.char(x, y, ch, font, color::WHITE, Some(color::BLACK));
+                let cells = if selected {
+                    c.char(x, y, ch, font, color::WHITE, Some(color::BLACK))
                 } else {
-                    c.char(x, y, ch, font, color::BLACK, None);
-                }
-                x += font.width;
+                    c.char(x, y, ch, font, color::BLACK, None)
+                };
+                x += font.width * cells as i32;
             }
             if active && selection.is_none() && cursor.0 == i {
                 let cx = a.x + 4 + cursor.1 as i32 * font.width;
@@ -746,5 +755,18 @@ mod tests {
         assert_eq!(v.buffer.selected_text(), Some("hello\nwo"));
         v.release();
         assert_eq!(v.drag(50, 50), TextResult::Ignored);
+    }
+
+    #[test]
+    fn wide_characters() {
+        crate::cjk::set_font(Some(crate::cjk::tests::sample()));
+        // Each 中 is 3 bytes and two columns.
+        let b = TextBuffer::new("中中中x");
+        let rows = b.rows(4);
+        assert_eq!(rows, [(0, 6), (6, 10)]);
+        assert_eq!(b.position(&rows, 3), (0, 2));
+        // Column 3 is the right half of the second 中: that character.
+        assert_eq!(b.index_at(&rows, 0, 3), 3);
+        assert_eq!(b.index_at(&rows, 1, 2), 9);
     }
 }

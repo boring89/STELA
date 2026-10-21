@@ -99,6 +99,10 @@ make bench  # measurements without KVM (docs/bench.md)
 
 GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
 
+The Fusion Pixel font's glyphs in `third_party/fusion-pixel/` (by TakWolf, with glyphs from
+Ark Pixel, Cubic 11 and Galmuri) are under the SIL Open Font License 1.1 (see
+[third_party/README.md](third_party/README.md)).
+
 musl is not part of the repository; the Linux test programs in the initrd are linked with it
 (MIT). The Spleen font in `third_party/spleen/` is by Frederic Cambus and is under the BSD 2-Clause
 license (see [third_party/spleen/LICENSE](third_party/spleen/LICENSE)).

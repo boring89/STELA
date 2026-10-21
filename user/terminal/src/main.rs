@@ -98,6 +98,10 @@ impl Terminal {
                 // The cursor only on the live screen.
                 let live = self.grid.scrolled() == 0;
                 for (col, cell) in self.grid.view_row(row).iter().enumerate() {
+                    // The right half of a wide character: drawn with it.
+                    if cell.c == grid::TAIL {
+                        continue;
+                    }
                     let x = PAD + col as i32 * font.width;
                     let (fg, bg) = (ansi(cell.fg, color::BLACK), ansi(cell.bg, color::PARCHMENT));
                     let chosen = self

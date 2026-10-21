@@ -516,6 +516,26 @@ pub type Row = Vec<Span>;
 /// Columns between tab stops (table cells).
 pub const TAB: usize = 16;
 
+/// Columns `text` takes (a CJK character two, P11 K39).
+pub fn cells(text: &str) -> usize {
+    toolbox::cjk::width(text)
+}
+
+/// The longest start of `text` that fits in `n` columns.
+fn take_cells(text: &str, n: usize) -> String {
+    let mut used = 0;
+    let mut out = String::new();
+    for c in text.chars() {
+        let w = toolbox::cjk::cells(c);
+        if used + w > n {
+            break;
+        }
+        used += w;
+        out.push(c);
+    }
+    out
+}
+
 struct Rows {
     rows: Vec<Row>,
     row: Row,
@@ -528,11 +548,7 @@ impl Rows {
             return;
         }
         match self.row.last_mut() {
-            Some(s)
-                if s.bold == bold
-                    && s.link == link
-                    && s.col + s.text.chars().count() == self.col =>
-            {
+            Some(s) if s.bold == bold && s.link == link && s.col + cells(&s.text) == self.col => {
                 s.text.push_str(text);
             }
             _ => self.row.push(Span {
@@ -542,7 +558,7 @@ impl Rows {
                 link,
             }),
         }
-        self.col += text.chars().count();
+        self.col += cells(text);
     }
 
     fn newline(&mut self) {
@@ -600,7 +616,7 @@ pub fn layout(page: &Page, cols: usize) -> Vec<Row> {
                     }
                     first = false;
                     let room = cols.saturating_sub(r.col);
-                    let text: String = line.replace('\t', "    ").chars().take(room).collect();
+                    let text = take_cells(&line.replace('\t', "    "), room);
                     r.push(&text, run.bold, run.link);
                 }
             }
@@ -638,7 +654,7 @@ pub fn layout(page: &Page, cols: usize) -> Vec<Row> {
                     }
                     continue;
                 }
-                let width = piece.trim_end().chars().count();
+                let width = cells(piece.trim_end());
                 if r.col + width > cols && r.col > left {
                     r.newline();
                     r.col = left;
@@ -649,10 +665,13 @@ pub fn layout(page: &Page, cols: usize) -> Vec<Row> {
                 }
                 // Too wide for any row: cut.
                 let mut rest = String::from(piece);
-                while rest.trim_end().chars().count() > cols - left {
-                    let cut: String = rest.chars().take(cols - r.col).collect();
+                while cells(rest.trim_end()) > cols - left {
+                    let cut = take_cells(&rest, cols - r.col);
+                    if cut.is_empty() {
+                        break;
+                    }
                     r.push(&cut, run.bold, run.link);
-                    rest = rest.chars().skip(cut.chars().count()).collect();
+                    rest = String::from(&rest[cut.len()..]);
                     r.newline();
                     r.col = left;
                 }
@@ -670,7 +689,7 @@ pub fn layout(page: &Page, cols: usize) -> Vec<Row> {
 /// The link under column `col` of `row`, if any.
 pub fn link_at(row: &Row, col: usize) -> Option<usize> {
     row.iter()
-        .find(|s| s.col <= col && col < s.col + s.text.chars().count())
+        .find(|s| s.col <= col && col < s.col + cells(&s.text))
         .and_then(|s| s.link)
 }
 

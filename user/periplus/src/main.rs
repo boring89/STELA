@@ -108,7 +108,7 @@ impl View<'_> {
                     c.text(x + 1, y, &span.text, font, fg, None);
                 }
                 if span.link.is_some() {
-                    let w = span.text.chars().count() as i32 * font.width;
+                    let w = font.text_width(&span.text);
                     c.hline(x, y + font.height - 1, w, fg);
                 }
             }

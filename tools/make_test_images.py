@@ -159,6 +159,11 @@ def make_storage(out, tools):
     with open(welcome, "wb") as f:
         f.write(b"Welcome to STELA's Data volume.\n")
     run(cp, "--offset", str(data_first), ahci, "in", welcome, "/welcome.txt")
+    # P11 K39: a Chinese name and content (the toolbox's CJK font).
+    chinese = os.path.join(work, "chinese.txt")
+    with open(chinese, "wb") as f:
+        f.write("你好，STELA。這是中文。\n".encode("utf-8"))
+    run(cp, "--offset", str(data_first), ahci, "in", chinese, "/中文.txt")
 
     # NVMe: 64 MiB, 4096-byte sectors; one eHFS partition at 1 MiB.
     nvme = checked(os.path.join(out, "nvme.img"))

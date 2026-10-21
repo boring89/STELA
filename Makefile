@@ -91,6 +91,8 @@ initrd: user linux-tests
 	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED),$(USER_PROGRAMS))) $(INITRD_ROOT)/
 	cp -r $(LINUX_DIR) $(INITRD_ROOT)/linux
 	cp -r $(USER_DIR)/bin $(INITRD_ROOT)/bin
+	mkdir -p $(INITRD_ROOT)/fonts
+	cp third_party/fusion-pixel/fusion-pixel-12-zh_tw.bin $(INITRD_ROOT)/fonts/
 	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
 		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
 		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
@@ -516,7 +518,8 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "memory: " "uptime\n" \
 		--type "uptime: " "{up}{up}\n" \
 		--type "memory: " "vls{left}{left}o{end}\n" \
-		--type "Initrd     initrd" "hwinfo\n" \
+		--type "Initrd     initrd" "ls /\n" \
+		--type "中文.txt" "hwinfo\n" \
 		--type "hwinfo exited with code 0" "cat /welcome.txt | grep -i stela | wc -l\n" \
 		--type "wc exited with code 0" "grep -n -i stela /welcome.txt\n" \
 		--type "grep exited with code 0" "cp -r Initrd:/linux /lx\n" \
@@ -529,6 +532,7 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "hello from user mode" --expect "hello exited with code 0" \
 		--expect "shell" --expect "ended)" --expect "memory: " --expect "uptime: " \
 		--expect "memory: " --expect "Initrd     initrd" \
+		--expect "中文.txt" \
 		--expect "cpu: " --expect "processors: 2 online" --expect "[acpi]" --expect "FACP" \
 		--expect "8086:29c0 class 06.00.00 host bridge" --expect "[disks] 2" --expect "2 \"Data\" " \
 		--expect "[network]" \

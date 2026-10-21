@@ -165,7 +165,8 @@ impl TextField {
         c.set_clip(saved.intersect(&r.inset(2)));
         c.text(r.x + 4, y, &self.text, font, color::BLACK, None);
         if active {
-            let x = r.x + 4 + self.cursor as i32 * font.width;
+            let before: alloc::string::String = self.text.chars().take(self.cursor).collect();
+            let x = r.x + 4 + font.text_width(&before);
             c.vline(x, y, font.height, color::BLACK);
         }
         c.set_clip(saved);

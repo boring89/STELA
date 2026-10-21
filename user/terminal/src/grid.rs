@@ -21,6 +21,9 @@ use alloc::vec::Vec;
 pub const SCROLLBACK: usize = 1000;
 /// "The terminal's own colour" (not one of the 16).
 pub const DEFAULT: u8 = 0xFF;
+/// The right half of a wide (CJK) character (P11 K39): the cell after it
+/// holds this and is not drawn.
+pub const TAIL: char = '\0';
 
 /// One character cell: the character and its colours (0-15 of the
 /// ANSI palette, or `DEFAULT`).
@@ -67,6 +70,13 @@ pub struct Grid {
     history: VecDeque<Vec<Cell>>,
     /// How many lines the view is scrolled back (0: the live screen).
     scroll: usize,
+    /// Whether a character takes two cells (P11: CJK, from the toolbox's
+    /// font).
+    wide: fn(char) -> bool,
+}
+
+fn wide_in_font(c: char) -> bool {
+    toolbox::cjk::cells(c) == 2
 }
 
 impl Grid {
@@ -87,7 +97,13 @@ impl Grid {
             bold: false,
             history: VecDeque::new(),
             scroll: 0,
+            wide: wide_in_font,
         }
+    }
+
+    /// Decides which characters take two cells (tests).
+    pub fn set_wide(&mut self, wide: fn(char) -> bool) {
+        self.wide = wide;
     }
 
     /// One row of the view (the history while scrolled back).
@@ -217,17 +233,27 @@ impl Grid {
     }
 
     fn put(&mut self, c: char) {
-        if self.cursor.0 >= self.cols {
+        let w = if self.cols > 1 && (self.wide)(c) {
+            2
+        } else {
+            1
+        };
+        // A wide character does not split over two lines.
+        if self.cursor.0 + w > self.cols {
             self.newline();
         }
         let (x, y) = self.cursor;
-        self.cells[y * self.cols + x] = Cell {
+        let cell = Cell {
             c,
             fg: self.foreground(),
             bg: self.bg,
         };
+        self.cells[y * self.cols + x] = cell;
+        if w == 2 {
+            self.cells[y * self.cols + x + 1] = Cell { c: TAIL, ..cell };
+        }
         self.mark(y);
-        self.cursor.0 += 1;
+        self.cursor.0 += w;
     }
 
     fn control(&mut self, c: char) {
@@ -390,6 +416,7 @@ impl Grid {
             let text: String = cells[from.min(cells.len())..to.min(cells.len())]
                 .iter()
                 .map(|c| c.c)
+                .filter(|&c| c != TAIL)
                 .collect();
             if row > s.1 {
                 out.push('\n');
@@ -530,5 +557,19 @@ mod tests {
         assert!(selected((3, 0), (1, 1), (0, 1)));
         assert!(!selected((3, 0), (1, 1), (2, 0)));
         assert!(!selected((3, 0), (1, 1), (2, 1)));
+    }
+
+    #[test]
+    fn wide_characters() {
+        let mut g = Grid::new(4, 2);
+        g.set_wide(|c| c == '中');
+        g.write("a中中".as_bytes());
+        // a, 中 + tail, then 中 does not fit in the last cell: next line.
+        assert_eq!(g.at(1, 0), '中');
+        assert_eq!(g.at(2, 0), TAIL);
+        assert_eq!(g.at(3, 0), ' ');
+        assert_eq!(g.at(0, 1), '中');
+        assert_eq!(g.cursor, (2, 1));
+        assert_eq!(g.text_between((0, 0), (3, 1)), "a中\n中");
     }
 }

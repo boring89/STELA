@@ -16,6 +16,8 @@
 //!   and undo, and a scrolled view of it.
 //! - [`dialog`] (Dialog Manager, P11): alerts, a text question, Open
 //!   and Save dialogs.
+//! - [`cjk`] (P11): characters beyond ASCII from a 12-pixel font (CJK
+//!   characters take two cells).
 //! - [`icons`]: STELA's icons (drafts) from `assets/`.
 //!
 //! The drawing, event, menu and control code is pure logic and is tested
@@ -26,6 +28,7 @@
 
 extern crate alloc;
 
+pub mod cjk;
 pub mod control;
 pub mod dialog;
 pub mod draw;

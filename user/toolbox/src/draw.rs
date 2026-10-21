@@ -154,9 +154,9 @@ impl Font {
         &self.data[index * size..(index + 1) * size]
     }
 
-    /// Width of `text` in pixels.
+    /// Width of `text` in pixels (a CJK character takes two cells, P11).
     pub fn text_width(&self, text: &str) -> i32 {
-        text.chars().count() as i32 * self.width
+        crate::cjk::width(text) as i32 * self.width
     }
 }
 
@@ -388,9 +388,61 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// One character cell at (x, y); with `bg`, the cell is filled first.
-    pub fn char(&mut self, x: i32, y: i32, c: char, font: &Font, fg: Color, bg: Option<Color>) {
-        self.bitmap(x, y, font.width, font.glyph(c), fg, bg);
+    /// One character at (x, y): a cell, or two for a CJK character (P11:
+    /// beyond ASCII the 12-pixel font of `cjk`, 1x in a 16-pixel row, 2x
+    /// in a 32-pixel row, centred; a character no font has is a box).
+    /// With `bg`, the cells are filled first. Returns the cells it took.
+    pub fn char(
+        &mut self,
+        x: i32,
+        y: i32,
+        c: char,
+        font: &Font,
+        fg: Color,
+        bg: Option<Color>,
+    ) -> usize {
+        if (c as u32) < 0x80 {
+            self.bitmap(x, y, font.width, font.glyph(c), fg, bg);
+            return 1;
+        }
+        let glyph = crate::cjk::font().and_then(|f| f.glyph(c));
+        let cells = match glyph {
+            Some(g) if g.advance > 6 => 2,
+            _ => 1,
+        };
+        let w = font.width * cells as i32;
+        if let Some(bg) = bg {
+            self.fill(Rect::new(x, y, w, font.height), bg);
+        }
+        let scale = (font.height / 16).max(1);
+        match glyph {
+            Some(g) => {
+                let gw = i32::from(g.advance) * scale;
+                let gh = crate::cjk::ROWS as i32 * scale;
+                let (ox, oy) = (x + (w - gw) / 2, y + (font.height - gh) / 2);
+                for (ry, row) in g.rows.iter().enumerate() {
+                    for rx in 0..i32::from(g.advance) {
+                        if row & (0x8000 >> rx) != 0 {
+                            self.fill(
+                                Rect::new(ox + rx * scale, oy + ry as i32 * scale, scale, scale),
+                                fg,
+                            );
+                        }
+                    }
+                }
+            }
+            None => {
+                // A box: the font lacks the character.
+                let b = Rect::new(
+                    x + scale,
+                    y + 2 * scale,
+                    w - 2 * scale,
+                    font.height - 4 * scale,
+                );
+                self.frame(b, fg);
+            }
+        }
+        cells
     }
 
     /// Text from (x, y) (top-left of the first cell); returns the x after
@@ -406,8 +458,8 @@ impl<'a> Canvas<'a> {
     ) -> i32 {
         let mut at = x;
         for c in text.chars() {
-            self.char(at, y, c, font, fg, bg);
-            at += font.width;
+            let cells = self.char(at, y, c, font, fg, bg);
+            at += font.width * cells as i32;
         }
         at
     }
@@ -503,5 +555,22 @@ mod tests {
         assert_eq!(font_for(2560).width, 16);
         assert_eq!(font_for(1280).width, 8);
         assert_eq!(SMALL.glyph('\u{1F600}'), SMALL.glyph('?'));
+    }
+
+    #[test]
+    fn wide_characters() {
+        crate::cjk::set_font(Some(crate::cjk::tests::sample()));
+        let mut px = vec![0u32; 64 * 16];
+        let mut c = Canvas::new(&mut px, 64, 16, 64);
+        // 中 takes two 8-pixel cells; its 12-pixel rows are centred: x 2..14,
+        // y 2..14.
+        assert_eq!(c.text(0, 0, "中a", &SMALL, 1, None), 24);
+        assert_eq!(c.pixels()[2 * 64 + 2], 1);
+        assert_eq!(c.pixels()[2 * 64 + 1], 0);
+        assert_eq!(c.pixels()[2 * 64 + 13], 1);
+        assert_eq!(c.pixels()[2 * 64 + 14], 0);
+        assert_eq!(SMALL.text_width("中a"), 24);
+        // A character no font has: a box of one cell.
+        assert_eq!(c.char(40, 0, '\u{378}', &SMALL, 1, None), 1);
     }
 }

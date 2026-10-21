@@ -312,6 +312,52 @@ pub struct Menu {
     pub items: Vec<String>,
 }
 
+/// `r` without `cut`: up to four rectangles (above, below, left, right
+/// of the cut), none if `cut` covers it.
+pub fn subtract(r: Rect, cut: &Rect) -> Vec<Rect> {
+    let c = r.intersect(cut);
+    if c.is_empty() {
+        return alloc::vec![r];
+    }
+    let mut out = Vec::new();
+    let mut push = |x: Rect| {
+        if !x.is_empty() {
+            out.push(x);
+        }
+    };
+    push(Rect::new(r.x, r.y, r.w, c.y - r.y));
+    push(Rect::new(r.x, c.bottom(), r.w, r.bottom() - c.bottom()));
+    push(Rect::new(r.x, c.y, c.x - r.x, c.h));
+    push(Rect::new(c.right(), c.y, r.right() - c.right(), c.h));
+    out
+}
+
+/// The parts of `r` inside `frames[index]` that no later (nearer) frame
+/// covers: what of that window shows in `r` (occlusion culling, P11).
+/// With `index` = `frames.len()`, the parts of `r` no frame covers.
+pub fn visible_parts(r: Rect, frames: &[Rect], index: usize) -> Vec<Rect> {
+    let start = match frames.get(index) {
+        Some(f) => r.intersect(f),
+        None => r,
+    };
+    if start.is_empty() {
+        return Vec::new();
+    }
+    let mut parts = alloc::vec![start];
+    let nearer = if index < frames.len() {
+        &frames[index + 1..]
+    } else {
+        frames
+    };
+    for cut in nearer {
+        parts = parts.into_iter().flat_map(|p| subtract(p, cut)).collect();
+        if parts.is_empty() {
+            break;
+        }
+    }
+    parts
+}
+
 /// Parses the `SET_MENUBAR` text: one menu per line, `Title\tItem...`.
 pub fn parse_menus(text: &str) -> Vec<Menu> {
     text.lines()
@@ -509,5 +555,44 @@ mod tests {
         s.add(win(1, a.0, a.1, 10, 10));
         let b = s.place(&M, screen);
         assert_eq!((b.0 - a.0, b.1 - a.1), (30, 30));
+    }
+
+    #[test]
+    fn rectangles_minus_rectangles() {
+        let r = Rect::new(0, 0, 10, 10);
+        assert_eq!(subtract(r, &Rect::new(20, 20, 5, 5)), alloc::vec![r]);
+        assert!(subtract(r, &Rect::new(-1, -1, 20, 20)).is_empty());
+        let parts = subtract(r, &Rect::new(2, 3, 4, 4));
+        assert_eq!(parts.len(), 4);
+        let area: i64 = parts.iter().map(Rect::area).sum();
+        assert_eq!(area, 100 - 16);
+        for (i, a) in parts.iter().enumerate() {
+            for b in &parts[i + 1..] {
+                assert!(!a.overlaps(b));
+            }
+        }
+        // A cut along one edge leaves one piece.
+        assert_eq!(
+            subtract(r, &Rect::new(0, 0, 10, 4)),
+            alloc::vec![Rect::new(0, 4, 10, 6)]
+        );
+    }
+
+    #[test]
+    fn what_shows_of_each_window() {
+        // Back to front: a big window, a small one on top of it.
+        let frames = [Rect::new(0, 0, 100, 100), Rect::new(10, 10, 20, 20)];
+        let dirty = Rect::new(0, 0, 50, 50);
+        let back = visible_parts(dirty, &frames, 0);
+        let area: i64 = back.iter().map(Rect::area).sum();
+        assert_eq!(area, 50 * 50 - 20 * 20);
+        assert!(back.iter().all(|p| !p.overlaps(&frames[1])));
+        assert_eq!(visible_parts(dirty, &frames, 1), alloc::vec![frames[1]]);
+        // Fully covered: nothing to draw.
+        assert!(visible_parts(Rect::new(12, 12, 5, 5), &frames, 0).is_empty());
+        // The desktop shows only outside every frame.
+        let outside = visible_parts(Rect::new(90, 90, 20, 20), &frames, frames.len());
+        let area: i64 = outside.iter().map(Rect::area).sum();
+        assert_eq!(area, 400 - 100);
     }
 }

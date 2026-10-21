@@ -21,7 +21,7 @@ use libstela::{Error, Handle, Message, Rights, bootstrap, println, tag};
 use toolbox::draw::{Canvas, Font, Rect, color, font_for};
 use windowserver::compose::{
     Clicks, Damage, Menu, Metrics, Part, Stack, Window, menu_box, menu_item_at, menu_titles,
-    parse_menus,
+    parse_menus, visible_parts,
 };
 
 /// The pointer: `X` outline, `.` fill, space transparent (STELA's own
@@ -266,45 +266,46 @@ impl Server {
         let (w, h) = (self.width as u32, self.height as u32);
         let font = self.font;
         let m = self.m;
-        {
-            let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
-            canvas.set_clip(r);
-            canvas.fill(r, color::DESKTOP);
-        }
         let windows: Vec<Window> = self.stack.iter().cloned().collect();
-        for win in &windows {
-            let frame = win.frame(&m);
-            if !frame.overlaps(&r) {
-                continue;
-            }
+        // Occlusion culling (P11): every window (and the desktop colour)
+        // is drawn only where no nearer window covers it.
+        let frames: Vec<Rect> = windows.iter().map(|win| win.frame(&m)).collect();
+        for part in visible_parts(r, &frames, frames.len()) {
+            let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
+            canvas.set_clip(part);
+            canvas.fill(part, color::DESKTOP);
+        }
+        for (i, win) in windows.iter().enumerate() {
             let active = self.focus == Some(win.id);
             let pressed =
                 matches!(self.drag, Some(Drag::Close { id, inside: true }) if id == win.id);
-            if !win.is_desktop() {
-                let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
-                canvas.set_clip(r);
-                draw_frame(&mut canvas, win, &m, font, active, pressed);
-            }
-            // The content, row by row from the client's buffer.
-            let part = win.content.intersect(&r);
-            if let Some(surface) = self.surfaces.get(&win.id)
-                && !part.is_empty()
-            {
-                for y in part.y..part.bottom() {
-                    let src =
-                        ((y - win.content.y) * surface.width + (part.x - win.content.x)) as usize;
-                    let dst = (y * self.width + part.x) as usize;
-                    let row = &mut self.back[dst..dst + part.w as usize];
-                    if surface.mapping.read_words(src, row).is_err() {
-                        row.fill(color::BLACK);
+            for clip in visible_parts(r, &frames, i) {
+                if !win.is_desktop() {
+                    let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
+                    canvas.set_clip(clip);
+                    draw_frame(&mut canvas, win, &m, font, active, pressed);
+                }
+                // The content, row by row from the client's buffer.
+                let part = win.content.intersect(&clip);
+                if let Some(surface) = self.surfaces.get(&win.id)
+                    && !part.is_empty()
+                {
+                    for y in part.y..part.bottom() {
+                        let src = ((y - win.content.y) * surface.width + (part.x - win.content.x))
+                            as usize;
+                        let dst = (y * self.width + part.x) as usize;
+                        let row = &mut self.back[dst..dst + part.w as usize];
+                        if surface.mapping.read_words(src, row).is_err() {
+                            row.fill(color::BLACK);
+                        }
                     }
                 }
-            }
-            let grow = win.grow_box(&m);
-            if !grow.is_empty() && grow.overlaps(&r) {
-                let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
-                canvas.set_clip(r);
-                draw_grow_box(&mut canvas, grow);
+                let grow = win.grow_box(&m);
+                if !grow.is_empty() && grow.overlaps(&clip) {
+                    let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
+                    canvas.set_clip(clip);
+                    draw_grow_box(&mut canvas, grow);
+                }
             }
         }
         let menubar = Rect::new(0, 0, self.width, m.menubar);

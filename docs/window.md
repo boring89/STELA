@@ -95,6 +95,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
  present(r)：back buffer 的 r 複製到 framebuffer（RGBX 時交換 R、B），再把游標畫在上面
 ```
 
+- **遮擋剔除**（P11，使用者尚未審核）：視窗都是不透明的矩形（框 + 內容），所以每個髒矩形先算出每個視窗**看得到的部分**——它的框 ∩ 髒矩形，再減掉所有比它前面的視窗的框（`compose::subtract`：一個矩形減一個矩形最多剩 4 塊；`visible_parts`）——只畫那些部分；桌面色只填沒有任何視窗的部分。被蓋住的視窗不再整個複製一次內容（以前每個髒矩形都從後往前把每個重疊的視窗畫一遍）。
 - **髒矩形**（`Damage`）：新的矩形和重疊或相鄰、而且合併後面積不超過兩者和的兩倍的舊矩形合併；超過 16 個就全部合成一個。
 - 不讀 framebuffer（WC 讀很慢）：back buffer 就是「存底圖」，游標移動只要把舊位置與新位置當髒矩形。
 - 游標：11×17 的箭頭（自己畫的 1-bit 圖，黑框白底），16x32 字型時放大 2 倍。
@@ -170,7 +171,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | host `abi::window` | 編號固定、`VERSION` = 2 在 `CONNECT` 的 word 0、請求的編碼往返（word 0 = 0）、標題在字元邊界截斷、KEY／MOUSE |
 | host `abi::key` | `MouseEvent` 編碼往返 |
 | host `frame::input::mouse` | 封包、負值、重新同步、overflow |
-| host `windowserver::compose` | 框的幾何、堆疊與命中測試（關閉鈕、grow box、標題列、邊框、桌面視窗留在後面）、髒矩形合併與上限、選單解析與配置、雙擊、自動放置 |
+| host `windowserver::compose` | P11：矩形相減（不相交、全蓋住、四塊不重疊、沿邊一塊）、每個視窗看得到的部分與桌面；框的幾何、堆疊與命中測試（關閉鈕、grow box、標題列、邊框、桌面視窗留在後面）、髒矩形合併與上限、選單解析與配置、雙擊、自動放置 |
 | host `terminal::grid` | 寫入與換行、捲動、控制字元、ESC 序列、UTF-8 切開、改大小 |
 | selftest "mouse" | IRQ 12 已接；`qemu_test.py --mouse` 經 QMP `input-send-event` 移動 (40, 30) 並按左鍵 |
 | `make test-window` | 一般 kernel：看到 `STELA shell` 打 `uptime`、再 `run echo_win`、在 echo_win 打 `hello`（serial 看到 `echo_win: hello`）；截圖檢查（`fb_check.py --expect-rect/--expect-text`）：桌面色、選單列、terminal 的標題列（非作用中）與文字（≥ 4 行）、echo_win 的標題列（作用中）與內容 |
@@ -184,4 +185,4 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 - 選單只有一層，沒有快捷鍵；STELA 字樣不是選單。
 - 只有單一滑鼠按鍵（左鍵）有意義；滾輪不處理；沒有加速度。
 - terminal 不支援 ANSI 顏色與游標移動（只略過 ESC 序列）；沒有捲回歷史；選字複製沒有。
-- 每次合成都把整個髒矩形重畫（沒有遮擋剔除）；TCG 下大矩形會慢。
+- P11 起有遮擋剔除，但沒有「只有游標動」的特別處理（游標的舊位置仍從 back buffer 重新合成那一小塊）。

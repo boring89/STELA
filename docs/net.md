@@ -45,7 +45,7 @@ QEMU 的 `-netdev user`（slirp）模擬一個小型家用網路：我們（DHCP
 
 | PCI id | 家族 | 備註 |
 |---|---|---|
-| 8086:100E（QEMU `e1000`）、100F、1004、107C | `E1000` | 82540EM 沒有 MSI → **輪詢**（net 執行緒每 5 ms 看一次） |
+| 8086:100E（QEMU `e1000`）、100F、1004、107C | `E1000` | 82540EM 沒有 MSI → **輪詢**（net 執行緒每 5 ms 看一次；P11：只在 link up 而且有 socket 開著時，否則 100 ms） |
 | 8086:10D3（QEMU `e1000e`，q35 的預設網卡） | `E1000e { pch: false }` | MSI |
 | 8086:15B7（P520 的 I219-LM）、15B8、15B9、156F、1570、15D7、15D8、15E3、153A/B、155A、1559、15A0–15A3、15D6、15BB–15BE | `E1000e { pch: true }` | MSI；I219 的 ring flush 與 errata |
 
@@ -79,7 +79,7 @@ VIRTIO 1.1 的 **modern** 介面（§4.1.4 PCI capabilities、§2.6 split virtqu
 
 | 網卡 | 中斷 | net 執行緒的睡眠 |
 |---|---|---|
-| e1000（82540EM） | 沒有 MSI | 5 ms |
+| e1000（82540EM） | 沒有 MSI | 5 ms（P11：有 socket 而且 link up 時；否則 100 ms） |
 | e1000e、I219 | MSI | 100 ms（計時器的步長），中斷提早叫醒 |
 | virtio-net | MSI-X entry 0 | 同上 |
 
@@ -221,5 +221,5 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 - TCP：沒有 Nagle、SACK、視窗縮放（接收緩衝 64 KiB 就是上限）、keepalive、ECN；TIME-WAIT 只有 2 秒；RTO 下限 1 s（RFC 6298 的建議；區域網路上的掉件主要靠快速重傳）。
 - P11 起 socket 可以放進 WaitSet（`docs/ipc.md` §13），Linux 有 `poll`/`select`（`docs/linux.md` §5.3）與 `sendmsg`/`recvmsg`，musl 的 `getaddrinfo` 經合成的 `/etc/resolv.conf` 可用；等待者仍被「任何事件」全部叫醒再各自檢查（簡單但 socket 多時浪費）；沒有 `epoll`。
 - 任何程式都能開 socket（沒有能力限制）。
-- e1000 輪詢會讓閒置時每 5 ms 醒一次。
+- e1000 輪詢：P11 起沒有 socket（或沒有 link）時每 100 ms 才看一次——DHCP、ARP 照常（慢一點），開了 socket 的程式第一個封包最多晚 100 ms。
 - I219（P520）只依資料手冊與 68k_HAL 的經驗實作，**沒有在實機驗證**（PHY、ULP、Management Engine 都可能讓 link 起不來）。

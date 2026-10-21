@@ -132,8 +132,14 @@ fn run() {
                 );
             }
         }
-        // With MSI the card wakes us; the timers need 100 ms steps.
-        let step = if interrupts { 100 } else { 5 };
+        // With MSI the card wakes us; the timers need 100 ms steps. A
+        // polled card (e1000) is looked at every 5 ms only while its link
+        // is up and a socket is open (P11), else every 100 ms.
+        let busy = NET
+            .lock()
+            .as_ref()
+            .is_some_and(|n| n.card.link_up() && n.stack.socket_count() > 0);
+        let step = if interrupts || !busy { 100 } else { 5 };
         task::block_until(Some(frame::time::now_ns() + step * 1_000_000));
     }
 }

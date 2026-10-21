@@ -471,7 +471,8 @@ test-textmode: esp $(BUILD)/OVMF_VARS.fd
 
 # The desktop: boot the normal kernel (init starts the window server and
 # the terminal, the terminal the shell), type a command, start echo_win
-# from the shell and type a line into it, then save the screen and check
+# from the shell and type a line into it, copy it with Ctrl-C and paste
+# it back with Ctrl-V (P11: the clipboard), then save the screen and check
 # the desktop, the menu bar, the terminal's (inactive) title bar and its
 # text, echo_win's (active) title bar and its contents. The geometry is
 # that of the 2560x1600 OVMF mode: 16x32 font, menu bar 40, title bar 38;
@@ -484,8 +485,10 @@ test-window: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --timeout 90 --screendump $(BUILD)/screen.ppm --log $(BUILD)/test-window.log \
 		--type "STELA shell" "uptime\n" --type "uptime:" "run Echo.app\n" \
 		--type "> run Echo.app" "hello\n" \
+		--send-keys "echo_win: hello" "ctrl-c" \
+		--send-keys "echo_win: copied hello" "ctrl-v ret" \
 		--expect "windowserver: " --expect "STELA shell" --expect "uptime:" \
-		--expect "echo_win: hello" \
+		--expect "echo_win: hello" --expect "echo_win: copied hello" --expect "echo_win: hello" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm $(WINDOW_CHECKS)
 

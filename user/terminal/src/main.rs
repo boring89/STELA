@@ -46,7 +46,7 @@ fn ansi(index: u8, default: u32) -> u32 {
     PALETTE.get(usize::from(index)).copied().unwrap_or(default)
 }
 use toolbox::draw::{Font, Rect, color, font_for};
-use toolbox::event::Event;
+use toolbox::event::{Event, MouseKind};
 use toolbox::window::{Connection, Window};
 
 libstela::entry!(main);
@@ -72,6 +72,10 @@ struct Terminal {
     shell: Option<Handle>,
     shell_port: Option<Handle>,
     active: bool,
+    /// A mouse selection (P11): where it started and where it is, as
+    /// (col, row) of the view; `selecting` while the button is down.
+    selection: Option<((usize, usize), (usize, usize))>,
+    selecting: bool,
 }
 
 impl Terminal {
@@ -96,7 +100,12 @@ impl Terminal {
                 for (col, cell) in self.grid.view_row(row).iter().enumerate() {
                     let x = PAD + col as i32 * font.width;
                     let (fg, bg) = (ansi(cell.fg, color::BLACK), ansi(cell.bg, color::PARCHMENT));
-                    if live && row == cy && col == cx.min(cols - 1) && self.active {
+                    let chosen = self
+                        .selection
+                        .is_some_and(|(a, b)| grid::selected(a, b, (col, row)));
+                    if chosen {
+                        canvas.char(x, y, cell.c, font, color::PARCHMENT, Some(color::HIGHLIGHT));
+                    } else if live && row == cy && col == cx.min(cols - 1) && self.active {
                         canvas.char(x, y, cell.c, font, bg, Some(fg));
                     } else if cell.bg != grid::DEFAULT {
                         canvas.char(x, y, cell.c, font, fg, Some(bg));
@@ -174,6 +183,65 @@ impl Terminal {
         }
     }
 
+    /// The cell under (x, y), clamped to the grid.
+    fn cell_at(&self, x: i32, y: i32) -> (usize, usize) {
+        let (cols, rows) = self.grid.size();
+        (
+            ((x - PAD).max(0) / self.font.width).min(cols as i32 - 1) as usize,
+            ((y - PAD).max(0) / self.font.height).min(rows as i32 - 1) as usize,
+        )
+    }
+
+    /// The mouse selects cells (P11): press, drag, release.
+    fn mouse(&mut self, x: i32, y: i32, kind: MouseKind) {
+        let at = self.cell_at(x, y);
+        let before = self.selection;
+        match kind {
+            MouseKind::Down => {
+                self.selection = Some((at, at));
+                self.selecting = true;
+            }
+            MouseKind::Move if self.selecting => {
+                if let Some((a, _)) = self.selection {
+                    self.selection = Some((a, at));
+                }
+            }
+            MouseKind::Up => {
+                self.selecting = false;
+                // A click without a drag selects nothing.
+                if self.selection.is_some_and(|(a, b)| a == b) {
+                    self.selection = None;
+                }
+            }
+            MouseKind::Move => {}
+        }
+        if self.selection != before {
+            self.grid.mark_all();
+            self.redraw();
+        }
+    }
+
+    /// Edit > Copy: the selected text to the clipboard.
+    fn copy(&mut self) {
+        if let Some((a, b)) = self.selection {
+            let text = self.grid.text_between(a, b);
+            let _ = self.conn.set_clipboard(&text);
+        }
+    }
+
+    /// Edit > Paste: the clipboard's text, typed (as key presses, to the
+    /// shell or the program reading the terminal).
+    fn paste(&mut self) {
+        let Ok(text) = self.conn.clipboard() else {
+            return;
+        };
+        for c in text.chars() {
+            if let Some(key) = abi::key::key_for_char(c) {
+                self.key(&key);
+            }
+        }
+    }
+
     fn key(&mut self, key: &KeyEvent) {
         // Shift+PgUp/PgDn: the scrollback (P11).
         use abi::key::KeyCode;
@@ -237,7 +305,16 @@ impl Terminal {
                     let _ = handle_close(h);
                 }
             }
-            Event::Key { key, .. } => self.key(&key),
+            Event::Key { key, .. } => {
+                if key.pressed && self.selection.take().is_some() {
+                    self.grid.mark_all();
+                    self.redraw();
+                }
+                self.key(&key)
+            }
+            Event::Mouse { x, y, kind, .. } => self.mouse(x, y, kind),
+            Event::Menu(1, 0) => self.copy(),
+            Event::Menu(1, 1) => self.paste(),
             Event::Focus(_) => {
                 self.active = true;
                 self.redraw_all();
@@ -297,7 +374,7 @@ fn main() -> i64 {
             return 1;
         }
     };
-    let _ = conn.set_menubar("Terminal\tClear\n");
+    let _ = conn.set_menubar("Terminal\tClear\nEdit\tCopy\tPaste\n");
     let (slave, master) = match tty::create_with_master() {
         Ok(pair) => pair,
         Err(e) => {
@@ -332,6 +409,8 @@ fn main() -> i64 {
         shell: None,
         shell_port: None,
         active: true,
+        selection: None,
+        selecting: false,
     };
     t.redraw_all();
     t.start_shell();

@@ -80,7 +80,7 @@ Mouseion 的資料不再放在 Finder 資訊（那 32 bytes 照 HFS 的原意留
   - **多選**：Shift-點一下加入／拿掉；在資料夾視窗的空白處拖出一個框（畫外框），放開時框到的都選起來（`model::band_select`）。拖曳時移動整個選取（同一個視窗內一起位移，到別處一個個搬或複製）。
   - **拖曳影子**：拖曳中在來源視窗畫出被拖的圖示的外框，跟著指標（半透明不做）；拖到別的視窗時影子只畫在來源視窗內。
   - **改名**：點一下已經是唯一選取的項目的**名稱** → 名稱處變成文字框（白底黑框、`|` 是游標）；打字、Backspace，Enter 改名（`DirRename`），Escape 取消，點別處也算確定。名稱不能有 `/`、`:`。
-  - **刪除**：Delete 鍵 → 問「Delete "x"?」（多個時「Delete these N items?」，說明沒有垃圾桶）的視窗；Enter 刪除（資料夾連裡面全部），Escape 留著。失敗（例如唯讀卷宗）印 `mouseion: delete x: …`。
+  - **刪除**：Delete 鍵 → 問「Delete "x"?」（多個時「Delete these N items?」，說明沒有垃圾桶）；Enter 刪除（資料夾連裡面全部），Escape 留著。K32 起用 toolbox 的 `dialog::alert`（`Keep`／`Delete`，Delete 是預設）。失敗（例如唯讀卷宗）印 `mouseion: delete x: …`。
 - 拖放的判定（`model::drop_target`）：視窗伺服器把整個按住的過程都送給按下的那個視窗（capture，座標可以在視窗外），Mouseion 把座標換成螢幕座標，依自己知道的前後順序（`FOCUS` 事件；桌面最後）找放在哪個視窗、哪個圖示上。拖曳中沒有畫出圖示的影子（記在限制）。
 - 雙擊判定由視窗伺服器做（500 ms、4 像素）。
 

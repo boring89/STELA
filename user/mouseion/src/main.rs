@@ -37,6 +37,7 @@ use mouseion::model::{
     decode_icon, display_name, ellipsize, encode_icon,
 };
 use toolbox::control::ScrollBar;
+use toolbox::dialog;
 use toolbox::draw::{Font, Rect, color, font_for};
 use toolbox::event::{Event, MouseKind};
 use toolbox::icons::{self, Icon};
@@ -118,15 +119,6 @@ struct Editing {
     text: String,
 }
 
-/// A Delete waiting for its answer (P11): the folder, the names, the
-/// question's window.
-struct Confirm {
-    volume: String,
-    folder: u64,
-    names: Vec<(String, bool)>,
-    note: u32,
-}
-
 /// A selection band: its window, where it started, where it is now.
 type Band = (u32, (i32, i32), (i32, i32));
 
@@ -186,8 +178,6 @@ struct Mouseion {
     band: Option<Band>,
     /// A rename in progress.
     editing: Option<Editing>,
-    /// A Delete asked about.
-    confirm: Option<Confirm>,
     conn: Connection,
     font: &'static Font,
     icon_size: i32,
@@ -643,9 +633,6 @@ impl Mouseion {
         self.order.retain(|&w| w != window_id);
         let folder = matches!(pane.place, Place::Folder { .. });
         let _ = self.conn.close(pane.window);
-        if self.confirm.as_ref().is_some_and(|c| c.note == window_id) {
-            self.confirm = None;
-        }
         if folder {
             self.save_open_list();
         }
@@ -1013,39 +1000,21 @@ impl Mouseion {
             format!("Delete these {} items?", names.len())
         };
         println!("mouseion: asking: {question}");
-        self.note(
-            "Delete",
-            vec![
-                question,
-                String::from("There is no Trash: it is gone for good."),
-                String::from("Enter: delete    Escape: keep"),
-            ],
-        );
-        if let Some(&note) = self.order.first() {
-            self.confirm = Some(Confirm {
-                volume,
-                folder: id,
-                names,
-                note,
-            });
+        let text = format!("{question}\nThere is no Trash: it is gone for good.");
+        if dialog::alert(&mut self.conn, "Delete", &text, &["Keep", "Delete"]) == Some(1) {
+            self.delete(&volume, id, &names);
         }
     }
 
-    /// The answer was yes.
-    fn delete_confirmed(&mut self) {
-        let Some(c) = self.confirm.take() else {
-            return;
-        };
-        if let Some(p) = self.pane(c.note) {
-            self.close_pane(p);
-        }
+    /// The answer was yes: deletes `names` in folder `folder` of `volume`.
+    fn delete(&mut self, volume: &str, folder: u64, names: &[(String, bool)]) {
         let Some(p) = self.panes.iter().position(
-            |p| matches!(&p.place, Place::Folder { volume, id, .. } if *volume == c.volume && *id == c.folder),
+            |p| matches!(&p.place, Place::Folder { volume: v, id, .. } if v == volume && *id == folder),
         ) else {
             return;
         };
         if let Some(h) = self.panes[p].handle.as_ref().map(|h| h.0) {
-            for (name, is_dir) in &c.names {
+            for (name, is_dir) in names {
                 match remove_tree(h, name, *is_dir) {
                     Ok(()) => println!("mouseion: deleted {name}"),
                     Err(e) => println!("mouseion: delete {name}: {}", describe(e)),
@@ -1409,21 +1378,6 @@ impl Mouseion {
                     }
                     return;
                 }
-                // The question of a Delete (P11).
-                if let Some(confirm) = &self.confirm
-                    && self.order.first() == Some(&confirm.note)
-                {
-                    match c {
-                        Some('\n') => self.delete_confirmed(),
-                        Some('\u{1b}') => {
-                            if let Some(p) = self.pane(confirm.note) {
-                                self.close_pane(p);
-                            }
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
                 if key.code == KeyCode::Delete {
                     self.ask_delete();
                     return;
@@ -1531,7 +1485,6 @@ fn main() -> i64 {
         shift: false,
         band: None,
         editing: None,
-        confirm: None,
     };
     let id = desktop.id;
     m.panes.push(Pane {

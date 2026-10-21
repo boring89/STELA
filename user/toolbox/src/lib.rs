@@ -12,6 +12,10 @@
 //! - [`menu`] (Menu Manager): menu bars.
 //! - [`control`] (Control Manager): buttons, text fields, scroll bars,
 //!   lists.
+//! - [`text`] (TextEdit, P11): multi-line text with selection, wrapping
+//!   and undo, and a scrolled view of it.
+//! - [`dialog`] (Dialog Manager, P11): alerts, a text question, Open
+//!   and Save dialogs.
 //! - [`icons`]: STELA's icons (drafts) from `assets/`.
 //!
 //! The drawing, event, menu and control code is pure logic and is tested
@@ -23,9 +27,11 @@
 extern crate alloc;
 
 pub mod control;
+pub mod dialog;
 pub mod draw;
 pub mod event;
 pub mod icons;
 pub mod menu;
+pub mod text;
 #[cfg(not(test))]
 pub mod window;

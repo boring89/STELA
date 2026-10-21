@@ -395,6 +395,31 @@ pub fn key_to_char(event: &KeyEvent) -> Option<char> {
     }
 }
 
+/// The key press that types `c` on a US layout (the inverse of
+/// [`key_to_char`] for printable ASCII, `\n` and `\t`; P11: a paste
+/// into the terminal becomes key presses). `None` for other characters.
+pub fn key_for_char(c: char) -> Option<KeyEvent> {
+    if c.is_control() && c != '\n' && c != '\t' {
+        return None;
+    }
+    for shift in [false, true] {
+        for &code in KeyCode::NAMED.iter() {
+            let event = KeyEvent {
+                code,
+                pressed: true,
+                modifiers: Modifiers {
+                    shift,
+                    ..Modifiers::default()
+                },
+            };
+            if key_to_char(&event) == Some(c) {
+                return Some(event);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +430,18 @@ mod tests {
             pressed: true,
             modifiers,
         }
+    }
+
+    #[test]
+    fn keys_for_characters() {
+        for c in (' '..='~').chain(['\n', '\t']) {
+            let k = key_for_char(c).expect("a key");
+            assert_eq!(key_to_char(&k), Some(c), "{c:?}");
+        }
+        assert_eq!(key_for_char('A').map(|k| k.modifiers.shift), Some(true));
+        assert_eq!(key_for_char('a').map(|k| k.modifiers.shift), Some(false));
+        assert_eq!(key_for_char('é'), None);
+        assert_eq!(key_for_char('\u{1}'), None);
     }
 
     #[test]

@@ -55,6 +55,12 @@ pub mod request {
     pub const CLOSE_WINDOW: u32 = 0x107;
     /// 0, window: bring it to the front and give it the keyboard.
     pub const FOCUS_WINDOW: u32 = 0x108;
+    /// 0, length: the system clipboard becomes this text (UTF-8, at most
+    /// `CLIPBOARD_MAX` bytes; P11); carries a Memory with it (none when
+    /// the length is 0: the clipboard is emptied).
+    pub const SET_CLIPBOARD: u32 = 0x109;
+    /// 0: the server answers with `CLIPBOARD`.
+    pub const GET_CLIPBOARD: u32 = 0x10A;
 }
 
 /// Server to client.
@@ -78,6 +84,9 @@ pub mod event {
     pub const MENU_SELECTED: u32 = 0x186;
     /// the request's tag, an `abi::Error` value.
     pub const ERROR: u32 = 0x187;
+    /// length: the clipboard's text (P11); carries a Memory with it when
+    /// the length is not 0.
+    pub const CLIPBOARD: u32 = 0x188;
     // 0x188 was PING (version 1): the server now sees a client's reply
     // port close at once.
 }
@@ -215,6 +224,24 @@ pub fn set_menubar(len: u32) -> Message {
     build(request::SET_MENUBAR, &[0, len], &[])
 }
 
+/// Most bytes the clipboard holds.
+pub const CLIPBOARD_MAX: usize = 1 << 20;
+
+/// `SET_CLIPBOARD` (the caller adds the Memory handle when `len` > 0).
+pub fn set_clipboard(len: u32) -> Message {
+    build(request::SET_CLIPBOARD, &[0, len], &[])
+}
+
+/// `GET_CLIPBOARD`.
+pub fn get_clipboard() -> Message {
+    build(request::GET_CLIPBOARD, &[0], &[])
+}
+
+/// `CLIPBOARD` (the server adds the Memory handle when `len` > 0).
+pub fn clipboard(len: u32) -> Message {
+    build(event::CLIPBOARD, &[len], &[])
+}
+
 /// `CLOSE_WINDOW`.
 pub fn close_window(window: u32) -> Message {
     build(request::CLOSE_WINDOW, &[0, window], &[])
@@ -290,6 +317,21 @@ mod tests {
         assert_eq!((flags::WANT_MOTION, flags::HIDE_CURSOR_INSIDE), (16, 32));
         assert_eq!((mouse::MOVE, mouse::DOWN, mouse::UP), (1, 2, 3));
         assert_eq!(window_event::CLOSE_REQUESTED, 5);
+        assert_eq!(
+            (
+                request::SET_CLIPBOARD,
+                request::GET_CLIPBOARD,
+                event::CLIPBOARD
+            ),
+            (0x109, 0x10A, 0x188)
+        );
+        assert_eq!(CLIPBOARD_MAX, 1 << 20);
+        let m = set_clipboard(42);
+        assert_eq!(
+            (m.tag, word(&m, 0), word(&m, 1)),
+            (request::SET_CLIPBOARD, 0, 42)
+        );
+        assert_eq!(word(&clipboard(7), 0), 7);
     }
 
     #[test]

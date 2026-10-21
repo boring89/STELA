@@ -69,6 +69,8 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `SET_MENUBAR` 0x106 | 0、長度，夾帶 Memory：每行一個選單 `Title\tItem\tItem…`，`-` 是分隔線 | — |
 | `CLOSE_WINDOW` 0x107 | 0、window | — |
 | `FOCUS_WINDOW` 0x108 | 0、window | — |
+| `SET_CLIPBOARD` 0x109（P11） | 0、長度；長度 > 0 時夾帶裝著 UTF-8 文字的 Memory（最多 `CLIPBOARD_MAX` = 1 MiB） | — |
+| `GET_CLIPBOARD` 0x10A（P11） | 0 | `CLIPBOARD` |
 
 | 事件（server → client） | 內容 |
 |---|---|
@@ -77,6 +79,9 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `WINDOW_EVENT` 0x185 | window、kind（1 FOCUS、2 BLUR、3 MOVED、4 RESIZE_REQUESTED、5 CLOSE_REQUESTED）、x、y、w、h |
 | `MENU_SELECTED` 0x186 | 選單 index、項目 index |
 | `ERROR` 0x187 | 請求的 tag、`abi::Error` |
+| `CLIPBOARD` 0x188（P11） | 長度；長度 > 0 時夾帶一份文字的 Memory（client 讀完關掉） |
+
+**系統剪貼簿（P11 K32，使用者尚未審核）**：伺服器自己存一份文字（`Vec<u8>`）；`SET_CLIPBOARD` 從 client 的 Memory 複製進來，`GET_CLIPBOARD` 每次做一塊新的 Memory 放一份給它。只有純文字，沒有「誰擁有」的概念（最後設的贏），伺服器重啟就沒了。toolbox：`Connection::set_clipboard(text)`、`clipboard() -> String`（等 `CLIPBOARD` 時其他事件照樣先存起來）。0x188 以前是 `PING`（P11 K2 拿掉了），現在重新用在 `CLIPBOARD`。
 
 旗標：`TITLE_BAR` 1、`CLOSE_BOX` 2、`RESIZABLE` 4、`DESKTOP` 8（沒有框、永遠在最後面、蓋滿選單列以下的整個畫面：給 P9 的 Mouseion 畫桌面圖示）；`DOCUMENT` = 1|2|4。P11：`WANT_MOTION` 16（沒按按鈕時指標在內容上移動也送 `MOUSE`／`MOVE`，給指標在它下面的那個視窗）、`HIDE_CURSOR_INSIDE` 32（指標在內容上時伺服器不畫箭頭；拖曳中照畫）——Classic.app 兩個都設（Mac 自己畫游標）。
 
@@ -151,7 +156,8 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
    shell 行程（key 2，EXITED）：印 [shell exited…]、啟動新的
 ```
 
-- 視窗：80×25 格（16x32 字型時 1288×808，四邊 4 像素）、`DOCUMENT`、標題 `Terminal`；選單 `Terminal > Clear`。
+- 視窗：80×25 格（16x32 字型時 1288×808，四邊 4 像素）、`DOCUMENT`、標題 `Terminal`；選單 `Terminal > Clear`，P11 起還有 `Edit > Copy`、`Edit > Paste`。
+- **選取、複製、貼上（P11 K32）**：在格子上按下拖曳選取（按讀的順序從起點到終點，反白；只按一下不拖不算選取，打字會取消選取）；Copy 把選取的文字（每列去掉尾端空白，列之間 `\n`，`Grid::text_between`）放進剪貼簿；Paste 把剪貼簿的文字一個字一個字轉成按鍵（`abi::key::key_for_char`，美式配置的反查；非 ASCII 的字略過）送給 shell，跟打字一樣。
 - `TtyCreate(MASTER)`：slave 給 shell 當 `[1]`；master 和主 port 放在同一個 WaitSet（P11；P8 時沒有同時等兩個東西的 syscall，用一個輸出執行緒把 tty 輸出轉成主 port 的訊息，現在拿掉了）。toolbox 等回覆時先收下的事件（`Connection::has_pending()`）在每次等待前處理掉。shell 行程也在集合裡（`EXITED`），不再每 500 ms 檢查一次；行程成員以 id 記，換新 shell 前先 `remove`。
 - **serial 鏡像**：輸出也送到 terminal 自己的 `[1]`（console 服務 → serial），所以 `make test-shell`、`test-linux`、`test-shutdown` 在桌面模式下照樣從 serial 檢查 shell 的輸出（鍵盤經 QMP → PS/2 → 視窗伺服器 → terminal → shell）。
 - 文字格（`grid.rs`）：UTF-8 可以在任何地方被切開；`\n` 換行（底部捲動）、`\r`、Backspace、Tab（8 的倍數）；記錄改過的列。游標是反白的格子（失去焦點時不畫）。

@@ -110,6 +110,8 @@ struct Server {
     drag: Option<Drag>,
     clicks: Clicks,
     damage: Damage,
+    /// The system clipboard (P11): UTF-8 text.
+    clipboard: Vec<u8>,
 }
 
 fn screen_rect(s: &Server) -> Rect {
@@ -753,6 +755,8 @@ impl Server {
             request::SET_MENUBAR => self.set_menubar(client, msg),
             request::CLOSE_WINDOW => self.close_window(client, msg),
             request::FOCUS_WINDOW => self.focus_window(client, msg),
+            request::SET_CLIPBOARD => self.set_clipboard(msg),
+            request::GET_CLIPBOARD => self.get_clipboard(client),
             _ => {
                 // CONNECT again, or something unknown.
                 release(msg);
@@ -983,6 +987,41 @@ impl Server {
             c.menus = menus;
         }
         self.mark_menubar();
+        Ok(())
+    }
+
+    /// `SET_CLIPBOARD`: keeps a copy of the text.
+    fn set_clipboard(&mut self, msg: &Message) -> Result<(), Error> {
+        let len = proto::word(msg, 1) as usize;
+        let memory = msg.carried().first().map(|&m| Owned(m));
+        if len > proto::CLIPBOARD_MAX {
+            return Err(Error::InvalidArgument);
+        }
+        let mut text = vec![0u8; len];
+        if len > 0 {
+            let memory = memory.ok_or(Error::InvalidArgument)?;
+            let size = (len as u64).next_multiple_of(4096);
+            let map = Mapping::new(memory.0, size, false)?;
+            map.read(0, &mut text)?;
+        }
+        self.clipboard = text;
+        Ok(())
+    }
+
+    /// `GET_CLIPBOARD`: a copy of the text in a new Memory.
+    fn get_clipboard(&mut self, client: u32) -> Result<(), Error> {
+        let len = self.clipboard.len();
+        let mut reply = proto::clipboard(len as u32);
+        if len > 0 {
+            let size = (len as u64).next_multiple_of(4096);
+            let memory = memory_create(size)?;
+            {
+                let map = Mapping::new(memory, size, true)?;
+                map.write(0, &self.clipboard)?;
+            }
+            reply.push_handle(memory);
+        }
+        self.send(client, &reply);
         Ok(())
     }
 
@@ -1285,6 +1324,7 @@ pub fn main() -> i64 {
         drag: None,
         clicks: Clicks::default(),
         damage: Damage::new(),
+        clipboard: Vec::new(),
     };
     if let Err(e) = input_attach(bootstrap::MAIN_PORT) {
         println!(

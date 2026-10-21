@@ -29,6 +29,8 @@ pub struct Connection {
     /// The menu bar's height.
     pub menubar: u32,
     pending: VecDeque<Message>,
+    /// Events a dialog took and gave back (`put_back`), returned first.
+    returned: VecDeque<Event>,
 }
 
 impl Connection {
@@ -54,6 +56,7 @@ impl Connection {
             screen: (0, 0),
             menubar: 0,
             pending: VecDeque::new(),
+            returned: VecDeque::new(),
         };
         let m = conn.wait_for(event::CONNECTED)?;
         let Some(&port) = m.carried().first() else {
@@ -106,6 +109,9 @@ impl Connection {
     /// The next event, waiting up to `timeout_ns` (`FOREVER`); `None` when
     /// the time is up.
     pub fn next_event(&mut self, timeout_ns: u64) -> Option<Event> {
+        if let Some(e) = self.returned.pop_front() {
+            return Some(e);
+        }
         if let Some(msg) = self.pending.pop_front() {
             return Some(Event::from_message(msg));
         }
@@ -117,7 +123,51 @@ impl Connection {
     /// Whether an event is kept from waiting for a reply (a program that
     /// waits on its main port with other objects checks this first).
     pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.returned.is_empty()
+    }
+
+    /// Gives events back to be returned again (in this order) before any
+    /// other: a dialog keeps the events of the program's other windows
+    /// while it runs.
+    pub fn put_back(&mut self, events: impl IntoIterator<Item = Event>) {
+        for (i, e) in events.into_iter().enumerate() {
+            self.returned.insert(i, e);
+        }
+    }
+
+    /// Puts `text` on the system clipboard (P11; at most
+    /// `abi::window::CLIPBOARD_MAX` bytes).
+    pub fn set_clipboard(&self, text: &str) -> Result<(), Error> {
+        if text.len() > proto::CLIPBOARD_MAX {
+            return Err(Error::InvalidArgument);
+        }
+        let mut msg = proto::set_clipboard(text.len() as u32);
+        if !text.is_empty() {
+            let size = (text.len() as u64).next_multiple_of(4096);
+            let memory = memory_create(size)?;
+            {
+                let map = Mapping::new(memory, size, true)?;
+                map.write(0, text.as_bytes())?;
+            }
+            msg.push_handle(memory);
+        }
+        self.send(&msg)
+    }
+
+    /// The system clipboard's text (empty when there is none).
+    pub fn clipboard(&mut self) -> Result<alloc::string::String, Error> {
+        self.send(&proto::get_clipboard())?;
+        let reply = self.wait_for(event::CLIPBOARD)?;
+        let len = proto::word(&reply, 0) as usize;
+        let Some(&memory) = reply.carried().first() else {
+            return Ok(alloc::string::String::new());
+        };
+        let size = (len as u64).next_multiple_of(4096);
+        let mut text = alloc::vec![0u8; len.min(proto::CLIPBOARD_MAX)];
+        let read = Mapping::new(memory, size, false).and_then(|map| map.read(0, &mut text));
+        let _ = handle_close(memory);
+        read?;
+        Ok(alloc::string::String::from_utf8_lossy(&text).into_owned())
     }
 
     /// Creates a window of `w` x `h` content pixels at (x, y)

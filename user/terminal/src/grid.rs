@@ -13,6 +13,7 @@
 //! the host.
 
 use alloc::collections::VecDeque;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -358,6 +359,47 @@ impl Grid {
     }
 }
 
+/// A selection from cell `a` to cell `b` (col, row; either order) in
+/// reading order: the first cell and the last.
+pub fn ordered(a: (usize, usize), b: (usize, usize)) -> ((usize, usize), (usize, usize)) {
+    if (a.1, a.0) <= (b.1, b.0) {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Whether cell (col, row) is inside the selection `a`..=`b` (P11).
+pub fn selected(a: (usize, usize), b: (usize, usize), cell: (usize, usize)) -> bool {
+    let (s, e) = ordered(a, b);
+    let at = (cell.1, cell.0);
+    (s.1, s.0) <= at && at <= (e.1, e.0)
+}
+
+impl Grid {
+    /// The text of the view's cells from `a` to `b` (either order, both
+    /// included; P11, Copy): row by row, blanks at the ends of rows
+    /// dropped, rows joined with `\n`.
+    pub fn text_between(&self, a: (usize, usize), b: (usize, usize)) -> String {
+        let (s, e) = ordered(a, b);
+        let mut out = String::new();
+        for row in s.1..=e.1.min(self.rows.saturating_sub(1)) {
+            let cells = self.view_row(row);
+            let from = if row == s.1 { s.0 } else { 0 };
+            let to = if row == e.1 { e.0 + 1 } else { cells.len() };
+            let text: String = cells[from.min(cells.len())..to.min(cells.len())]
+                .iter()
+                .map(|c| c.c)
+                .collect();
+            if row > s.1 {
+                out.push('\n');
+            }
+            out.push_str(text.trim_end());
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -474,5 +516,19 @@ mod tests {
         assert_eq!(g.cursor, (1, 1));
         g.resize(20, 6);
         assert_eq!(text(&g, 1), "4");
+    }
+
+    #[test]
+    fn selection_text() {
+        let mut g = Grid::new(10, 3);
+        g.write(b"hello\r\nworld wide\r\nx");
+        assert_eq!(g.text_between((1, 0), (2, 1)), "ello\nwor");
+        // Either order; blanks at the end dropped.
+        assert_eq!(g.text_between((9, 0), (0, 0)), "hello");
+        assert_eq!(g.text_between((0, 2), (0, 2)), "x");
+        assert!(selected((3, 0), (1, 1), (5, 0)));
+        assert!(selected((3, 0), (1, 1), (0, 1)));
+        assert!(!selected((3, 0), (1, 1), (2, 0)));
+        assert!(!selected((3, 0), (1, 1), (2, 1)));
     }
 }

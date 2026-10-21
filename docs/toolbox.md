@@ -55,16 +55,42 @@ loop {
 | `ScrollBar` | rect、value、total、page | `click(x, y)`：箭頭 ±1、軌道 ±1 頁；`scroll(delta)` | 兩個箭頭、軌道、滑塊（大小依比例） |
 | `List` | rect、items、selected、top | `click(x, y, line) -> Option<index>` | 白底、選取反白 |
 
+### 6.1 `text`：多行文字（P11 K32，使用者尚未審核）
+
+**比喻**：`TextField` 是一張便條，`TextView` 是一本筆記本——可以很多行、會自動換行、可以選一段、可以捲。Classic Mac OS 的 TextEdit 也是這個角色。
+
+- `TextBuffer`（純邏輯）：`text`、`cursor`（byte 位置，永遠在字元邊界）、`anchor`（選取的另一端）、`goal`（上下移動要回到的欄）、一步的 undo。
+  - 排版：`rows(cols)` 把文字切成「列」：每個邏輯行（`\n` 分開）按 `cols` 個字元折行；空行也是一列。`position(rows, at)` → (列, 欄)；`index_at(rows, 列, 欄)` 反過來（超出就停在列尾）。折行點屬於下一列，行尾屬於本列。
+  - 編輯：`insert`（取代選取）、`backspace`、`delete_forward`、`cut`、`select_all`、`set_text`（開新文件，清掉 undo）。
+  - 移動：`move_cursor(Left|Right|Up|Down|Home|End, extend, cols)`；Up／Down 記住目標欄（經過短行再回到長行時回到原來的欄）；不帶 Shift 時左右鍵在選取上會跳到選取的頭或尾。
+  - **復原**：一步，但連續打字算一步、連續刪除算一步（換種類、移動游標、貼上都會開新的一步）；undo 之後再 undo 是重做。`is_dirty`／`mark_saved` 給編輯器判斷「未存」。
+- `TextView`：`rect`（含右邊 16 像素的捲軸）、`buffer`、`scroll`（第一個顯示的列）、`read_only`。`key`（方向鍵、Home/End、PgUp/PgDn、Shift 選取、Delete、Backspace、Enter、Tab = 4 個空白、Ctrl-A 全選）→ `Ignored|Moved|Changed`，之後自動捲到游標；`press(x, y, shift)`／`drag`／`release`（滑鼠選取；捲軸的點擊）；`scroll_by`；`draw`（選取反白、插入點、捲軸）。字元寬一律一格（等寬字型）；`\t` 畫成一個空白。
+- 剪貼簿不在 `TextView` 裡：程式的 Edit 選單用 `selected_text`／`cut`／`insert` 與 `Connection::set_clipboard`／`clipboard`。
+
+### 6.2 `dialog`：對話框（P11 K32）
+
+每個對話框是程式自己的一個視窗（標題列 + 關閉框，伺服器決定位置），自己跑一個事件迴圈直到有答案；這段時間**其他視窗的事件先收起來，結束後 `Connection::put_back` 還回去**（下一次 `next_event` 先拿到它們），所以不會掉事件。Escape 或關閉框 = 取消。
+
+| 函式 | 內容 | 回傳 |
+|---|---|---|
+| `alert(conn, title, text, buttons)` | 文字（48 欄自動換行，`wrap`）與右下角的按鈕，**最後一個是預設**（粗框、Enter） | 按鈕的 index；取消 `None` |
+| `ask_text(conn, title, prompt, default)` | 提示與一個 `TextField`（預設文字、游標在尾端）；Cancel／OK | OK 或 Enter → `Some(text)` |
+| `open_file(conn, title, start)` | 上面是目前位置（`Volumes` 或 `Data:/a/b`），下面是清單：卷宗（`Data:`）；資料夾裡第一行 `../`，接著資料夾（`名稱/`）再檔案，各自依名稱（不分大小寫，`sort_entries`）；以 `.` 開頭的不列。雙擊或 Enter：資料夾 → 進去，檔案 → 選它；上下鍵移動 | `Some(Location)` |
+| `save_file(conn, title, start, name)` | 同上，多一個檔名欄；Save 回傳目前資料夾 + 檔名（檔名不能空、不能有 `/`、`:`） | `Some(Location)` |
+
+Mouseion 的刪除確認改用 `alert`（`Keep`／`Delete`，Delete 是預設），以前是自己的資訊視窗加 Enter／Escape。
+
 ## 7. 範例：`user/echo_win`
 
-視窗（放在畫面右邊）：上面一個 `TextField`，Enter 把一行加到下面的 `List`（並印到 `[1]`：`echo_win: <行>`），`Clear` 按鈕與 `File > Clear` 清空，`File > Quit` 或關閉鈕結束。在 terminal 裡 `run echo_win`。
+視窗（放在畫面右邊）：上面一個 `TextField`，Enter 把一行加到下面的 `List`（並印到 `[1]`：`echo_win: <行>`），`Clear` 按鈕與 `File > Clear` 清空，`File > Quit` 或關閉鈕結束。在 terminal 裡 `run echo_win`。P11：`Edit > Copy`（或 Ctrl-C）把選取的那行（沒有就最後一行）放進剪貼簿、印 `echo_win: copied <行>`；`Edit > Paste`（或 Ctrl-V）把剪貼簿的文字加進輸入框。
 
 ## 8. 測試
 
-host `toolbox`：`draw`（矩形運算、填色與裁切、stride 外的像素不動、線、框、1-bit 與 32-bit 圖、複製、文字、字型選擇、缺字）、`event`（各種事件的解碼）、`menu`（文字與查詢）、`control`（按鈕、輸入框、捲軸、清單）。`window` 要 syscall，在 `make test-window` 裡經 terminal 與 echo_win 測。
+host `toolbox`：`draw`（矩形運算、填色與裁切、stride 外的像素不動、線、框、1-bit 與 32-bit 圖、複製、文字、字型選擇、缺字）、`event`（各種事件的解碼）、`menu`（文字與查詢）、`control`（按鈕、輸入框、捲軸、清單）、P11 的 `text`（折行、位置換算、打字與復原的分組、選取、上下鍵的目標欄、UTF-8、捲動、滑鼠選取）與 `dialog`（換行、檔案清單的排序與標籤）。`window` 要 syscall，在 `make test-window` 裡經 terminal 與 echo_win 測；P11 起 test-window 在 Echo 裡 Ctrl-C 複製、Ctrl-V 貼回再 Enter，檢查 `echo_win: copied hello` 與第二次的 `echo_win: hello`（剪貼簿經過視窗伺服器的來回）。對話框的互動沒有自動測試（Mouseion 刪除的確認在 `test-mouseion` 經過 `alert` 的 Enter）。
 
 ## 9. 已知限制
 
 - 只有 ASCII 字型；沒有比例字、粗體（選單列的 STELA 是畫兩次）、抗鋸齒。
-- 沒有對話框、捲動文字區的現成控制項（viewer 自己做）、焦點在控制項之間的切換（Tab）。
+- P11 起有對話框與 `TextView`；沒有焦點在控制項之間的切換（Tab）、非模態的對話框、對話框的鍵盤捷徑（除了 Enter／Escape）。
+- 剪貼簿只有純文字；`TextField` 沒有選取（貼上要程式自己做）。
 - `Connection` 等回覆時其他事件存在記憶體裡沒有上限。

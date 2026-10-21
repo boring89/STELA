@@ -11,6 +11,7 @@
 
 extern crate alloc;
 
+use abi::key::KeyCode;
 use abi::window::flags;
 use alloc::vec::Vec;
 use libstela::ipc::FOREVER;
@@ -42,6 +43,7 @@ fn main() -> i64 {
     };
     let mut menus = MenuBar::new();
     menus.add("File", &["Clear", "-", "Quit"]);
+    menus.add("Edit", &["Copy", "Paste"]);
     let _ = conn.set_menubar(&menus.to_text());
     let line = fh + 4;
     let mut field = TextField::new(Rect::new(8, 8, w - 16, fh + 8), 38);
@@ -66,6 +68,42 @@ fn main() -> i64 {
         let Some(event) = conn.next_event(FOREVER) else {
             continue;
         };
+        // Edit > Copy (or Ctrl-C): the selected line, else the last one, to
+        // the clipboard; Edit > Paste (or Ctrl-V): the clipboard into the
+        // field (P11).
+        let edit = match &event {
+            Event::Key { key, .. } if key.pressed && key.modifiers.ctrl => match key.code {
+                KeyCode::C => Some(0),
+                KeyCode::V => Some(1),
+                _ => None,
+            },
+            Event::Menu(1, item) => Some(*item),
+            _ => None,
+        };
+        match edit {
+            Some(0) => {
+                let line = list.selected.or(list.items.len().checked_sub(1));
+                if let Some(text) = line.and_then(|i| list.items.get(i))
+                    && conn.set_clipboard(text).is_ok()
+                {
+                    println!("echo_win: copied {text}");
+                }
+                continue;
+            }
+            Some(_) => {
+                if let Ok(text) = conn.clipboard() {
+                    for c in text.chars().filter(|c| !c.is_control()) {
+                        if field.text.chars().count() < field.max {
+                            field.text.push(c);
+                        }
+                    }
+                    field.cursor = field.text.chars().count();
+                    dirty = true;
+                }
+                continue;
+            }
+            None => {}
+        }
         match event {
             Event::Key { key, .. } => match field.key(&key) {
                 FieldResult::Enter if !field.text.is_empty() => {

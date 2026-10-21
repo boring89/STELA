@@ -65,6 +65,25 @@ pub trait BlockDevice {
     fn flush(&self) -> Result<(), BlockError> {
         Ok(())
     }
+
+    /// Reads several runs of blocks: each request is (first block, buffer)
+    /// as for [`BlockDevice::read`]. Drivers that can have many commands
+    /// in flight (AHCI, NVMe) issue them together; the default reads one
+    /// after the other (P11).
+    fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+        for (block, buf) in requests.iter_mut() {
+            self.read(*block, buf)?;
+        }
+        Ok(())
+    }
+
+    /// Writes several runs of blocks, like [`BlockDevice::read_many`].
+    fn write_many(&self, requests: &[(u64, &[u8])]) -> Result<(), BlockError> {
+        for (block, buf) in requests {
+            self.write(*block, buf)?;
+        }
+        Ok(())
+    }
 }
 
 impl<T: BlockDevice + ?Sized> BlockDevice for Arc<T> {
@@ -87,6 +106,14 @@ impl<T: BlockDevice + ?Sized> BlockDevice for Arc<T> {
     fn flush(&self) -> Result<(), BlockError> {
         (**self).flush()
     }
+
+    fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+        (**self).read_many(requests)
+    }
+
+    fn write_many(&self, requests: &[(u64, &[u8])]) -> Result<(), BlockError> {
+        (**self).write_many(requests)
+    }
 }
 
 impl<T: BlockDevice + ?Sized> BlockDevice for &T {
@@ -108,6 +135,14 @@ impl<T: BlockDevice + ?Sized> BlockDevice for &T {
 
     fn flush(&self) -> Result<(), BlockError> {
         (**self).flush()
+    }
+
+    fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+        (**self).read_many(requests)
+    }
+
+    fn write_many(&self, requests: &[(u64, &[u8])]) -> Result<(), BlockError> {
+        (**self).write_many(requests)
     }
 }
 
@@ -140,5 +175,26 @@ mod tests {
         );
         assert_eq!(check_request(10, 0, 0), Err(BlockError::BadBuffer));
         assert_eq!(check_request(10, 0, 512), Err(BlockError::BadBuffer));
+    }
+
+    #[test]
+    fn many_at_once() {
+        use crate::mem::MemDisk;
+        let disk = MemDisk::new(16);
+        let part = Partition::new(&disk, 4, 8, false).unwrap();
+        let (a, b) = ([1u8; 4096], [2u8; 8192]);
+        part.write_many(&[(0, &a), (5, &b)]).unwrap();
+        let mut x = [0u8; 4096];
+        disk.read(4, &mut x).unwrap();
+        assert_eq!(x[0], 1);
+        disk.read(10, &mut x).unwrap();
+        assert_eq!(x[0], 2);
+        let (mut c, mut d) = ([0u8; 4096], [0u8; 8192]);
+        part.read_many(&mut [(5, &mut d), (0, &mut c)]).unwrap();
+        assert_eq!((c[0], d[8191]), (1, 2));
+        assert_eq!(
+            part.read_many(&mut [(7, &mut d)]),
+            Err(BlockError::OutOfRange)
+        );
     }
 }

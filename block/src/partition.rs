@@ -58,4 +58,28 @@ impl<D: BlockDevice> BlockDevice for Partition<D> {
     fn flush(&self) -> Result<(), BlockError> {
         self.device.flush()
     }
+
+    fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+        for (block, buf) in requests.iter_mut() {
+            check_request(self.count, *block, buf.len())?;
+            *block += self.start;
+        }
+        let r = self.device.read_many(requests);
+        for (block, _) in requests.iter_mut() {
+            *block -= self.start;
+        }
+        r
+    }
+
+    fn write_many(&self, requests: &[(u64, &[u8])]) -> Result<(), BlockError> {
+        if self.read_only() {
+            return Err(BlockError::ReadOnly);
+        }
+        let mut moved = alloc::vec::Vec::with_capacity(requests.len());
+        for &(block, buf) in requests {
+            check_request(self.count, block, buf.len())?;
+            moved.push((self.start + block, buf));
+        }
+        self.device.write_many(&moved)
+    }
 }

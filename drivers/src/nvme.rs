@@ -15,9 +15,10 @@
 //! ```
 //!
 //! A completion is new when its phase bit equals the phase the host
-//! expects; the expected phase flips each time the queue wraps. One I/O
-//! command in flight (one 4 KiB page, PRP1 only); the thread sleeps until
-//! the MSI or a 10 ms re-check sees the completion.
+//! expects; the expected phase flips each time the queue wraps. P11: up
+//! to `WAVE` I/O commands in flight at once (one 4 KiB page each, PRP1
+//! only; the I/O queue has 32 entries), one doorbell for the wave; the
+//! thread sleeps until the MSI or a 10 ms re-check sees completions.
 
 use block::{BLOCK_SIZE, BlockError};
 
@@ -109,6 +110,9 @@ mod system {
     const ACQ: usize = 0x30;
     const ADMIN_DEPTH: u16 = 16;
     const IO_DEPTH: u16 = 32;
+    /// I/O commands submitted together (fewer than IO_DEPTH, so the
+    /// queue never fills: NVMe 1.4, 4.1.2).
+    const WAVE: usize = 16;
     const TIMEOUT_NS: u64 = 5_000_000_000;
 
     /// A submission/completion queue pair.
@@ -221,6 +225,66 @@ mod system {
             }
             Ok(dw0)
         }
+
+        /// Submits the I/O commands (opcode, PRP1, LBA, LBA count - 1) of
+        /// namespace `nsid` together and waits for all of them.
+        fn submit_wave(&self, nsid: u32, cmds: &[(u8, u64, u64, u32)]) -> Result<(), BlockError> {
+            let queue = &self.io;
+            let qid = {
+                let mut q = queue.lock();
+                for &(opcode, prp1, lba, count) in cmds {
+                    q.cid = q.cid.wrapping_add(1);
+                    let cdw = [lba as u32, (lba >> 32) as u32, count, 0, 0, 0];
+                    let entry = command(opcode, q.cid, nsid, prp1, cdw);
+                    q.sq.write(usize::from(q.tail) * 64, &entry)
+                        .map_err(|_| BlockError::Io)?;
+                    q.tail = (q.tail + 1) % q.depth;
+                }
+                q.id
+            };
+            let mut left = cmds.len();
+            let mut failed = false;
+            while left > 0 {
+                let done = wait_for(
+                    TIMEOUT_NS,
+                    |me| {
+                        self.waiter.store(me, Ordering::Release);
+                        let tail = queue.lock().tail;
+                        self.doorbell(qid, false, tail);
+                    },
+                    || {
+                        let q = queue.lock();
+                        let dw3 = q.cq.read_u32(usize::from(q.head) * 16 + 12).unwrap_or(0);
+                        (dw3 >> 16 & 1 != 0) == q.phase
+                    },
+                );
+                self.waiter.store(0, Ordering::Release);
+                if !done {
+                    return Err(BlockError::Timeout);
+                }
+                // Every completion there is now.
+                let mut q = queue.lock();
+                loop {
+                    let at = usize::from(q.head) * 16;
+                    let dw3 = q.cq.read_u32(at + 12).unwrap_or(0);
+                    if (dw3 >> 16 & 1 != 0) != q.phase || left == 0 {
+                        break;
+                    }
+                    if dw3 >> 17 != 0 {
+                        failed = true;
+                    }
+                    q.head = (q.head + 1) % q.depth;
+                    if q.head == 0 {
+                        q.phase = !q.phase;
+                    }
+                    left -= 1;
+                }
+                let head = q.head;
+                drop(q);
+                self.doorbell(qid, true, head);
+            }
+            if failed { Err(BlockError::Io) } else { Ok(()) }
+        }
     }
 
     /// An NVMe namespace.
@@ -232,16 +296,56 @@ mod system {
     }
 
     impl NvmeDisk {
-        fn io(&self, opcode: u8, block: u64) -> Result<(), BlockError> {
-            let lba = block * self.lbas_per_block;
+        /// Reads (`reads`) or writes (`writes`) the requests, one block
+        /// per command, `WAVE` commands at a time.
+        fn transfer(
+            &self,
+            reads: &mut [(u64, &mut [u8])],
+            writes: &[(u64, &[u8])],
+        ) -> Result<(), BlockError> {
+            let write = !writes.is_empty();
+            // Every block: (request, byte offset, block).
+            let mut blocks: Vec<(usize, usize, u64)> = Vec::new();
+            let lens: Vec<(u64, usize)> = if write {
+                writes.iter().map(|(b, buf)| (*b, buf.len())).collect()
+            } else {
+                reads.iter().map(|(b, buf)| (*b, buf.len())).collect()
+            };
+            for (r, &(block, len)) in lens.iter().enumerate() {
+                let n = block::check_request(self.blocks, block, len)?;
+                for i in 0..n {
+                    blocks.push((r, i as usize * BLOCK_SIZE, block + i));
+                }
+            }
+            let c = &self.controller;
+            let _guard = c.lock.lock();
             let count = (self.lbas_per_block - 1) as u32;
-            self.controller.submit(
-                &self.controller.io,
-                opcode,
-                self.nsid,
-                self.controller.data.phys(),
-                [lba as u32, (lba >> 32) as u32, count, 0, 0, 0],
-            )?;
+            for wave in blocks.chunks(WAVE) {
+                let mut cmds = Vec::with_capacity(wave.len());
+                for (i, &(r, at, block)) in wave.iter().enumerate() {
+                    let page = i * BLOCK_SIZE;
+                    if write {
+                        c.data
+                            .write(page, &writes[r].1[at..at + BLOCK_SIZE])
+                            .map_err(|_| BlockError::Io)?;
+                    }
+                    let opcode = if write { io::WRITE } else { io::READ };
+                    cmds.push((
+                        opcode,
+                        c.data.phys() + page as u64,
+                        block * self.lbas_per_block,
+                        count,
+                    ));
+                }
+                c.submit_wave(self.nsid, &cmds)?;
+                if !write {
+                    for (i, &(r, at, _)) in wave.iter().enumerate() {
+                        c.data
+                            .read(i * BLOCK_SIZE, &mut reads[r].1[at..at + BLOCK_SIZE])
+                            .map_err(|_| BlockError::Io)?;
+                    }
+                }
+            }
             Ok(())
         }
     }
@@ -252,31 +356,22 @@ mod system {
         }
 
         fn read(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-            let n = block::check_request(self.blocks, block, buf.len())?;
-            let _guard = self.controller.lock.lock();
-            for i in 0..n {
-                self.io(io::READ, block + i)?;
-                let at = i as usize * BLOCK_SIZE;
-                self.controller
-                    .data
-                    .read(0, &mut buf[at..at + BLOCK_SIZE])
-                    .map_err(|_| BlockError::Io)?;
-            }
-            Ok(())
+            self.transfer(&mut [(block, buf)], &[])
         }
 
         fn write(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
-            let n = block::check_request(self.blocks, block, buf.len())?;
-            let _guard = self.controller.lock.lock();
-            for i in 0..n {
-                let at = i as usize * BLOCK_SIZE;
-                self.controller
-                    .data
-                    .write(0, &buf[at..at + BLOCK_SIZE])
-                    .map_err(|_| BlockError::Io)?;
-                self.io(io::WRITE, block + i)?;
+            self.transfer(&mut [], &[(block, buf)])
+        }
+
+        fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+            self.transfer(requests, &[])
+        }
+
+        fn write_many(&self, requests: &[(u64, &[u8])]) -> Result<(), BlockError> {
+            if requests.is_empty() {
+                return Ok(());
             }
-            Ok(())
+            self.transfer(&mut [], requests)
         }
 
         fn flush(&self) -> Result<(), BlockError> {
@@ -317,7 +412,7 @@ mod system {
             admin: SpinLock::new(Queue::new(0, ADMIN_DEPTH).ok_or("no memory")?),
             io: SpinLock::new(Queue::new(1, IO_DEPTH).ok_or("no memory")?),
             lock: SleepLock::new(),
-            data: DmaBuffer::new(1).ok_or("no memory")?,
+            data: DmaBuffer::new(WAVE).ok_or("no memory")?,
             waiter: AtomicU64::new(0),
         };
         let (asq, acq) = {

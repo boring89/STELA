@@ -118,6 +118,16 @@ drivers::sync::set_hooks(Hooks { current, block_until, wake, now_ns })
 - 鎖是 `SpinLock`，**I/O 時不持有**：miss 時放鎖、讀裝置、再拿鎖放進去（兩個執行緒同時 miss 會各讀一次，結果相同）。
 - 為了快取與 B-tree 的 16 KiB 節點，kernel heap 從 4 MiB 加到 16 MiB（計畫外的調整）。
 
+### 8.1 P11：一次多個命令（K13，使用者尚未審核）
+
+**比喻**：以前搬運工一次只拿一張單子，跑完一趟才拿下一張；現在一次發 32 張單子（AHCI 的每個 command slot 一張），倉庫自己決定先搬哪個，全部搬完才回報。
+
+- `BlockDevice::read_many(&mut [(block, &mut [u8])])`／`write_many(&[(block, &[u8])])`：好幾段不連續的區塊一次交給驅動；預設實作是一段一段呼叫 `read`／`write`（`MemDisk`、測試用的裝置不必改）。`Arc`、`&T`、`Partition`（換算起點）轉交給下面的裝置。
+- **AHCI**：`CAP.NCS + 1` 個 slot（QEMU 是 32），每個 slot 一個 256 bytes 的 command table 與一個 64 KiB 的資料緩衝；一個請求（大的 `read`、或 `read_many` 的所有段）切成 64 KiB 的命令，一波最多一個 slot 一個，一次寫 `PxCI` 的 mask、等 `PxCI & mask == 0`（或 TFES）。開機訊息多了 `32 command slots`。
+- **NVMe**：I/O 佇列 32 個 entry，一波最多 16 個命令（`WAVE`，少於佇列深度，永遠不會滿：NVMe 1.4 §4.1.2），每個命令一個 4 KiB 的資料頁（PRP1）；一次 doorbell，然後收完成佇列裡所有新的 entry（phase bit），到這一波都回來為止。
+- **快取**：`read` 與 `read_many` 先從快取拿命中的區塊，未命中的連續區塊合成一段，所有段一次 `read_many` 交給裝置，再放進快取。
+- **eHFS**：檔案讀取時，對齊的整塊直接讀進呼叫者的緩衝（每個 extent 的連續區塊一段，整個讀取一次 `read_many`；交易中有修改過的區塊時退回一塊一塊）；不對齊的頭尾照舊經過 `read_block`。
+
 ## 9. GPT（UEFI 2.10 §5.3）
 
 ```
@@ -141,16 +151,16 @@ drivers::sync::set_hooks(Hooks { current, block_until, wake, now_ns })
 
 | 測試 | 內容 |
 |---|---|
-| host `block` | 請求檢查、CRC-32 檢查值、MemDisk 讀寫與斷電、Partition 的範圍與唯讀、GPT（自己組的 512 與 4096 扇區表、CRC 壞掉、不對齊）、sgdisk 做的映像 |
-| host `drivers` | AHCI 的 FIS／header 編碼、IDENTIFY 解析（48 位元、4 KiB 扇區、舊式 28 位元）、扇區換算；NVMe 的 submission entry、Identify Namespace 解析 |
-| host `kernel::fs` | FAT：mtools 做的 FAT32 映像（短名、長名、NT 小寫、子目錄、300 KiB 檔案跨 cluster、從中間讀）；快取：命中／未命中／淘汰、write-through、越界 |
+| host `block` | 請求檢查、CRC-32 檢查值、MemDisk 讀寫與斷電、Partition 的範圍與唯讀、`read_many`／`write_many` 經過 Partition（P11）、GPT（自己組的 512 與 4096 扇區表、CRC 壞掉、不對齊）、sgdisk 做的映像 |
+| host `drivers` | AHCI 的 FIS／header 編碼、slot 數（CAP.NCS）、IDENTIFY 解析（48 位元、4 KiB 扇區、舊式 28 位元）、扇區換算；NVMe 的 submission entry、Identify Namespace 解析 |
+| host `kernel::fs` | FAT：mtools 做的 FAT32 映像（短名、長名、NT 小寫、子目錄、300 KiB 檔案跨 cluster、從中間讀）；快取：命中／未命中／淘汰、write-through、越界、未命中合成一次 `read_many`（P11：0..8 有一塊命中 → 兩段、一次裝置呼叫；全命中 → 沒有裝置呼叫） |
 | selftest "block devices" | 每顆磁碟讀區塊 0；測試磁碟（`STELATEST`）寫 20 個區塊（超過一個 64 KiB 的 AHCI 命令）再讀回、越界、block 64 的開機計數 |
 | `make test-storage` | AHCI（GPT：FAT ESP + eHFS Data，512 扇區）+ NVMe（GPT：eHFS Archive，`logical_block_size=4096`）開機兩次：`storage: … boot 1/2`、`vfs: mounted …`、fstest；最後 host 的 `fsck.ehfs` 檢查兩個卷宗 |
 | `make test-qemu-min` | Conroe、無 NX、256 MiB，也接 AHCI 測試磁碟（自己的副本）跑完 fstest，結束後 fsck |
 
 ## 12. 已知限制
 
-- 一次一個請求（AHCI 一個 slot、NVMe 佇列深度實際是 1、每次一個 4 KiB 區塊）；沒有 NCQ、沒有排程。
+- 一個 port（或 NVMe 控制器）一次一個請求，但一個請求一次發出很多命令（§8.1）；沒有 NCQ（FPDMA）、沒有排程；NVMe 每個命令仍只有一個 4 KiB 頁（沒有 PRP list）。
 - 沒有 TRIM、沒有熱插拔、沒有錯誤後的 port 重設；逾時就回錯誤。
 - 快取是 write-through、沒有 read-ahead；容量固定。
 - FAT 唯讀、沒有 FAT12、不讀 MBR 分割表（QEMU 的 vvfat ESP 不會被掛載）。

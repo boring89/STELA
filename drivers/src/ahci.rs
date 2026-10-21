@@ -9,16 +9,18 @@
 //!               0x100 + 0x80 * port:  CLB FB IS IE CMD TFD SIG SSTS SERR CI
 //!
 //!  per port, one DMA page:
-//!   0x000  command list (32 headers x 32 bytes; only slot 0 is used)
+//!   0x000  command list (32 headers x 32 bytes)
 //!   0x400  received FIS area (256 bytes)
-//!   0x500  command table: command FIS (64 bytes), ATAPI (16), reserved,
-//!          0x80 PRDT (one 16-byte entry)
-//!  plus a 64 KiB DMA data buffer the requests copy through
+//!  command tables, 256 bytes per slot: command FIS (64 bytes), ATAPI
+//!  (16), reserved, 0x80 PRDT (one 16-byte entry)
+//!  a 64 KiB DMA data buffer per slot the requests copy through
 //! ```
 //!
-//! One request at a time per port (slot 0); the requesting thread sleeps
-//! until the port's interrupt (MSI) or a 10 ms re-check sees the command
-//! done, 5 seconds at most.
+//! One request at a time per port, but a request issues up to CAP.NCS + 1
+//! commands at once (P11: every command slot, 64 KiB each): a large
+//! transfer, or several blocks of `read_many`/`write_many`, is split into
+//! waves; the thread sleeps until the port's interrupt (MSI) or a 10 ms
+//! re-check sees the wave done, 5 seconds at most.
 
 use block::{BLOCK_SIZE, BlockError};
 
@@ -50,6 +52,12 @@ pub fn command_fis(command: u8, lba: u64, count: u16) -> [u8; 20] {
     fis[12] = count as u8;
     fis[13] = (count >> 8) as u8;
     fis
+}
+
+/// The command slots a controller has: CAP.NCS + 1 (AHCI 3.1.1, bits
+/// 12:8).
+pub fn slot_count(cap: u32) -> usize {
+    ((cap >> 8) & 0x1F) as usize + 1
 }
 
 /// DWORD 0 of a command header: FIS length 5 DWORDs, write direction,
@@ -155,14 +163,26 @@ mod system {
 
     /// Bytes moved per command (16 blocks).
     const CHUNK: usize = 64 * 1024;
+    /// Bytes of a command table (FIS, ATAPI, PRDT with one entry).
+    const TABLE: usize = 256;
+
+    /// One command of a wave: the FIS, the direction and the bytes.
+    struct Job {
+        fis: [u8; 20],
+        write: bool,
+        bytes: usize,
+    }
     const TIMEOUT_NS: u64 = 5_000_000_000;
 
     struct Port {
         hba: Arc<MmioRegion>,
         base: usize,
-        /// Command list, FIS area, command table.
+        /// Command list and FIS area.
         page: DmaBuffer,
-        data: DmaBuffer,
+        /// One command table per slot.
+        tables: DmaBuffer,
+        /// One 64 KiB data buffer per slot.
+        data: Vec<DmaBuffer>,
         identity: Identity,
         lock: SleepLock,
         /// Thread waiting for the current command (0: none).
@@ -182,25 +202,47 @@ mod system {
 
         /// Runs one command on slot 0 and waits for it.
         fn run(&self, fis: &[u8; 20], write: bool, bytes: usize) -> Result<(), BlockError> {
-            let dw0 = header_dw0(write, if bytes > 0 { 1 } else { 0 });
-            let table = self.page.phys() + 0x500;
-            let ok = (|| {
-                self.page.write_u32(0, dw0)?;
-                self.page.write_u32(4, 0)?;
-                self.page.write_u32(8, table as u32)?;
-                self.page.write_u32(12, (table >> 32) as u32)?;
-                self.page.write(0x500, fis)?;
-                if bytes > 0 {
-                    let data = self.data.phys();
-                    self.page.write_u32(0x580, data as u32)?;
-                    self.page.write_u32(0x584, (data >> 32) as u32)?;
-                    self.page.write_u32(0x588, 0)?;
-                    // Byte count - 1; bit 31: interrupt on completion.
-                    self.page.write_u32(0x58C, (bytes as u32 - 1) | 1 << 31)?;
-                }
-                Ok::<(), frame::mm::dma::OutOfRange>(())
-            })();
-            ok.map_err(|_| BlockError::Io)?;
+            self.run_wave(&[Job {
+                fis: *fis,
+                write,
+                bytes,
+            }])
+        }
+
+        /// Runs `jobs` (at most one per slot; job i uses slot i and its
+        /// data buffer) at once and waits for all of them.
+        fn run_wave(&self, jobs: &[Job]) -> Result<(), BlockError> {
+            if jobs.is_empty() || jobs.len() > self.data.len() {
+                return Err(BlockError::Io);
+            }
+            for (slot, job) in jobs.iter().enumerate() {
+                let dw0 = header_dw0(job.write, if job.bytes > 0 { 1 } else { 0 });
+                let at = slot * TABLE;
+                let table = self.tables.phys() + at as u64;
+                let ok = (|| {
+                    self.page.write_u32(32 * slot, dw0)?;
+                    self.page.write_u32(32 * slot + 4, 0)?;
+                    self.page.write_u32(32 * slot + 8, table as u32)?;
+                    self.page.write_u32(32 * slot + 12, (table >> 32) as u32)?;
+                    self.tables.write(at, &job.fis)?;
+                    if job.bytes > 0 {
+                        let data = self.data[slot].phys();
+                        self.tables.write_u32(at + 0x80, data as u32)?;
+                        self.tables.write_u32(at + 0x84, (data >> 32) as u32)?;
+                        self.tables.write_u32(at + 0x88, 0)?;
+                        // Byte count - 1; bit 31: interrupt on completion.
+                        self.tables
+                            .write_u32(at + 0x8C, (job.bytes as u32 - 1) | 1 << 31)?;
+                    }
+                    Ok::<(), frame::mm::dma::OutOfRange>(())
+                })();
+                ok.map_err(|_| BlockError::Io)?;
+            }
+            let mask = if jobs.len() == 32 {
+                u32::MAX
+            } else {
+                (1u32 << jobs.len()) - 1
+            };
             // The device must not be busy (AHCI 5.6.2.1).
             if !wait_for(
                 TIMEOUT_NS,
@@ -214,9 +256,9 @@ mod system {
                 TIMEOUT_NS,
                 |me| {
                     self.waiter.store(me, Ordering::Release);
-                    self.write(PX_CI, 1);
+                    self.write(PX_CI, mask);
                 },
-                || self.read(PX_CI) & 1 == 0 || self.read(PX_IS) & IS_TFES != 0,
+                || self.read(PX_CI) & mask == 0 || self.read(PX_IS) & IS_TFES != 0,
             );
             self.waiter.store(0, Ordering::Release);
             let is = self.read(PX_IS) | self.status.swap(0, Ordering::AcqRel);
@@ -250,50 +292,63 @@ mod system {
             &self.name
         }
 
+        /// Reads (`reads`) or writes (`writes`) the requests, 64 KiB per
+        /// command, a slot's worth of commands at a time.
         fn transfer(
             &self,
-            block: u64,
-            buf: &mut [u8],
-            data: Option<&[u8]>,
+            reads: &mut [(u64, &mut [u8])],
+            writes: &[(u64, &[u8])],
         ) -> Result<(), BlockError> {
             let size = self.port.identity.sector_size;
-            let len = data.map_or(buf.len(), <[u8]>::len);
-            let n = block::check_request(self.block_count(), block, len)?;
+            let count = self.block_count();
+            // The pieces: (request, byte offset in it, first block, blocks).
+            let mut pieces: Vec<(usize, usize, u64, u64)> = Vec::new();
+            let lens: Vec<(u64, usize)> = if writes.is_empty() {
+                reads.iter().map(|(b, buf)| (*b, buf.len())).collect()
+            } else {
+                writes.iter().map(|(b, buf)| (*b, buf.len())).collect()
+            };
+            for (r, &(block, len)) in lens.iter().enumerate() {
+                let n = block::check_request(count, block, len)?;
+                let mut done = 0;
+                while done < n {
+                    let blocks = (n - done).min((CHUNK / BLOCK_SIZE) as u64);
+                    pieces.push((r, done as usize * BLOCK_SIZE, block + done, blocks));
+                    done += blocks;
+                }
+            }
+            let write = !writes.is_empty();
             let _guard = self.port.lock.lock();
-            let mut done = 0usize;
-            let mut block = block;
-            let mut left = n;
-            while left > 0 {
-                let blocks = left.min((CHUNK / BLOCK_SIZE) as u64);
-                let bytes = blocks as usize * BLOCK_SIZE;
-                let (lba, count) = sectors_for(block, blocks, size)?;
-                match data {
-                    Some(src) => {
-                        self.port
-                            .data
-                            .write(0, &src[done..done + bytes])
+            for wave in pieces.chunks(self.port.data.len()) {
+                let mut jobs = Vec::with_capacity(wave.len());
+                for (slot, &(r, at, block, blocks)) in wave.iter().enumerate() {
+                    let bytes = blocks as usize * BLOCK_SIZE;
+                    let (lba, sectors) = sectors_for(block, blocks, size)?;
+                    if write {
+                        self.port.data[slot]
+                            .write(0, &writes[r].1[at..at + bytes])
                             .map_err(|_| BlockError::Io)?;
-                        self.port.run(
-                            &command_fis(ATA_WRITE_DMA_EXT, lba, count as u16),
-                            true,
-                            bytes,
-                        )?;
                     }
-                    None => {
-                        self.port.run(
-                            &command_fis(ATA_READ_DMA_EXT, lba, count as u16),
-                            false,
-                            bytes,
-                        )?;
-                        self.port
-                            .data
-                            .read(0, &mut buf[done..done + bytes])
+                    let command = if write {
+                        ATA_WRITE_DMA_EXT
+                    } else {
+                        ATA_READ_DMA_EXT
+                    };
+                    jobs.push(Job {
+                        fis: command_fis(command, lba, sectors as u16),
+                        write,
+                        bytes,
+                    });
+                }
+                self.port.run_wave(&jobs)?;
+                if !write {
+                    for (slot, &(r, at, _, blocks)) in wave.iter().enumerate() {
+                        let bytes = blocks as usize * BLOCK_SIZE;
+                        self.port.data[slot]
+                            .read(0, &mut reads[r].1[at..at + bytes])
                             .map_err(|_| BlockError::Io)?;
                     }
                 }
-                done += bytes;
-                block += blocks;
-                left -= blocks;
             }
             Ok(())
         }
@@ -306,11 +361,22 @@ mod system {
         }
 
         fn read(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-            self.transfer(block, buf, None)
+            self.transfer(&mut [(block, buf)], &[])
         }
 
         fn write(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
-            self.transfer(block, &mut [], Some(buf))
+            self.transfer(&mut [], &[(block, buf)])
+        }
+
+        fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+            self.transfer(requests, &[])
+        }
+
+        fn write_many(&self, requests: &[(u64, &[u8])]) -> Result<(), BlockError> {
+            if requests.is_empty() {
+                return Ok(());
+            }
+            self.transfer(&mut [], requests)
         }
 
         fn flush(&self) -> Result<(), BlockError> {
@@ -356,7 +422,7 @@ mod system {
         })
     }
 
-    fn init_port(hba: &Arc<MmioRegion>, index: usize) -> Option<Port> {
+    fn init_port(hba: &Arc<MmioRegion>, index: usize, slots: usize) -> Option<Port> {
         let base = 0x100 + 0x80 * index;
         // After the HBA reset the link comes back up by itself: wait for
         // DET = 3 (device present, communication established).
@@ -368,7 +434,11 @@ mod system {
             return None;
         }
         let page = DmaBuffer::new(1)?;
-        let data = DmaBuffer::new(CHUNK / 4096)?;
+        let tables = DmaBuffer::new((slots * TABLE).div_ceil(4096))?;
+        let mut data = Vec::with_capacity(slots);
+        for _ in 0..slots {
+            data.push(DmaBuffer::new(CHUNK / 4096)?);
+        }
         hba.write_u32(base + PX_CLB, page.phys() as u32);
         hba.write_u32(base + PX_CLBU, (page.phys() >> 32) as u32);
         let fis = page.phys() + 0x400;
@@ -397,6 +467,7 @@ mod system {
             hba: Arc::clone(hba),
             base,
             page,
+            tables,
             data,
             identity: Identity {
                 sectors: 0,
@@ -414,7 +485,7 @@ mod system {
             return None;
         }
         let mut id = [0u8; 512];
-        port.data.read(0, &mut id).ok()?;
+        port.data[0].read(0, &mut id).ok()?;
         port.identity = parse_identify(&id);
         if !(512..=4096).contains(&port.identity.sector_size)
             || !(BLOCK_SIZE as u32).is_multiple_of(port.identity.sector_size)
@@ -467,7 +538,7 @@ mod system {
             if implemented & (1 << index) == 0 {
                 continue;
             }
-            let Some(port) = init_port(&hba, index) else {
+            let Some(port) = init_port(&hba, index, slot_count(cap)) else {
                 continue;
             };
             let port = Arc::new(port);
@@ -486,9 +557,10 @@ mod system {
             disks.push(disk);
         }
         frame::kprintln!(
-            "ahci: {}: {} port(s), 64-bit DMA {}, vector {}",
+            "ahci: {}: {} port(s), {} command slots, 64-bit DMA {}, vector {}",
             f.address,
             (cap & 0x1F) + 1,
+            slot_count(cap),
             if cap & (1 << 31) != 0 { "yes" } else { "no" },
             vector.map_or(alloc::string::String::from("none"), |v| alloc::format!(
                 "{v}"
@@ -526,6 +598,8 @@ mod tests {
         );
         assert_eq!(header_dw0(false, 1), 0x0001_0005);
         assert_eq!(header_dw0(true, 1), 0x0001_0045);
+        assert_eq!(slot_count(0x4000_1F05), 32);
+        assert_eq!(slot_count(0x0000_0000), 1);
     }
 
     #[test]

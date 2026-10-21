@@ -7,9 +7,10 @@
 //! their own journal, so the cache never holds data the disk lacks.
 //!
 //! ```text
-//!  read(b):  hit  → copy from the cache, mark most recent
-//!            miss → read the device (no lock held), insert, evict the
-//!                   least recently used when full
+//!  read(b..b+n): hits → copy from the cache, mark most recent
+//!                misses → consecutive ones become one run; all runs go to
+//!                   the device in one read_many (no lock held), then are
+//!                   inserted, evicting the least recently used when full
 //!  write(b): write the device, then update the cached copy if present
 //! ```
 //!
@@ -120,19 +121,57 @@ impl<D: BlockDevice> CachedDevice<D> {
         lru.order.clear();
     }
 
-    fn read_one(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+    /// Fills the requests: cached blocks from the cache, the others from
+    /// the device, every run of consecutive misses as one request of a
+    /// single `read_many`.
+    fn fill(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+        // The runs missing: (request, first block index in it, blocks).
+        let mut runs: Vec<(usize, usize, usize)> = Vec::new();
         {
             let mut lru = self.lru.lock();
-            if let Some((data, _)) = lru.blocks.get(&block) {
-                buf.copy_from_slice(&data[..]);
-                lru.hits += 1;
-                lru.touch(block);
-                return Ok(());
+            for (r, (block, buf)) in requests.iter_mut().enumerate() {
+                let n = buf.len() / BLOCK_SIZE;
+                for i in 0..n {
+                    let b = *block + i as u64;
+                    if let Some((data, _)) = lru.blocks.get(&b) {
+                        buf[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE].copy_from_slice(&data[..]);
+                        lru.hits += 1;
+                        lru.touch(b);
+                        continue;
+                    }
+                    lru.misses += 1;
+                    match runs.last_mut() {
+                        Some((rr, first, count)) if *rr == r && *first + *count == i => *count += 1,
+                        _ => runs.push((r, i, 1)),
+                    }
+                }
             }
-            lru.misses += 1;
         }
-        self.device.read(block, buf)?;
-        self.lru.lock().insert(block, buf);
+        if runs.is_empty() {
+            return Ok(());
+        }
+        let mut temp: Vec<(u64, Vec<u8>)> = runs
+            .iter()
+            .map(|&(r, first, count)| (requests[r].0 + first as u64, vec![0u8; count * BLOCK_SIZE]))
+            .collect();
+        {
+            let mut io: Vec<(u64, &mut [u8])> = temp
+                .iter_mut()
+                .map(|(b, data)| (*b, data.as_mut_slice()))
+                .collect();
+            self.device.read_many(&mut io)?;
+        }
+        let mut lru = self.lru.lock();
+        for (&(r, first, count), (block, data)) in runs.iter().zip(&temp) {
+            for i in 0..count {
+                lru.insert(
+                    block + i as u64,
+                    &data[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE],
+                );
+            }
+            let at = first * BLOCK_SIZE;
+            requests[r].1[at..at + data.len()].copy_from_slice(data);
+        }
         Ok(())
     }
 }
@@ -143,12 +182,15 @@ impl<D: BlockDevice> BlockDevice for CachedDevice<D> {
     }
 
     fn read(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        let n = check_request(self.block_count(), block, buf.len())?;
-        for i in 0..n {
-            let at = i as usize * BLOCK_SIZE;
-            self.read_one(block + i, &mut buf[at..at + BLOCK_SIZE])?;
+        check_request(self.block_count(), block, buf.len())?;
+        self.fill(&mut [(block, buf)])
+    }
+
+    fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+        for (block, buf) in requests.iter() {
+            check_request(self.block_count(), *block, buf.len())?;
         }
-        Ok(())
+        self.fill(requests)
     }
 
     fn write(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
@@ -187,6 +229,64 @@ pub fn blocks(n: usize) -> Vec<u8> {
 mod tests {
     use super::*;
     use block::mem::MemDisk;
+
+    /// Counts the device requests (`read_many` calls).
+    struct Counting<'a> {
+        disk: &'a MemDisk,
+        calls: core::cell::Cell<u32>,
+        blocks: core::cell::Cell<u64>,
+    }
+
+    impl BlockDevice for Counting<'_> {
+        fn block_count(&self) -> u64 {
+            self.disk.block_count()
+        }
+        fn read(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            self.disk.read(block, buf)
+        }
+        fn write(&self, block: u64, buf: &[u8]) -> Result<(), BlockError> {
+            self.disk.write(block, buf)
+        }
+        fn read_many(&self, requests: &mut [(u64, &mut [u8])]) -> Result<(), BlockError> {
+            self.calls.set(self.calls.get() + 1);
+            for (_, buf) in requests.iter() {
+                self.blocks
+                    .set(self.blocks.get() + (buf.len() / BLOCK_SIZE) as u64);
+            }
+            self.disk.read_many(requests)
+        }
+    }
+
+    #[test]
+    fn misses_go_to_the_device_together() {
+        let disk = MemDisk::new(32);
+        for b in 0..32u8 {
+            disk.write(u64::from(b), &[b; BLOCK_SIZE]).unwrap();
+        }
+        let counting = Counting {
+            disk: &disk,
+            calls: core::cell::Cell::new(0),
+            blocks: core::cell::Cell::new(0),
+        };
+        let cache = CachedDevice::new(&counting, 64);
+        let mut one = blocks(1);
+        cache.read(3, &mut one).unwrap();
+        // 0..8 with 3 cached: two runs (0..3, 4..8), one device call.
+        let mut eight = blocks(8);
+        cache.read(0, &mut eight).unwrap();
+        assert_eq!(counting.calls.get(), 2);
+        assert_eq!(counting.blocks.get(), 1 + 7);
+        for i in 0..8 {
+            assert_eq!(eight[i * BLOCK_SIZE], i as u8);
+        }
+        // Two requests, all cached: no device call.
+        let (mut a, mut b) = (blocks(2), blocks(1));
+        cache
+            .read_many(&mut [(1, &mut a[..]), (7, &mut b[..])])
+            .unwrap();
+        assert_eq!(counting.calls.get(), 2);
+        assert_eq!((a[BLOCK_SIZE], b[0]), (2, 7));
+    }
 
     #[test]
     fn hits_misses_and_eviction() {

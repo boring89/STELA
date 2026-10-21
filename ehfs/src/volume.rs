@@ -229,6 +229,39 @@ impl<D: BlockDevice> Volume<D> {
         io(self.dev.write(n, buf))
     }
 
+    /// Reads runs of data blocks (first block, offset in `buf`, bytes) in
+    /// one `read_many`.
+    pub(crate) fn dev_read_runs(
+        &self,
+        runs: &[(u64, usize, usize)],
+        buf: &mut [u8],
+    ) -> Result<(), Error> {
+        if !self.txn.is_empty() {
+            // A transaction may hold newer copies: block by block.
+            for &(block, offset, len) in runs {
+                for i in 0..len / BLOCK_SIZE {
+                    let at = offset + i * BLOCK_SIZE;
+                    self.read_block(block + i as u64, &mut buf[at..at + BLOCK_SIZE])?;
+                }
+            }
+            return Ok(());
+        }
+        let mut requests: Vec<(u64, &mut [u8])> = Vec::with_capacity(runs.len());
+        let mut rest: &mut [u8] = buf;
+        let mut at = 0;
+        for &(block, offset, len) in runs {
+            if block + (len / BLOCK_SIZE) as u64 > self.blocks || offset < at {
+                return Err(Error::Invalid);
+            }
+            let (_, tail) = core::mem::take(&mut rest).split_at_mut(offset - at);
+            let (piece, tail) = tail.split_at_mut(len);
+            requests.push((block, piece));
+            rest = tail;
+            at = offset + len;
+        }
+        io(self.dev.read_many(&mut requests))
+    }
+
     /// Reads block `n` (the transaction's copy when it changed it).
     pub(crate) fn read_block(&self, n: u64, buf: &mut [u8]) -> Result<(), Error> {
         if let Some((_, data)) = self.txn.iter().find(|(t, _)| *t == n) {

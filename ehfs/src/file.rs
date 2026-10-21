@@ -162,14 +162,26 @@ impl<D: BlockDevice> Volume<D> {
         let length = (size - offset).min(buf.len() as u64) as usize;
         let mut block = vec![0u8; BLOCK_SIZE];
         let mut done = 0;
+        // Whole blocks straight into the buffer: every extent run is one
+        // request, all of them one read_many (P11).
+        let mut runs: Vec<(u64, usize, usize)> = Vec::new();
         while done < length {
             let pos = offset + done as u64;
             let inner = (pos % BLOCK_SIZE as u64) as usize;
             let n = (BLOCK_SIZE - inner).min(length - done);
-            let (b, _) = self.fork_map(&desc, cnid, resource, pos / BLOCK_SIZE as u64)?;
+            let (b, left) = self.fork_map(&desc, cnid, resource, pos / BLOCK_SIZE as u64)?;
+            if inner == 0 && n == BLOCK_SIZE {
+                let whole = ((length - done) / BLOCK_SIZE).min(left as usize).max(1);
+                runs.push((b, done, whole * BLOCK_SIZE));
+                done += whole * BLOCK_SIZE;
+                continue;
+            }
             self.read_block(b, &mut block)?;
             buf[done..done + n].copy_from_slice(&block[inner..inner + n]);
             done += n;
+        }
+        if !runs.is_empty() {
+            self.dev_read_runs(&runs, buf)?;
         }
         Ok(length)
     }

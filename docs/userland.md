@@ -90,6 +90,7 @@ libstela 的 `entry!` 在呼叫 `main` 前 `take_args()`：從主 port 不等待
 | `process` | `spawn(file, args, [h1, h2, h3])`、`spawn_with(…, caps)`、`capability(kind)`、`pass(h, rights)`（複製一份可轉移的）、`standard_handles`、`wait`、`wait_forever`、`kill`、`this`、`list`、`memory`、`uptime`、`args`、`shutdown`／`reboot`（§2.3） |
 | `path` | `Location { volume, parts }`、`resolve(cwd, input)` |
 | `line` | `LineEditor`：`feed(char) -> Edit` |
+| P11 新增 | `wait`（WaitSet）、`pipe`、`pipeline`（解析）、`io`（`[5]` 標準輸入）、`http`（GET、轉址、chunked、連結解析，`docs/apps.md` §4）；`process::hardware`、`process::open`（`ProcessOpen`）；`spawn` 回 `JoinHandle`（`docs/process.md` §8.1） |
 
 ### 4.1 heap
 
@@ -240,14 +241,16 @@ fn main() -> i64 {
 | selftest "processes" | `proctest` 跑兩次（第二次前後 PMM 頁框數相同、沒有 Zombie） |
 | `proctest`（使用者程式） | heap：1 MiB 的 `Vec`、1000 個 `Box`；自己的參數；從 `Initrd:/proctest` 啟動自己並傳 300 bytes 的參數（走 Memory）→ exit 42、再等一次同樣的值；另一個永遠等的子行程：10 ms 逾時、行程表裡有兩個 proctest、kill → 137；spawn 資料夾 → `IsDir`、wait 檔案 → `WrongType`、wait 自己 → `AccessDenied`；`SysInfo` 的記憶體與時間 |
 | `make test-fb` | 一般 kernel：看到 `STELA shell` 後打 `uptime`，看到 `uptime:` 後 screendump |
-| `make test-shell` | 一般 kernel + AHCI 測試磁碟：`vols`、`ls Data:/`（`welcome.txt`）、`mkdir t`、`cd t`、`pwd`（`Data:/t`）、`cat nothing`（`cat: Data:/t/nothing: not found`）、`run hello`（輸出與 `exited with code 0`）、`ps`（有 shell）、`mem`、`uptime`；每個指令在前一個指令的那一行出現後才打 |
+| `make test-shell` | 一般 kernel + AHCI 測試磁碟：`vols`、`ls Data:/`（`welcome.txt`）、`mkdir t`、`cd t`、`pwd`（`Data:/t`）、`cat nothing`（`cat: Data:/t/nothing: not found`）、`run hello`（輸出與 `exited with code 0`）、`ps`（有 shell）、`mem`、`uptime`；每個指令在前一個指令的那一行出現後才打。P11：歷史與游標（`{up}{up}`、`vls{left}{left}o{end}`）、`hwinfo`、`cat /welcome.txt \| grep -i stela \| wc -l`、`grep -n`、`cp -r`、`find -name`、`date`、背景的 `Monitor.app &` |
+| P11 的應用程式 | `make test-editor`（Kalamos）、`make test-browser`（Periplus）、`make test-window`（剪貼簿），見 `docs/apps.md` |
 
 `tools/qemu_test.py --type TRIGGER TEXT`：把文字轉成 QKeyCode（大寫與 `:`、`_` 用 shift），可以給很多次，依序在各自的 TRIGGER 出現時打。
 
 ## 9. 已知限制
 
 - P11 起 `ThreadCreate` 回 Thread handle、有 `ThreadJoin`（`docs/process.md` §8.1）；沒有單一執行緒的 kill。
-- 沒有環境變數；管線與重新導向只接程式（內建指令不行，例如 `ls | wc`）、沒有 `2>`、引號與跳脫；背景工作不能重新導向；`run` 的程式拿不到鍵盤（除非它自己 `InputAttach`）。
+- 沒有環境變數；管線與重新導向只接程式（內建指令不行，例如 `ls | wc`；P11 K33 起 `cat`、`echo` 等有程式版，`docs/apps.md` §1）、沒有 `2>`、引號與跳脫、萬用字元展開；背景工作不能重新導向；`run` 的程式拿不到鍵盤（除非它自己 `InputAttach`）。
+- 前景工作執行時打的字轉給它的 tty，它沒讀就結束時那些字會遺失（Unix 會留給 shell）。
 - shell 一行 200 字元（P11 起有歷史與游標移動，§6.2；沒有 Tab 補完、搜尋歷史）；`cp` 整個檔案讀進記憶體。
 - 行程表的已結束紀錄永遠不清（`ps` 只顯示數量）。
 - heap 不把記憶體還給 kernel；沒有 `realloc` 的就地成長（GlobalAlloc 的預設：配新的再複製）。

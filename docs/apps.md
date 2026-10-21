@@ -2,6 +2,15 @@
 
 P11 的 H 部分讓 STELA 有日常用得到的程式。名稱都是**暫名**（使用者之後決定）。
 
+| 程式 | 在哪裡 | 怎麼開 | 一句話 |
+|---|---|---|---|
+| 命令列工具（§1） | `Initrd:/bin/` | shell 直接打名字 | `grep`、`sort`、`find`、`tar`… 可以用 `\|` 串 |
+| `Kalamos.app`（§2） | `Initrd:/` | Mouseion 雙擊 `.txt`、`run Kalamos.app 檔案` | 純文字編輯器 |
+| `Monitor.app`（§3） | `Initrd:/` | Mouseion 的 Special > Monitor、`Monitor.app &` | 行程、記憶體、網路；結束行程 |
+| `Periplus.app`（§4） | `Initrd:/` | `run Periplus.app [網址]` | 只有 HTTP 的小瀏覽器 |
+
+它們都用 toolbox 的新元件（`docs/toolbox.md` §6.1–6.2：`TextView`、對話框）與系統剪貼簿（`docs/window.md` §3）。
+
 ## 1. 命令列工具（`Initrd:/bin/`，P11 K33）
 
 **比喻**：shell 的內建指令像瑞士刀上的幾把小刀；`Initrd:/bin/` 是工具箱，每樣工具一個程式，可以用 `|` 串起來（`docs/userland.md` §6.1）。

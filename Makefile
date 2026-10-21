@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
@@ -19,7 +19,7 @@ INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
 # program at Name.app/exec with Name.app/info.txt; the rest sit in the
 # initrd's root.
-BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic
+BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic kalamos:Kalamos
 BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
 INITRD_ROOT := $(BUILD)/initrd-root
 
@@ -65,7 +65,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox bin $(USER_PROGRAMS)
 
 .PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -175,7 +175,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion
+test: test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -647,9 +647,9 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 
 # Mouseion (2560x1600, 16x32 font, 64-pixel icons in 160x112 cells; the
 # desktop's volume icons on the right: Boot, Data, Initrd, Tmp): double
-# click Data, then welcome.txt in Data's window (the viewer opens it),
-# then Initrd, then Terminal.app (the third icon, after Classic.app and
-# Echo.app) in Initrd's window (a second terminal
+# click Data, then welcome.txt in Data's window (Kalamos opens it, P11),
+# then Initrd, then Terminal.app (the fourth icon, after Classic.app,
+# Echo.app and Kalamos.app) in Initrd's window (a second terminal
 # starts). The screen shows the volume icons and the new terminal active.
 MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
 	--expect-rect 300,192,100,10,\#c8763c
@@ -661,13 +661,13 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --timeout 120 --screendump $(BUILD)/mouseion.ppm --log $(BUILD)/test-mouseion.log \
 		--click "mouseion: started Terminal" 2464 204 2 \
 		--click "mouseion: opened Data:/" 256 232 2 \
-		--click "viewer: Data:/welcome.txt" 2464 316 2 \
+		--click "kalamos: opened Data:/welcome.txt" 2464 316 2 \
 		--click "mouseion: opened Initrd:/" 296 274 1 \
 		--type "mouseion: selected Classic.app" "{delete}" \
 		--type "mouseion: asking" "\n" \
-		--click "mouseion: delete Classic.app" 616 272 2 \
+		--click "mouseion: delete Classic.app" 776 272 2 \
 		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
-		--expect "viewer: Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
+		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
 		--expect "mouseion: asking: Delete \"Classic.app\"?" \
 		--expect "mouseion: delete Classic.app: read-only volume" \
 		--expect "mouseion: started Terminal" --expect "STELA shell" \
@@ -680,6 +680,28 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
 		-device ide-hd,drive=sata1,bus=ide.1
+
+# The editor (P11, docs/apps.md §2): Kalamos.app opens a file that does
+# not exist yet, the text is typed over QMP and saved with Ctrl-S; Ctrl-Q
+# closes it, the shell shuts down, and the host compares the file.
+test-editor: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-editor.img
+	python3 tools/qemu_test.py --exit-code 0 --timeout 120 --log $(BUILD)/test-editor.log \
+		--type "STELA shell" "run Kalamos.app /notes.txt\n" \
+		--type "kalamos: new Data:/notes.txt" "Hello from Kalamos.\nThe second line\n" \
+		--send-keys "kalamos: modified" "ctrl-s" \
+		--send-keys "kalamos: saved Data:/notes.txt" "ctrl-q" \
+		--type "Kalamos exited with code 0" "shutdown\n" \
+		--expect "kalamos: new Data:/notes.txt" --expect "kalamos: modified" \
+		--expect "kalamos: saved Data:/notes.txt (36 bytes)" --expect "kalamos: closed" \
+		--expect "power: turning off" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-editor.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	rm -f $(BUILD)/notes.txt
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-editor.img out /notes.txt $(BUILD)/notes.txt
+	printf 'Hello from Kalamos.\nThe second line\n' | cmp - $(BUILD)/notes.txt
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-editor.img | grep -q "unmounted cleanly"
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.
 EHFS_TOOLS  := $(BUILD)/host/ehfs

@@ -56,3 +56,33 @@ shell 的 `cp` 多了 `cp -r 來源 目的`：整個資料夾（遞迴，最深 
 - 沒有萬用字元展開（shell 不展開 `*`；`find -name` 自己比對）、沒有環境變數、沒有 `PATH` 設定（搜尋順序固定）。
 - 工具一次讀完整個輸入（`sort`、`tail` 本來就要；`grep`、`wc` 也是），很大的輸入會用很多記憶體。
 - `grep` 只找子字串（沒有正規表示式）；`sort` 只依整行或開頭的整數。
+
+## 2. 文字編輯器 `Kalamos.app`（P11 K34）
+
+**比喻**：Viewer 是看書，Kalamos（κάλαμος，蘆葦筆）是寫字——同樣的紙，多了一枝筆和橡皮擦。
+
+```
+ Kalamos.app [檔案]     檔案（Volume:/路徑，或從工作資料夾算）；不存在就是新文件
+ File   New  Open...  Save  Save As...  -  Close      Ctrl-N  Ctrl-O  Ctrl-S  Ctrl-Shift-S  Ctrl-Q/W
+ Edit   Undo  -  Cut  Copy  Paste  Select All         Ctrl-Z  Ctrl-X  Ctrl-C  Ctrl-V  Ctrl-A
+ View   Small Font（8x16）  Large Font（16x32）
+```
+
+- 一個視窗一份文件（80 欄 × 30 列起，可以改大小；文字自動折行），內容是 toolbox 的 `TextView`（`docs/toolbox.md` §6.1）：游標、Shift 選取、滑鼠拖曳選取、捲軸、PgUp/PgDn、Tab = 4 個空白。
+- UTF-8 純文字、`\n` 換行（讀進來的 `\r` 會留著）；最大 4 MiB。
+- 標題是檔名，有未存的修改時前面加 `* `（計畫寫 `•`，但視窗伺服器的字型只有 ASCII——計畫外的決定）。
+- Save：寫回原檔（`CREATE | TRUNCATE`）；沒有檔名（New 之後）或 Save As 時用 `dialog::save_file`。Open 用 `dialog::open_file`。
+- New、Open、Close（含關閉框）遇到未存的修改先問：`alert`「Save the changes to "x"?」Cancel／Don't Save／Save（Save 是預設）。
+- Undo 是一步（連續打字算一步，`docs/toolbox.md` §6.1），再按一次是重做。剪貼簿是系統的（`docs/window.md` §3）。
+- Mouseion 雙擊 `.txt` 開 Kalamos（以前是 Viewer；Viewer 保留，給其他文件與唯讀檢視）。
+- 印到 `[1]`（測試用）：`kalamos: opened X (N bytes)`、`kalamos: new X`、`kalamos: modified`（第一次變成未存）、`kalamos: saved X (N bytes)`、`kalamos: closed`。
+
+### 2.1 測試
+
+`make test-editor`（加進 `make test`）：一般 kernel + AHCI 測試磁碟；shell `run Kalamos.app /notes.txt`（新文件）→ QMP 打兩行字 → `kalamos: modified` 後 Ctrl-S → `kalamos: saved Data:/notes.txt (36 bytes)` → Ctrl-Q → `Kalamos exited with code 0` → shell `shutdown`；host 用 `ehfs-cp out` 拿出 `/notes.txt` 與預期的內容 `cmp`，`fsck.ehfs` 確認正常卸載。`make test-mouseion` 雙擊 welcome.txt 看到 `kalamos: opened Data:/welcome.txt`。
+
+### 2.2 限制
+
+- 沒有尋找／取代、多份文件、自動存檔、行號、語法顏色；Shift-點選不會延伸選取（視窗伺服器的滑鼠事件沒有帶修飾鍵）。
+- 非 ASCII 的字可以讀寫，但字型只畫得出 ASCII（其他字是方框）。
+- 對話框的互動沒有自動測試。

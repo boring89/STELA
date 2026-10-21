@@ -1,0 +1,23 @@
+[package]
+name = "kalamos"
+description = "Kalamos: a text editor (working name, from the Greek for reed pen)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "kalamos"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+toolbox = { path = "../toolbox" }
+bin = { path = "../bin" }
+
+[lints]
+workspace = true

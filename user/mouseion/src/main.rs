@@ -9,8 +9,8 @@
 //!  scroll, view) and each file its icon position, in their Finder
 //!  information (eHFS; FAT and the initrd do not keep it)
 //!  double click: folder or volume → its window; Name.app or a program →
-//!  run it; .txt → Viewer.app; drag an icon: within its window → move it,
-//!  onto a folder, volume or another window → move (same volume) or copy
+//!  run it; .txt → Kalamos.app (P11; other documents → Viewer.app);
+//!  drag an icon: within its window → move it, onto a folder, volume or another window → move (same volume) or copy
 //! ```
 //!
 //! At start Mouseion also opens `Initrd:/Terminal.app` (the startup item
@@ -696,7 +696,8 @@ impl Mouseion {
                     self.run(h.0, &[name], folder, folder);
                 }
             }
-            Kind::Text => self.open_with_viewer(&child_path, folder),
+            // P11: text files open in Kalamos, the editor (docs/apps.md).
+            Kind::Text => self.open_with("Kalamos.app", "Kalamos", &child_path, folder),
             Kind::Document => {
                 let Ok(h) = fs::open_by_id(folder, item.id) else {
                     return;
@@ -706,20 +707,21 @@ impl Mouseion {
                 if fs::read(h.0, &mut magic, 0) == Ok(4) && &magic == b"\x7FELF" {
                     self.run(h.0, &[&item.name], folder, folder);
                 } else {
-                    self.open_with_viewer(&child_path, folder);
+                    self.open_with("Viewer.app", "Viewer", &child_path, folder);
                 }
             }
         }
     }
 
-    fn open_with_viewer(&self, path: &str, cwd: Handle) {
+    /// Opens `path` with the application `bundle` (in `Initrd:/`).
+    fn open_with(&self, bundle: &str, name: &str, path: &str, cwd: Handle) {
         let Ok(initrd) = fs::volume_open("Initrd") else {
             return;
         };
         let initrd = Owned(initrd);
-        if let Ok(viewer) = fs::open(initrd.0, "Viewer.app", open::READ) {
-            let viewer = Owned(viewer);
-            self.run(viewer.0, &["Viewer", path], cwd, initrd.0);
+        if let Ok(app) = fs::open(initrd.0, bundle, open::READ) {
+            let app = Owned(app);
+            self.run(app.0, &[name, path], cwd, initrd.0);
         }
     }
 

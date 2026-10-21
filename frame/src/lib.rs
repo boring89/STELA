@@ -30,6 +30,7 @@ pub mod pci;
 pub mod power;
 #[cfg(target_os = "none")]
 pub mod qemu;
+pub mod random;
 #[cfg(target_os = "none")]
 pub mod serial;
 #[cfg(target_os = "none")]

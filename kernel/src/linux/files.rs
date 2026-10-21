@@ -11,7 +11,7 @@ use super::errno::{
     EROFS, ESPIPE, EXDEV,
 };
 use super::fd::FdError;
-use super::path::{self, Config, Device, PathError, Target};
+use super::path::{self, Config, Device, PathError, Proc, Target};
 use super::state::{FileState, OpenFile};
 use super::sys::{LinuxResult, file_of, read_user, write_user};
 use crate::task::Process;
@@ -103,6 +103,10 @@ enum Found {
     EtcDir,
     /// A generated file in `/etc`.
     Config(Config),
+    /// `/dev/pts`.
+    PtsDir,
+    /// Under `/proc`.
+    Proc(Proc),
     /// An item on a volume.
     Item(Node, NodeInfo),
 }
@@ -148,9 +152,21 @@ fn resolve(p: &Process, parts: &[String]) -> Result<Found, i64> {
     match path::target(parts) {
         Target::Root => Ok(Found::Root),
         Target::DevDir => Ok(Found::DevDir),
+        Target::Device(Device::Pts(n)) if super::pty::find(n).is_none() => Err(ENOENT),
         Target::Device(d) => Ok(Found::Device(d)),
         Target::EtcDir => Ok(Found::EtcDir),
         Target::Config(c) => Ok(Found::Config(c)),
+        Target::PtsDir => Ok(Found::PtsDir),
+        Target::Missing => Err(ENOENT),
+        Target::Proc(proc) => {
+            if let Some(pid) = proc_pid(proc)
+                && pid != p.id()
+                && crate::task::process::find(pid).is_none()
+            {
+                return Err(ENOENT);
+            }
+            Ok(Found::Proc(proc))
+        }
         Target::Volume(name, rest) => {
             let volume = volume(p, &name)?;
             let info = walk(&volume, &rest)?;
@@ -247,8 +263,30 @@ pub fn openat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
         Err(e) => return Err(e),
     };
     let file = match found {
-        Found::Root | Found::DevDir | Found::EtcDir if writing => return Err(EISDIR),
-        Found::Root | Found::DevDir | Found::EtcDir => dir(None),
+        Found::Root | Found::DevDir | Found::EtcDir | Found::PtsDir if writing => {
+            return Err(EISDIR);
+        }
+        Found::Root | Found::DevDir | Found::EtcDir | Found::PtsDir => dir(None),
+        Found::Proc(proc) if proc.is_dir() => dir(None),
+        Found::Proc(_) if writing => return Err(errno::EACCES),
+        Found::Proc(proc) => OpenFile::Text {
+            data: proc_text(p, proc)?,
+            offset: SpinLock::new(0),
+        },
+        Found::Device(Device::Random) => OpenFile::Random,
+        Found::Device(Device::Ptmx) => {
+            let (n, tty) = super::pty::create();
+            OpenFile::PtyMaster(
+                tty,
+                n,
+                core::sync::atomic::AtomicBool::new(flags & 0o4000 != 0),
+            )
+        }
+        Found::Device(Device::Pts(n)) => {
+            let tty = super::pty::find(n).ok_or(ENOENT)?;
+            tty.add_user(p.id());
+            OpenFile::Tty(tty)
+        }
         Found::Config(_) if flags & O_DIRECTORY != 0 => return Err(ENOTDIR),
         Found::Config(_) if writing => return Err(EROFS),
         Found::Config(c) => OpenFile::Text {
@@ -378,13 +416,32 @@ pub fn fcntl(p: &Process, fd: u64, cmd: u64, arg: u64) -> LinuxResult {
         F_SETFL => {
             let file = Arc::clone(&fds.get(fd).map_err(fd_error)?.file);
             drop(fds);
-            if let OpenFile::File { state, .. } = &*file {
-                let mut s = state.lock();
-                s.append = arg & O_APPEND != 0;
-                s.flags = (s.flags & !O_APPEND) | (arg & O_APPEND);
+            const O_NONBLOCK: u64 = 0o4000;
+            match &*file {
+                OpenFile::File { state, .. } => {
+                    let mut s = state.lock();
+                    s.append = arg & O_APPEND != 0;
+                    s.flags = (s.flags & !O_APPEND) | (arg & O_APPEND);
+                }
+                OpenFile::PipeRead(_, nb)
+                | OpenFile::PipeWrite(_, nb)
+                | OpenFile::PtyMaster(_, _, nb) => {
+                    nb.store(arg & O_NONBLOCK != 0, core::sync::atomic::Ordering::Relaxed);
+                }
+                _ => {}
             }
             Ok(0)
         }
+        // Record locks (F_GETLK, F_SETLK, F_SETLKW and the OFD ones): one
+        // writer at a time is all STELA offers, so every lock is granted
+        // and F_GETLK finds none (P12).
+        5 | 36 => {
+            drop(fds);
+            // struct flock: l_type (i16) = F_UNLCK (2).
+            write_user(p, arg, &2u16.to_le_bytes())?;
+            Ok(0)
+        }
+        6 | 7 | 37 | 38 => Ok(0),
         _ => Err(EINVAL),
     }
 }
@@ -396,6 +453,20 @@ fn read_file(file: &OpenFile, len: usize) -> Result<Vec<u8>, i64> {
         OpenFile::Tty(tty) => tty.read(len, None).map_err(errno::from_error),
         OpenFile::Null => Ok(Vec::new()),
         OpenFile::Zero => Ok(vec![0u8; len]),
+        OpenFile::Random => {
+            let mut buf = vec![0u8; len];
+            frame::random::fill(&mut buf);
+            Ok(buf)
+        }
+        OpenFile::PtyMaster(tty, _, nonblock) => {
+            let deadline = nonblock
+                .load(core::sync::atomic::Ordering::Relaxed)
+                .then_some(0);
+            tty.master_read(len, deadline).map_err(|e| match e {
+                abi::Error::TimedOut => errno::EAGAIN,
+                e => errno::from_error(e),
+            })
+        }
         OpenFile::Dir { .. } => Err(EISDIR),
         OpenFile::Socket(socket) => super::socket::read(socket, len),
         OpenFile::PipeRead(end, nonblock) => {
@@ -442,7 +513,14 @@ fn write_file(file: &OpenFile, data: &[u8]) -> Result<usize, i64> {
             tty.write(data);
             Ok(data.len())
         }
-        OpenFile::Null | OpenFile::Zero => Ok(data.len()),
+        OpenFile::Null | OpenFile::Zero | OpenFile::Random => Ok(data.len()),
+        OpenFile::PtyMaster(tty, ..) => {
+            // Typed on the terminal: through its line discipline.
+            for chunk in data.utf8_chunks() {
+                tty.feed_str(chunk.valid());
+            }
+            Ok(data.len())
+        }
         OpenFile::Dir { .. } => Err(EISDIR),
         OpenFile::Socket(socket) => super::socket::write(socket, data),
         OpenFile::Text { .. } | OpenFile::PipeRead(..) => Err(EBADF),
@@ -603,6 +681,7 @@ const S_IFREG: u32 = 0o100000;
 const S_IFCHR: u32 = 0o020000;
 const S_IFSOCK: u32 = 0o140000;
 const S_IFIFO: u32 = 0o010000;
+const S_IFLNK: u32 = 0o120000;
 
 /// The kernel's `struct stat` on x86-64 (144 bytes).
 fn stat_bytes(dev: u64, ino: u64, mode: u32, size: u64, ctime: u64, mtime: u64) -> [u8; 144] {
@@ -636,7 +715,11 @@ fn stat_of(found: &Found) -> [u8; 144] {
             0,
             0,
         ),
-        Found::Device(d) => stat_bytes(0, 3 + *d as u64, S_IFCHR | 0o666, 0, 0, 0),
+        Found::Device(d) => stat_bytes(0, d.ino(), S_IFCHR | 0o666, 0, 0, 0),
+        Found::PtsDir => stat_bytes(0, 13, S_IFDIR | 0o755, 0, 0, 0),
+        Found::Proc(proc) if proc.is_dir() => stat_bytes(0, 14, S_IFDIR | 0o555, 0, 0, 0),
+        Found::Proc(Proc::Exe(_) | Proc::Fd(..)) => stat_bytes(0, 15, S_IFLNK | 0o777, 0, 0, 0),
+        Found::Proc(_) => stat_bytes(0, 16, S_IFREG | 0o444, 0, 0, 0),
         Found::Item(node, info) => {
             let mode = if info.is_dir {
                 S_IFDIR | 0o755
@@ -668,6 +751,10 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
         OpenFile::Tty(_) => stat_bytes(0, 6, S_IFCHR | 0o620, 0, 0, 0),
         OpenFile::Null => stat_bytes(0, 3, S_IFCHR | 0o666, 0, 0, 0),
         OpenFile::Zero => stat_bytes(0, 4, S_IFCHR | 0o666, 0, 0, 0),
+        OpenFile::Random => stat_bytes(0, 11, S_IFCHR | 0o666, 0, 0, 0),
+        OpenFile::PtyMaster(_, n, _) => {
+            stat_bytes(0, 0x2000 + u64::from(*n), S_IFCHR | 0o620, 0, 0, 0)
+        }
         OpenFile::Socket(_) => stat_bytes(0, 7, S_IFSOCK | 0o777, 0, 0, 0),
         OpenFile::PipeRead(..) | OpenFile::PipeWrite(..) => {
             stat_bytes(0, 10, S_IFIFO | 0o600, 0, 0, 0)
@@ -750,8 +837,10 @@ pub fn unlinkat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
     let parts = parts_of(p, dirfd, ptr)?;
     let is_dir = match resolve(p, &parts)? {
         Found::Item(_, info) => info.is_dir,
-        Found::Root | Found::DevDir | Found::EtcDir => return Err(errno::EBUSY),
-        Found::Device(_) | Found::Config(_) => return Err(errno::EACCES),
+        Found::Root | Found::DevDir | Found::EtcDir | Found::PtsDir => {
+            return Err(errno::EBUSY);
+        }
+        Found::Device(_) | Found::Config(_) | Found::Proc(_) => return Err(errno::EACCES),
     };
     if flags & AT_REMOVEDIR != 0 && !is_dir {
         return Err(ENOTDIR);
@@ -804,6 +893,7 @@ pub fn renameat(p: &Process, olddir: u64, old: u64, newdir: u64, new: u64) -> Li
 const DT_CHR: u8 = 2;
 const DT_DIR: u8 = 4;
 const DT_REG: u8 = 8;
+const DT_LNK: u8 = 10;
 
 /// The entries of a folder for `getdents64`: (inode, type, name), with
 /// `.` and `..` first.
@@ -820,8 +910,52 @@ fn listing(p: &Process, node: &Option<Node>, path: &str) -> Result<Vec<(u64, u8,
             }
         }
         None if path == "/dev" => {
-            for (i, name) in ["null", "zero", "tty"].iter().enumerate() {
-                entries.push((3 + i as u64, DT_CHR, String::from(*name)));
+            for (ino, name) in [
+                (3, "null"),
+                (4, "zero"),
+                (5, "tty"),
+                (11, "urandom"),
+                (11, "random"),
+                (12, "ptmx"),
+            ] {
+                entries.push((ino, DT_CHR, String::from(name)));
+            }
+            entries.push((13, DT_DIR, String::from("pts")));
+        }
+        None if path == "/dev/pts" => {
+            for n in super::pty::numbers() {
+                entries.push((0x1000 + u64::from(n), DT_CHR, alloc::format!("{n}")));
+            }
+        }
+        None if path == "/proc" => {
+            entries.push((14, DT_DIR, String::from("self")));
+            for name in ["cpuinfo", "meminfo", "uptime"] {
+                entries.push((16, DT_REG, String::from(name)));
+            }
+            for (id, _, _, code) in crate::task::process::list() {
+                if code.is_none() {
+                    entries.push((0x10_0000 + id, DT_DIR, alloc::format!("{id}")));
+                }
+            }
+        }
+        None if path.starts_with("/proc/") && path.ends_with("/fd") => {
+            if let Some(linux) = p.linux() {
+                let numbers = linux.fds.lock().numbers();
+                for fd in numbers {
+                    entries.push((0x20_0000 + fd, DT_LNK, alloc::format!("{fd}")));
+                }
+            }
+        }
+        None if path.starts_with("/proc/") => {
+            for (name, kind) in [
+                ("exe", DT_LNK),
+                ("maps", DT_REG),
+                ("stat", DT_REG),
+                ("status", DT_REG),
+                ("cmdline", DT_REG),
+                ("fd", DT_DIR),
+            ] {
+                entries.push((17, kind, String::from(name)));
             }
         }
         None if path == "/etc" => entries.push((9, DT_REG, String::from("resolv.conf"))),
@@ -839,6 +973,7 @@ fn listing(p: &Process, node: &Option<Node>, path: &str) -> Result<Vec<(u64, u8,
             }
             entries.push((2, DT_DIR, String::from("dev")));
             entries.push((8, DT_DIR, String::from("etc")));
+            entries.push((14, DT_DIR, String::from("proc")));
         }
     }
     Ok(entries)
@@ -876,4 +1011,306 @@ pub fn getdents64(p: &Process, fd: u64, buf: u64, count: u64) -> LinuxResult {
     }
     write_user(p, buf, &out)?;
     Ok(out.len() as u64)
+}
+
+/// The process a `/proc` entry is about (`None`: the caller).
+fn proc_pid(proc: Proc) -> Option<u64> {
+    match proc {
+        Proc::PidDir(pid)
+        | Proc::Exe(pid)
+        | Proc::Maps(pid)
+        | Proc::Stat(pid)
+        | Proc::Status(pid)
+        | Proc::Cmdline(pid)
+        | Proc::FdDir(pid)
+        | Proc::Fd(pid, _) => pid,
+        Proc::Dir | Proc::Cpuinfo | Proc::Meminfo | Proc::Uptime => None,
+    }
+}
+
+/// What `/proc/N/stat` and `status` report about process `pid`.
+fn proc_info(p: &Process, pid: u64) -> Result<super::procfs::ProcInfo, i64> {
+    let process = crate::task::process::find(pid).ok_or(ENOENT)?;
+    let linux = process.linux();
+    let load = core::sync::atomic::Ordering::Relaxed;
+    Ok(super::procfs::ProcInfo {
+        pid,
+        name: String::from(process.name()),
+        state: if process.exiting() {
+            'Z'
+        } else if pid == p.id() {
+            'R'
+        } else {
+            'S'
+        },
+        ppid: linux.map_or(0, |l| l.parent.load(load)),
+        pgid: linux.map_or(pid, |l| l.pgid.load(load)),
+        sid: linux.map_or(pid, |l| l.sid.load(load)),
+        threads: process.live_threads() as u64,
+        pages: 0,
+    })
+}
+
+/// The bytes of a `/proc` file.
+fn proc_text(p: &Process, proc: Proc) -> Result<Vec<u8>, i64> {
+    let me = p.id();
+    let pid = proc_pid(proc).unwrap_or(me);
+    let text = match proc {
+        Proc::Cpuinfo => {
+            let info = frame::cpuid::info();
+            let mhz = frame::time::tsc_hz() / 1_000_000;
+            super::procfs::cpuinfo(frame::cpu::online(), &info.vendor, &info.brand, mhz)
+        }
+        Proc::Meminfo => {
+            let (free, total) = frame::mm::pmm::stats();
+            super::procfs::meminfo(total as u64 * 4096, free as u64 * 4096)
+        }
+        Proc::Uptime => super::procfs::uptime(frame::time::now_ns()),
+        Proc::Stat(_) => super::procfs::stat(&proc_info(p, pid)?),
+        Proc::Status(_) => super::procfs::status(&proc_info(p, pid)?),
+        Proc::Cmdline(_) => {
+            let mut b = proc_info(p, pid)?.name;
+            b.push('\0');
+            b
+        }
+        Proc::Maps(_) if pid == me => maps_text(p)?,
+        Proc::Exe(_) | Proc::Fd(..) => return Err(errno::EINVAL),
+        _ => return Err(ENOENT),
+    };
+    Ok(text.into_bytes())
+}
+
+/// `/proc/self/maps`: the program, the break area, the mappings, the
+/// stack.
+fn maps_text(p: &Process) -> Result<String, i64> {
+    let linux = p.linux().ok_or(ENOENT)?;
+    let exe = linux.exe.lock().clone();
+    let (start, mapped) = {
+        let m = linux.memory.lock();
+        (m.start, m.mapped)
+    };
+    let mut out = super::procfs::maps_line(0x40_0000, start, false, true, &exe);
+    if mapped > start {
+        out.push_str(&super::procfs::maps_line(
+            start, mapped, true, false, "[heap]",
+        ));
+    }
+    for (at, size) in p.maps().lock().ranges() {
+        out.push_str(&super::procfs::maps_line(at, at + size, true, false, ""));
+    }
+    let top = abi::layout::STACK_TOP;
+    out.push_str(&super::procfs::maps_line(
+        top - abi::layout::STACK_SIZE,
+        top,
+        true,
+        false,
+        "[stack]",
+    ));
+    Ok(out)
+}
+
+/// What `/proc/self/fd/N` points at.
+fn fd_link(p: &Process, fd: u64) -> Result<String, i64> {
+    let file = file_of(p, fd).map_err(|_| ENOENT)?;
+    Ok(match &*file {
+        OpenFile::Tty(_) => String::from("/dev/tty"),
+        OpenFile::Null => String::from("/dev/null"),
+        OpenFile::Zero => String::from("/dev/zero"),
+        OpenFile::Random => String::from("/dev/urandom"),
+        OpenFile::PtyMaster(..) => String::from("/dev/ptmx"),
+        OpenFile::Dir { path, .. } => path.clone(),
+        OpenFile::File { node, .. } => linux_path_of(node),
+        OpenFile::Socket(_) => alloc::format!("socket:[{fd}]"),
+        OpenFile::PipeRead(..) | OpenFile::PipeWrite(..) => alloc::format!("pipe:[{fd}]"),
+        OpenFile::Text { .. } => String::from("/proc"),
+    })
+}
+
+/// The Linux path of a file on a volume.
+fn linux_path_of(node: &Node) -> String {
+    let inner = vfs::path_of(&node.volume, node.id).unwrap_or_default();
+    let top = if node.volume.name == "Tmp" {
+        "tmp"
+    } else {
+        node.volume.name.as_str()
+    };
+    alloc::format!("/{top}/{}", inner.trim_start_matches('/'))
+        .trim_end_matches('/')
+        .into()
+}
+
+/// `readlinkat(dirfd, path, buf, size)` (and `readlink`): only `/proc`'s
+/// links exist (`exe`, `fd/N`); other files are not links (`EINVAL`).
+pub fn readlinkat(p: &Process, dirfd: u64, ptr: u64, buf: u64, size: u64) -> LinuxResult {
+    let parts = parts_of(p, dirfd, ptr)?;
+    let target = match resolve(p, &parts)? {
+        Found::Proc(Proc::Exe(pid)) => {
+            let pid = pid.unwrap_or(p.id());
+            let process = if pid == p.id() {
+                None
+            } else {
+                Some(crate::task::process::find(pid).ok_or(ENOENT)?)
+            };
+            let linux = match &process {
+                Some(other) => other.linux(),
+                None => p.linux(),
+            }
+            .ok_or(ENOENT)?;
+            let exe = linux.exe.lock().clone();
+            if exe.is_empty() {
+                return Err(ENOENT);
+            }
+            exe
+        }
+        Found::Proc(Proc::Fd(None, fd)) => fd_link(p, fd)?,
+        _ => return Err(EINVAL),
+    };
+    let n = target.len().min(size as usize);
+    write_user(p, buf, &target.as_bytes()[..n])?;
+    Ok(n as u64)
+}
+
+/// The path `/proc/self/exe` stands for, for `execve` (else the path).
+pub(super) fn exec_alias(p: &Process, path: &str) -> String {
+    if matches!(path, "/proc/self/exe" | "/proc/thread-self/exe")
+        && let Some(linux) = p.linux()
+    {
+        let exe = linux.exe.lock().clone();
+        if !exe.is_empty() {
+            return exe;
+        }
+    }
+    String::from(path)
+}
+
+/// `pread64(fd, buf, len, offset)`: a file read at `offset`, the file's
+/// own offset unchanged.
+pub fn pread(p: &Process, fd: u64, buf: u64, len: u64, offset: u64) -> LinuxResult {
+    let file = file_of(p, fd)?;
+    let OpenFile::File { node, state } = &*file else {
+        return Err(ESPIPE);
+    };
+    if !state.lock().readable {
+        return Err(EBADF);
+    }
+    let mut data = vec![0u8; len.min(CHUNK as u64) as usize];
+    let n = node
+        .volume
+        .fs
+        .read(node.id, offset, &mut data)
+        .map_err(errno::from_error)?;
+    write_user(p, buf, &data[..n])?;
+    Ok(n as u64)
+}
+
+/// `pwrite64(fd, buf, len, offset)`.
+pub fn pwrite(p: &Process, fd: u64, buf: u64, len: u64, offset: u64) -> LinuxResult {
+    let file = file_of(p, fd)?;
+    let OpenFile::File { node, state } = &*file else {
+        return Err(ESPIPE);
+    };
+    if !state.lock().writable {
+        return Err(EBADF);
+    }
+    let data = read_user(p, buf, len.min(CHUNK as u64) as usize)?;
+    node.volume
+        .fs
+        .write(node.id, offset, &data)
+        .map_err(errno::from_error)?;
+    Ok(data.len() as u64)
+}
+
+/// `ftruncate(fd, length)`.
+pub fn ftruncate(p: &Process, fd: u64, length: u64) -> LinuxResult {
+    let file = file_of(p, fd)?;
+    let OpenFile::File { node, state } = &*file else {
+        return Err(EINVAL);
+    };
+    if !state.lock().writable {
+        return Err(EINVAL);
+    }
+    node.volume
+        .fs
+        .set_size(node.id, length)
+        .map_err(errno::from_error)?;
+    Ok(0)
+}
+
+/// `truncate(path, length)`.
+pub fn truncate(p: &Process, ptr: u64, length: u64) -> LinuxResult {
+    let parts = parts_of(p, AT_FDCWD, ptr)?;
+    match resolve(p, &parts)? {
+        Found::Item(_, info) if info.is_dir => Err(EISDIR),
+        Found::Item(node, _) => {
+            if node.volume.fs.read_only() {
+                return Err(EROFS);
+            }
+            node.volume
+                .fs
+                .set_size(node.id, length)
+                .map_err(errno::from_error)?;
+            Ok(0)
+        }
+        _ => Err(EINVAL),
+    }
+}
+
+/// `fchdir(fd)`.
+pub fn fchdir(p: &Process, fd: u64) -> LinuxResult {
+    let linux = p.linux().ok_or(EBADF)?;
+    match &*file_of(p, fd)? {
+        OpenFile::Dir { path, .. } => {
+            *linux.cwd.lock() = path.clone();
+            Ok(0)
+        }
+        _ => Err(ENOTDIR),
+    }
+}
+
+/// `dup3(fd, to, flags)`.
+pub fn dup3(p: &Process, fd: u64, to: u64, flags: u64) -> LinuxResult {
+    if fd == to || flags & !O_CLOEXEC != 0 {
+        return Err(EINVAL);
+    }
+    let linux = p.linux().ok_or(EBADF)?;
+    let (new, old) = {
+        let mut fds = linux.fds.lock();
+        let r = fds.dup2(fd, to).map_err(fd_error)?;
+        if let Ok(slot) = fds.get_mut(to) {
+            slot.cloexec = flags & O_CLOEXEC != 0;
+        }
+        r
+    };
+    drop(old);
+    Ok(new as u64)
+}
+
+/// Calls that only need the path to exist (`chmod`, `chown`, `utimensat`:
+/// STELA keeps no modes, owners or settable times).
+pub fn exists(p: &Process, dirfd: u64, ptr: u64) -> LinuxResult {
+    if ptr == 0 {
+        // utimensat(fd, NULL, ...): the descriptor itself.
+        file_of(p, dirfd)?;
+        return Ok(0);
+    }
+    let parts = parts_of(p, dirfd, ptr)?;
+    resolve(p, &parts)?;
+    Ok(0)
+}
+
+/// Bytes readable at once (`FIONREAD`).
+pub fn readable_bytes(file: &OpenFile) -> u64 {
+    match file {
+        OpenFile::Tty(tty) => u64::from(tty.readable()),
+        OpenFile::PtyMaster(tty, ..) => u64::from(tty.master_readable()),
+        OpenFile::PipeRead(end, _) => end.0.len() as u64,
+        OpenFile::File { node, state } => {
+            let at = state.lock().offset;
+            node.volume
+                .fs
+                .get(node.id)
+                .map_or(0, |i| i.size.saturating_sub(at))
+        }
+        _ => 0,
+    }
 }

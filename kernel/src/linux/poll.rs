@@ -89,6 +89,13 @@ fn file_events(file: &OpenFile) -> (i16, Option<KernelObject>) {
             }
             (r, Some(KernelObject::PipeWrite(Arc::clone(end))))
         }
+        OpenFile::PtyMaster(tty, ..) => {
+            let read = if tty.master_readable() { POLLIN } else { 0 };
+            (
+                read | POLLOUT,
+                Some(KernelObject::TtyMaster(Arc::clone(tty))),
+            )
+        }
         // Files, folders and devices never block.
         _ => (POLLIN | POLLOUT, None),
     }

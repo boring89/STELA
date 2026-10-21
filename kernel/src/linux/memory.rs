@@ -17,6 +17,7 @@ pub const BRK_MAX: u64 = 256 << 20;
 
 const PROT_WRITE: u64 = 2;
 const PROT_EXEC: u64 = 4;
+const MAP_SHARED: u64 = 0x01;
 const MAP_PRIVATE: u64 = 0x02;
 const MAP_FIXED: u64 = 0x10;
 const MAP_ANONYMOUS: u64 = 0x20;
@@ -77,38 +78,102 @@ pub fn brk(p: &Process, addr: u64) -> u64 {
     addr
 }
 
-/// `mmap(addr, len, prot, flags, fd, offset)`: anonymous private memory
-/// only, placed by the kernel.
+/// `mmap(addr, len, prot, flags, fd, offset)`: anonymous private memory,
+/// or a private copy of a file (P12: `MAP_PRIVATE`, and `MAP_SHARED`
+/// without `PROT_WRITE`, which no one can tell apart from a copy),
+/// placed by the kernel.
 pub fn mmap(
     p: &Process,
     _addr: u64,
     len: u64,
     prot: u64,
     flags: u64,
-    _fd: u64,
-    _off: u64,
+    fd: u64,
+    off: u64,
 ) -> LinuxResult {
     if len == 0 {
         return Err(EINVAL);
     }
-    if flags & MAP_ANONYMOUS == 0 || flags & MAP_PRIVATE == 0 || flags & MAP_FIXED != 0 {
+    if flags & MAP_FIXED != 0 {
         return Err(ENOSYS);
+    }
+    let shared = flags & MAP_SHARED != 0;
+    if flags & MAP_ANONYMOUS == 0 {
+        if shared && prot & PROT_WRITE != 0 {
+            return Err(ENOSYS);
+        }
+        if !shared && flags & MAP_PRIVATE == 0 {
+            return Err(EINVAL);
+        }
+    } else if shared || flags & MAP_PRIVATE == 0 {
+        return Err(ENOSYS);
+    }
+    if !off.is_multiple_of(4096) {
+        return Err(EINVAL);
     }
     if prot & PROT_EXEC != 0 {
         return Err(EACCES);
     }
     let size = len.checked_next_multiple_of(4096).ok_or(ENOMEM)?;
+    let anonymous = flags & MAP_ANONYMOUS != 0;
     let start = p.maps().lock().alloc(size).ok_or(ENOMEM)?;
     let flags = UserFlags {
         writable: prot & PROT_WRITE != 0,
         executable: false,
     };
     // PROT_NONE is mapped read-only (no pages without access in STELA).
-    if let Err(e) = map_pages(p, start, start + size, flags) {
+    // A file's bytes are copied in while the pages are still writable.
+    let writable = UserFlags {
+        writable: true,
+        executable: false,
+    };
+    let first = if anonymous { flags } else { writable };
+    if let Err(e) = map_pages(p, start, start + size, first) {
         p.maps().lock().free(start);
         return Err(e);
     }
+    if !anonymous {
+        if let Err(e) = copy_file(p, fd, off, start, len) {
+            unmap_pages(p, start, start + size);
+            p.maps().lock().free(start);
+            return Err(e);
+        }
+        if !flags.writable {
+            let mut page = start;
+            while page < start + size {
+                let _ = p.space().protect(page, flags);
+                page += 4096;
+            }
+        }
+    }
     Ok(start)
+}
+
+/// Copies `len` bytes of file `fd` from `off` to `at` (past the end of
+/// the file the pages stay zero).
+fn copy_file(p: &Process, fd: u64, off: u64, at: u64, len: u64) -> Result<(), i64> {
+    let file = super::sys::file_of(p, fd)?;
+    let super::state::OpenFile::File { node, .. } = &*file else {
+        return Err(EACCES);
+    };
+    let mut done = 0u64;
+    let mut buf = alloc::vec![0u8; 64 * 1024];
+    while done < len {
+        let want = ((len - done) as usize).min(buf.len());
+        let n = node
+            .volume
+            .fs
+            .read(node.id, off + done, &mut buf[..want])
+            .map_err(super::errno::from_error)?;
+        if n == 0 {
+            break;
+        }
+        p.space()
+            .write(at + done, &buf[..n])
+            .map_err(|_| super::errno::EFAULT)?;
+        done += n as u64;
+    }
+    Ok(())
 }
 
 /// `munmap(addr, len)`: frees the pages; a whole mapping also gives its

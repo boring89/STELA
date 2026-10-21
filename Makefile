@@ -35,7 +35,7 @@ MUSL_DIR    := $(BUILD)/musl
 MUSL_GCC    := $(MUSL_DIR)/install/bin/musl-gcc
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs
+LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc
 LINUX_DIR   := $(USER_DIR)/linux
 LINUX_CFLAGS := -static -O2 -no-pie -fno-pie -Wall -Wextra -Werror \
                -Wl,-z,max-page-size=4096 -Wl,--build-id=none
@@ -658,7 +658,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "poll exited with code" "run linux/pipe\n" \
 		--type "pipe exited with code" "run linux/threads\n" \
 		--type "threads exited with code" "run linux/procs\n" \
-		--type "procs exited with code" "run linux/hello-std rust\n" \
+		--type "procs exited with code" "run linux/misc\n" \
+		--type "misc exited with code" "run linux/hello-std rust\n" \
 		--type "hello-std exited with code" "run linux/signals\n" \
 		--send-keys "signals: press Ctrl-C" "ctrl-c" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
@@ -677,6 +678,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "threads exited with code 4" \
 		--expect "procs: child said: hello from the child" --expect "argv[1] = one" \
 		--expect "argv[2] = /tmp/script" --expect "procs: OK" --expect "procs exited with code 0" \
+		--expect "misc: pty /dev/pts/0 works" --expect "misc: exe /Initrd/linux/misc, fd 1 is /dev/tty" \
+		--expect "misc: OK" --expect "misc exited with code 0" \
 		--expect "hello-std: 8 threads added up to 36000" --expect "hello-std: channel [0, 1, 4, 9, 16]" \
 		--expect "hello-std: OK" --expect "hello-std exited with code 0" \
 		--expect "signals: handlers, mask and timers work" \

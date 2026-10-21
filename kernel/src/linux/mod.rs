@@ -15,6 +15,7 @@ pub mod errno;
 pub mod fd;
 pub mod nr;
 pub mod path;
+pub mod procfs;
 pub mod signal;
 pub mod stack;
 
@@ -28,6 +29,8 @@ mod memory;
 mod poll;
 #[cfg(target_os = "none")]
 mod process;
+#[cfg(target_os = "none")]
+mod pty;
 #[cfg(target_os = "none")]
 pub mod signals;
 #[cfg(target_os = "none")]

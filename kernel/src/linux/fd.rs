@@ -137,6 +137,13 @@ impl<T: Clone> FdTable<T> {
             .collect()
     }
 
+    /// The open descriptors, lowest first.
+    pub fn numbers(&self) -> Vec<u64> {
+        (0..self.slots.len() as u64)
+            .filter(|&fd| self.slots[fd as usize].is_some())
+            .collect()
+    }
+
     /// Removes the descriptors marked close-on-exec (`execve`) and returns
     /// their files.
     pub fn take_cloexec(&mut self) -> Vec<T> {

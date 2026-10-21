@@ -308,6 +308,7 @@ fn spawn_linux(
         None if vfs::find("Data").is_some() => String::from("/Data"),
         None => String::from("/Initrd"),
     };
+    let program_folder = folder(&initial[3]).map(|n| linux_path(&n));
     // It sees the volumes of [3] and [4] (and /tmp, /dev, /etc).
     let mut volumes: Vec<String> = [folder(&initial[2]), folder(&initial[3])]
         .into_iter()
@@ -342,7 +343,11 @@ fn spawn_linux(
         linux
             .sid
             .store(process.id(), core::sync::atomic::Ordering::Relaxed);
-        *linux.exe.lock() = alloc::format!("/{name}");
+        // /proc/self/exe: the program's folder ([4]) and its name.
+        *linux.exe.lock() = match &program_folder {
+            Some(folder) => alloc::format!("{}/{name}", folder.trim_end_matches('/')),
+            None => alloc::format!("/{name}"),
+        };
         linux.threads.lock().push(Arc::clone(&main));
     }
     match task::spawn_user_linux(&process, elf.entry(), stack.rsp, main) {

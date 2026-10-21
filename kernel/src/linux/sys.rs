@@ -14,7 +14,7 @@ use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::Ordering;
 use elfload::Elf;
 use frame::sync::SpinLock;
 use frame::syscall::SyscallFrame;
@@ -106,8 +106,32 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::PPOLL => poll::ppoll(p, a0, a1, a2),
         nr::SELECT => poll::select(p, [a0, a1, a2, a3, a4]),
         nr::PSELECT6 => poll::pselect6(p, [a0, a1, a2, a3, a4]),
-        // No symbolic links anywhere.
-        nr::READLINK | nr::READLINKAT => Err(errno::ENOENT),
+        // Only /proc's links (P12).
+        nr::READLINK => files::readlinkat(p, files::AT_FDCWD, a0, a1, a2),
+        nr::READLINKAT => files::readlinkat(p, a0, a1, a2, a3),
+        nr::PREAD64 => files::pread(p, a0, a1, a2, a3),
+        nr::PWRITE64 => files::pwrite(p, a0, a1, a2, a3),
+        nr::FTRUNCATE => files::ftruncate(p, a0, a1),
+        nr::TRUNCATE => files::truncate(p, a0, a1),
+        nr::FCHDIR => files::fchdir(p, a0),
+        nr::DUP3 => files::dup3(p, a0, a1, a2),
+        nr::FSYNC | nr::FDATASYNC => file_of(p, a0).map(|_| 0),
+        nr::SYNC | nr::SYNCFS => Ok(0),
+        // No modes, owners or settable times are kept (P12).
+        nr::CHMOD | nr::CHOWN | nr::LCHOWN => files::exists(p, files::AT_FDCWD, a0),
+        nr::FCHMODAT | nr::FCHOWNAT => files::exists(p, a0, a1),
+        nr::FCHMOD | nr::FCHOWN => file_of(p, a0).map(|_| 0),
+        nr::UTIMENSAT => files::exists(p, a0, a1),
+        nr::UTIME | nr::UTIMES => files::exists(p, files::AT_FDCWD, a0),
+        nr::UMASK => Ok(p.linux().map_or(0o022, |l| {
+            u64::from(l.umask.swap(a0 as u32 & 0o777, Ordering::Relaxed))
+        })),
+        nr::GETRLIMIT => prlimit(p, a0, a1),
+        nr::SETRLIMIT => rlimit(a0).map(|_| 0),
+        nr::PRLIMIT64 => prlimit(p, a1, a3),
+        nr::SYSINFO => sysinfo(p, a0),
+        nr::TIMES => times(p, a0),
+        nr::GETRUSAGE => write_user(p, a1, &[0u8; 144]).map(|_| 0),
         nr::IOCTL => ioctl(p, a0, a1, a2),
         nr::BRK => Ok(memory::brk(p, a0)),
         nr::MMAP => memory::mmap(p, a0, a1, a2, a3, a4, a5),
@@ -363,31 +387,78 @@ fn timezone_minutes() -> i32 {
     read().unwrap_or(abi::time::DEFAULT_OFFSET_MINUTES)
 }
 
-/// The generator state of [`fill_random`].
-static RANDOM: AtomicU64 = AtomicU64::new(0x9E37_79B9_7F4A_7C15);
-
-/// Fills `buf` with splitmix64 output seeded from the clocks. **Not
-/// cryptographically secure** (`getrandom` and AT_RANDOM use it).
+/// Random bytes from the kernel's generator (`frame::random`: ChaCha20
+/// keyed from RDSEED/RDRAND or TSC jitter; P12).
 fn fill_random(buf: &mut [u8]) {
-    for chunk in buf.chunks_mut(8) {
-        let seed = frame::time::now_ns() ^ frame::time::wall_clock_ns().rotate_left(17);
-        let mut z = RANDOM
-            .fetch_add(0x9E37_79B9_7F4A_7C15 ^ seed, Ordering::Relaxed)
-            .wrapping_add(seed);
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        chunk.copy_from_slice(&z.to_le_bytes()[..chunk.len()]);
-    }
+    frame::random::fill(buf);
 }
 
-/// `getrandom(buf, len, flags)`.
+/// `getrandom(buf, len, flags)`: at most 1 MiB at a time.
 fn getrandom(p: &Process, buf: u64, len: u64) -> LinuxResult {
-    let len = len.min(256) as usize;
+    let len = len.min(1 << 20) as usize;
     let mut data = vec![0u8; len];
     fill_random(&mut data);
     write_user(p, buf, &data)?;
     Ok(len as u64)
+}
+
+/// `sysinfo(info)`: uptime, memory, process count (`struct sysinfo`, 112
+/// bytes, `mem_unit` 1).
+fn sysinfo(p: &Process, buf: u64) -> LinuxResult {
+    let (free, total) = frame::mm::pmm::stats();
+    let mut b = [0u8; 112];
+    let put =
+        |b: &mut [u8; 112], at: usize, v: u64| b[at..at + 8].copy_from_slice(&v.to_le_bytes());
+    put(&mut b, 0, frame::time::now_ns() / 1_000_000_000);
+    put(&mut b, 32, total as u64 * 4096);
+    put(&mut b, 40, free as u64 * 4096);
+    let procs = task::process::list()
+        .iter()
+        .filter(|(.., code)| code.is_none())
+        .count() as u16;
+    b[80..82].copy_from_slice(&procs.to_le_bytes());
+    b[104..108].copy_from_slice(&1u32.to_le_bytes());
+    write_user(p, buf, &b)?;
+    Ok(0)
+}
+
+/// Clock ticks per second of `times` (`sysconf(_SC_CLK_TCK)` is 100).
+const CLK_TCK: u64 = 100;
+
+/// `times(buf)`: no CPU accounting (zeros); returns ticks since boot.
+fn times(p: &Process, buf: u64) -> LinuxResult {
+    if buf != 0 {
+        write_user(p, buf, &[0u8; 32])?;
+    }
+    Ok(frame::time::now_ns() / (1_000_000_000 / CLK_TCK))
+}
+
+/// The fixed resource limits (`getrlimit`, `prlimit64`): (soft, hard).
+fn rlimit(resource: u64) -> Result<(u64, u64), i64> {
+    const INFINITY: u64 = u64::MAX;
+    match resource {
+        // RLIMIT_STACK: the 1 MiB stack.
+        3 => Ok((abi::layout::STACK_SIZE, abi::layout::STACK_SIZE)),
+        // RLIMIT_NOFILE: the descriptor table.
+        7 => Ok((super::fd::FD_MAX as u64, super::fd::FD_MAX as u64)),
+        // RLIMIT_NPROC.
+        6 => Ok((1024, 1024)),
+        0..=15 => Ok((INFINITY, INFINITY)),
+        _ => Err(EINVAL),
+    }
+}
+
+/// `prlimit64(pid, resource, new, old)` (and `getrlimit`, `setrlimit`):
+/// the limits are fixed; setting one is accepted and ignored.
+fn prlimit(p: &Process, resource: u64, old: u64) -> LinuxResult {
+    let (soft, hard) = rlimit(resource)?;
+    if old != 0 {
+        let mut b = [0u8; 16];
+        b[..8].copy_from_slice(&soft.to_le_bytes());
+        b[8..].copy_from_slice(&hard.to_le_bytes());
+        write_user(p, old, &b)?;
+    }
+    Ok(0)
 }
 
 /// `uname(buf)`: six 65-byte fields.
@@ -550,11 +621,56 @@ fn ioctl(p: &Process, fd: u64, request: u64, arg: u64) -> LinuxResult {
     const TIOCGPGRP: u64 = 0x540F;
     const TIOCSPGRP: u64 = 0x5410;
     const TIOCGWINSZ: u64 = 0x5413;
+    const TIOCSWINSZ: u64 = 0x5414;
+    const TIOCSCTTY: u64 = 0x540E;
+    const TIOCNOTTY: u64 = 0x5422;
+    const FIONREAD: u64 = 0x541B;
+    const FIONBIO: u64 = 0x5421;
+    const TIOCGPTN: u64 = 0x8004_5430;
+    const TIOCSPTLCK: u64 = 0x4004_5431;
     let file = file_of(p, fd)?;
-    let OpenFile::Tty(tty) = &*file else {
-        return Err(ENOTTY);
+    if request == FIONREAD {
+        let n = files::readable_bytes(&file) as u32;
+        write_user(p, arg, &n.to_le_bytes())?;
+        return Ok(0);
+    }
+    if request == FIONBIO {
+        let on = read_user(p, arg, 4)? != [0, 0, 0, 0];
+        match &*file {
+            OpenFile::PipeRead(_, nb)
+            | OpenFile::PipeWrite(_, nb)
+            | OpenFile::PtyMaster(_, _, nb) => {
+                nb.store(on, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+        return Ok(0);
+    }
+    let tty = match &*file {
+        OpenFile::Tty(tty) => tty,
+        OpenFile::PtyMaster(tty, n, _) => match request {
+            TIOCGPTN => {
+                write_user(p, arg, &n.to_le_bytes())?;
+                return Ok(0);
+            }
+            TIOCSPTLCK => return Ok(0),
+            _ => tty,
+        },
+        _ => return Err(ENOTTY),
     };
     match request {
+        TIOCSWINSZ => {
+            let w = read_user(p, arg, 8)?;
+            let rows = u16::from_le_bytes([w[0], w[1]]);
+            let cols = u16::from_le_bytes([w[2], w[3]]);
+            tty.set_size(cols, rows);
+            Ok(0)
+        }
+        TIOCSCTTY => {
+            tty.add_user(p.id());
+            Ok(0)
+        }
+        TIOCNOTTY => Ok(0),
         TCGETS => {
             let (canonical, echo, signals) = tty.mode();
             let mut lflag = 0;

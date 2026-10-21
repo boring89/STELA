@@ -56,6 +56,11 @@ impl Regions {
         self.used.remove(&start)
     }
 
+    /// The ranges in use: (start, size).
+    pub fn ranges(&self) -> alloc::vec::Vec<(u64, u64)> {
+        self.used.iter().map(|(&a, &s)| (a, s)).collect()
+    }
+
     /// The size of the range that starts at `start`.
     pub fn size_of(&self, start: u64) -> Option<u64> {
         self.used.get(&start).copied()

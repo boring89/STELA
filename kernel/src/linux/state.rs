@@ -56,8 +56,13 @@ pub enum OpenFile {
         Arc<crate::object::pipe::WriteEnd>,
         core::sync::atomic::AtomicBool,
     ),
-    /// A generated, read-only file (`/etc/resolv.conf`): its bytes, made
-    /// when opened, and the offset.
+    /// A pseudo-terminal's master side (P12): the terminal, its number
+    /// and whether reads do not wait (`O_NONBLOCK`).
+    PtyMaster(Arc<Tty>, u32, AtomicBool),
+    /// `/dev/urandom` (P12).
+    Random,
+    /// A generated, read-only file (`/etc/resolv.conf`, `/proc/...`): its
+    /// bytes, made when opened, and the offset.
     Text {
         /// The contents.
         data: Vec<u8>,

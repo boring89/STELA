@@ -468,7 +468,7 @@ pub fn execve(
 ) -> LinuxResult {
     const AT_EMPTY_PATH: u64 = 0x1000;
     let linux = p.linux().ok_or(EINVAL)?;
-    let path = files::user_string(p, path_ptr)?;
+    let path = files::exec_alias(p, &files::user_string(p, path_ptr)?);
     let mut total = 0;
     let mut argv = string_array(p, argv_ptr, &mut total)?;
     let env = string_array(p, envp_ptr, &mut total)?;

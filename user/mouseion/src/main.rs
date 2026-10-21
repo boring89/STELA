@@ -1734,7 +1734,15 @@ fn main() -> i64 {
     if let Err(e) = fs::volume_watch(bootstrap::MAIN_PORT) {
         println!("mouseion: no volume changes: {}", describe(e));
     }
-    let desktop = match conn.create_window(1, 1, flags::DESKTOP, 0, 0, "Desktop") {
+    let cell = (
+        (icon_size * 2).max(10 * font.width),
+        icon_size + font.height + 16,
+    );
+    // The desktop window is only the strip of volume icons at the right
+    // edge (P12, docs/mouseion.md §8): a full-screen canvas would cost
+    // width x height x 4 bytes (16 MiB at 2560x1600) for a flat colour.
+    let strip = cell.0 + 2 * 16;
+    let desktop = match conn.create_window(strip as u32, 1, flags::DESKTOP, 0, 0, "Desktop") {
         Ok(w) => w,
         Err(e) => {
             println!("mouseion: no desktop: {}", describe(e));
@@ -1742,14 +1750,10 @@ fn main() -> i64 {
         }
     };
     let rect = Rect::new(
-        0,
+        conn.screen.0 as i32 - desktop.width as i32,
         conn.menubar as i32,
         desktop.width as i32,
         desktop.height as i32,
-    );
-    let cell = (
-        (icon_size * 2).max(10 * font.width),
-        icon_size + font.height + 16,
     );
     let mut m = Mouseion {
         conn,

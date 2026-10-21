@@ -131,6 +131,13 @@ P11：host `model`——開著的視窗清單的格式往返與壞行、框選�
 | `fstest`（selftest 與 test-storage） | `FileGetInfo`／`FileSetInfo` 往返、資料夾、FAT 回 `NotSupported` |
 | `make test-mouseion` | 一般 kernel + AHCI 測試磁碟（乾淨的那份）：`--click`（先移到左上角，再以 100 像素一步移過去：QEMU 的 PS/2 滑鼠一個事件只送幾個封包）雙擊 Data → `mouseion: opened Data:/` → 雙擊 `welcome.txt` → `viewer: Data:/welcome.txt` → 雙擊 Initrd → 雙擊 Initrd 視窗裡的 `Terminal.app` → 第二個 `STELA shell`；截圖：卷宗圖示（Boot 的 terracotta）、桌面色、新 terminal 的作用中標題列 |
 
+### 7.x P12 的改動（使用者尚未審核）
+
+- 桌面視窗只是右邊放圖示的直條（`docs/window.md` §11）。
+- 名稱以 `.` 開頭的項目不顯示（`.Trash`、`.stela`、`.pkg` 是系統自己的資料夾）。
+- 選單依 `Data:/.stela/language` 用英文或繁體中文（`toolbox::i18n`，`docs/setup.md` §3）。
+- 第一次開機時 Setup.app 先跑，Mouseion 由它啟動（`docs/setup.md` §2）。
+
 ## 8. 已知限制
 
 - P11 起有拖曳影子（只是外框，只在來源視窗內）、多選、刪除（沒有垃圾桶，直接刪）、改名；沒有複製／貼上、復原。

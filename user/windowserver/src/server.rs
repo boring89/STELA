@@ -952,7 +952,23 @@ impl Server {
         }
         let title = String::from_utf8_lossy(proto::tail(msg, 6)).into_owned();
         let content = if fl & flags::DESKTOP != 0 {
-            Rect::new(0, self.m.menubar, self.width, self.height - self.m.menubar)
+            // P12 (docs/window.md §11): a desktop window as wide as asked
+            // (Mouseion: the strip of volume icons) sits at the right
+            // edge, full height; the rest of the desktop is the server's
+            // background colour, without a canvas of its own. Width 1 (or
+            // the screen's): the whole screen, as before.
+            let w = proto::word(msg, 1) as i32;
+            let w = if w > 1 && w < self.width {
+                w
+            } else {
+                self.width
+            };
+            Rect::new(
+                self.width - w,
+                self.m.menubar,
+                w,
+                self.height - self.m.menubar,
+            )
         } else {
             let (w, h) = (proto::word(msg, 1) as i32, proto::word(msg, 2) as i32);
             if !(1..=self.width).contains(&w) || !(1..=self.height).contains(&h) {

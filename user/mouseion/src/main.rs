@@ -100,6 +100,8 @@ struct Pane {
     rect: Rect,
     /// Lines of text for a Note.
     note: Vec<String>,
+    /// The order of the items (P11 K43: the list view's column titles).
+    sort: model::SortBy,
 }
 
 /// A press that may turn into a drag.
@@ -163,6 +165,19 @@ fn read_icon(h: Handle) -> Option<(i32, i32)> {
 }
 
 /// Removes `name` from `dir`, with everything inside when it is a folder.
+/// The id the desktop's trash icon has (no volume has it).
+const TRASH_ID: u64 = u64::MAX;
+
+/// `volume`'s trash folder (`.Trash` at its root), made when `make`.
+fn trash_folder(volume: &str, make: bool) -> Option<Owned> {
+    let root = Owned(fs::volume_open(volume).ok()?);
+    let mut flags = open::READ | open::WRITE | open::DIRECTORY;
+    if make {
+        flags |= open::CREATE;
+    }
+    fs::open(root.0, ".Trash", flags).ok().map(Owned)
+}
+
 fn remove_tree(dir: Handle, name: &str, is_dir: bool) -> Result<(), Error> {
     if is_dir {
         let sub = Owned(fs::open(dir, name, open::READ | open::WRITE)?);
@@ -236,9 +251,10 @@ impl Mouseion {
                 let (x, y) = pane.items[i].pos;
                 Rect::new(x, y - pane.scroll, self.cell.0, self.cell.1)
             }
+            // Row 0 holds the column titles (P11 K43).
             View::List => Rect::new(
                 0,
-                self.margin + i as i32 * self.line() - pane.scroll,
+                self.margin + (i as i32 + 1) * self.line() - pane.scroll,
                 pane.rect.w - SCROLL_WIDTH,
                 self.line(),
             ),
@@ -256,7 +272,7 @@ impl Mouseion {
                     .unwrap_or(0)
                     + self.margin
             }
-            View::List => 2 * self.margin + pane.items.len() as i32 * self.line(),
+            View::List => 2 * self.margin + (pane.items.len() as i32 + 1) * self.line(),
         }
     }
 
@@ -334,6 +350,28 @@ impl Mouseion {
                     c.icon(bounds.w - icon_size - 16, 16, icon, false);
                 }
             }
+            // The list view's column titles (click one to sort; P11 K43).
+            if pane.view == View::List && !desktop && pane.place != Place::Note {
+                let y = self.margin - pane.scroll + (line - font.height) / 2;
+                for (title, by, col) in model::COLUMNS {
+                    let x = 32 + col as i32 * font.width;
+                    c.text(
+                        x,
+                        y,
+                        title,
+                        font,
+                        if by == pane.sort {
+                            color::BLACK
+                        } else {
+                            color::GREY
+                        },
+                        None,
+                    );
+                    if by == pane.sort {
+                        c.hline(x, y + font.height - 1, font.text_width(title), color::BLACK);
+                    }
+                }
+            }
             for (i, item) in pane.items.iter().enumerate() {
                 let r = rects[i];
                 if !r.overlaps(&bounds) {
@@ -392,13 +430,17 @@ impl Mouseion {
                         };
                         c.text(r.x + 32 + 26 * font.width, ty, &size, font, fg, None);
                         c.text(
-                            r.x + 32 + 40 * font.width,
+                            r.x + 32 + 38 * font.width,
                             ty,
                             item.kind.word(),
                             font,
                             fg,
                             None,
                         );
+                        if item.mtime != 0 {
+                            let when = libstela::time::format(libstela::time::to_local(item.mtime));
+                            c.text(r.x + 32 + 50 * font.width, ty, &when[..16], font, fg, None);
+                        }
                     }
                 }
             }
@@ -441,7 +483,7 @@ impl Mouseion {
             .iter()
             .filter_map(|&s| self.panes[index].items.get(s).map(|i| i.id))
             .collect();
-        let items: Vec<Item> = entries
+        let mut items: Vec<Item> = entries
             .iter()
             .zip(places)
             .map(|(e, pos)| Item {
@@ -455,6 +497,8 @@ impl Mouseion {
                 mtime: e.mtime,
             })
             .collect();
+        let by = self.panes[index].sort;
+        items.sort_by(|a, b| model::compare(by, sort_key(a), sort_key(b)));
         let pane = &mut self.panes[index];
         pane.selected = previous
             .iter()
@@ -488,8 +532,116 @@ impl Mouseion {
                 self.margin + n as i32 * self.cell.1,
             );
         }
+        // The trash, at the bottom right (P11 K43).
+        items.push(Item {
+            name: String::from("Trash"),
+            id: TRASH_ID,
+            is_dir: true,
+            size: 0,
+            kind: Kind::Folder,
+            pos: (
+                width - self.cell.0 - self.margin,
+                self.panes[index].rect.h - self.cell.1 - self.margin,
+            ),
+            volume: false,
+            mtime: 0,
+        });
         self.panes[index].items = items;
         self.draw(index);
+    }
+
+    /// Moves the dragged items (the selection, or item `i`) of pane
+    /// `from` into the trash of their volume (`.Trash` at its root; P11
+    /// K43). A name the trash has gets a number.
+    fn move_to_trash(&mut self, from: usize, i: usize) {
+        let Place::Folder { volume, .. } = self.panes[from].place.clone() else {
+            return;
+        };
+        let Some(h) = self.panes[from].handle.as_ref().map(|h| h.0) else {
+            return;
+        };
+        let names: Vec<String> = if self.panes[from].selected.contains(&i) {
+            self.panes[from]
+                .selected
+                .iter()
+                .filter_map(|&k| self.panes[from].items.get(k).map(|it| it.name.clone()))
+                .collect()
+        } else {
+            self.panes[from]
+                .items
+                .get(i)
+                .map(|it| it.name.clone())
+                .into_iter()
+                .collect()
+        };
+        let Some(trash) = trash_folder(&volume, true) else {
+            println!("mouseion: {volume} has no trash (read only?)");
+            return;
+        };
+        for name in names {
+            let mut target = name.clone();
+            let mut n = 2;
+            while let Ok(e) = fs::open(trash.0, &target, open::READ) {
+                let _ = handle_close(e);
+                target = format!("{name} {n}");
+                n += 1;
+            }
+            match fs::rename(h, &name, trash.0, &target) {
+                Ok(()) => println!("mouseion: moved {name} to the trash"),
+                Err(e) => println!("mouseion: trash {name}: {}", describe(e)),
+            }
+        }
+        self.panes[from].selected.clear();
+        self.reload(from);
+        self.reload_trash_window();
+    }
+
+    /// Special > Empty Trash: asks, then deletes what every volume's trash
+    /// holds.
+    fn empty_trash(&mut self) {
+        let answer = dialog::alert(
+            &mut self.conn,
+            "Empty Trash",
+            "Delete everything in the trash? It is gone for good.",
+            &["Cancel", "Empty Trash"],
+        );
+        if answer != Some(1) {
+            return;
+        }
+        let mut count = 0;
+        let mut i = 0;
+        while let Ok(Some(v)) = fs::volume_list(i) {
+            i += 1;
+            let Some(trash) = trash_folder(v.name(), false) else {
+                continue;
+            };
+            for e in fs::entries(trash.0).unwrap_or_default() {
+                let dir = e.kind == libstela::abi::kind::DIRECTORY;
+                if remove_tree(trash.0, e.name(), dir).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+        println!("mouseion: emptied the trash ({count} items)");
+        self.reload_trash_window();
+    }
+
+    fn reload_trash_window(&mut self) {
+        if let Some(p) = self.panes.iter().position(
+            |p| matches!(&p.place, Place::Folder { path, .. } if path.ends_with("/.Trash")),
+        ) {
+            self.reload(p);
+        }
+    }
+
+    /// Opens the trash's window (Data's).
+    fn open_trash(&mut self) {
+        let Some(trash) = trash_folder("Data", true) else {
+            return;
+        };
+        if let Ok(st) = fs::stat(trash.0) {
+            self.open_folder("Data", st.id, String::from("Data:/.Trash"), "Trash");
+        }
     }
 
     /// Opens (or brings forward) the window of a folder.
@@ -555,6 +707,7 @@ impl Mouseion {
             selected: Vec::new(),
             rect: Rect::new(rect.x, rect.y, w, h),
             note: Vec::new(),
+            sort: model::SortBy::Name,
         });
         self.order.insert(0, id_w);
         let index = self.panes.len() - 1;
@@ -669,6 +822,10 @@ impl Mouseion {
         let Some(item) = pane.items.get(i).cloned() else {
             return;
         };
+        if pane.place == Place::Desktop && item.id == TRASH_ID && !item.volume {
+            self.open_trash();
+            return;
+        }
         if item.volume {
             let Ok(root) = fs::volume_open(&item.name) else {
                 return;
@@ -880,6 +1037,10 @@ impl Mouseion {
                     return;
                 }
                 let item = self.panes[to].items[index].clone();
+                if self.panes[to].place == Place::Desktop && item.id == TRASH_ID && !item.volume {
+                    self.move_to_trash(from, press.index);
+                    return;
+                }
                 let (handle, volume) = if item.volume {
                     match fs::volume_open(&item.name) {
                         Ok(h) => (Owned(h), item.name.clone()),
@@ -1081,6 +1242,20 @@ impl Mouseion {
                         return;
                     }
                 }
+                // A column title of the list view: sort by it (P11 K43).
+                if self.panes[index].view == View::List
+                    && matches!(self.panes[index].place, Place::Folder { .. })
+                {
+                    let top = self.margin - self.panes[index].scroll;
+                    if y >= top && y < top + self.line() {
+                        let col = ((x - 32).max(0) / self.font.width) as usize;
+                        self.panes[index].sort = model::column_at(col);
+                        println!("mouseion: sorted by {:?}", self.panes[index].sort);
+                        self.panes[index].selected.clear();
+                        self.reload(index);
+                        return;
+                    }
+                }
                 let hit = self.hit(index, x, y);
                 // A click ends a rename in progress (it is kept).
                 if self.editing.is_some() {
@@ -1221,6 +1396,7 @@ impl Mouseion {
             selected: Vec::new(),
             rect: Rect::new(0, 0, w, h),
             note: lines,
+            sort: model::SortBy::Name,
         });
         self.order.insert(0, id);
         let index = self.panes.len() - 1;
@@ -1331,6 +1507,7 @@ impl Mouseion {
             }
             Some("Terminal") => self.terminal(),
             Some("Monitor") => self.monitor(),
+            Some("Empty Trash...") => self.empty_trash(),
             Some("Restart") => {
                 let all: Vec<usize> = (0..self.panes.len()).collect();
                 for p in all {
@@ -1524,12 +1701,22 @@ fn main() -> i64 {
     let icon_size = icons::size_for(conn.screen.0) as i32;
     let mut menus = MenuBar::new();
     menus.add("Mouseion", &["About Mouseion", "About STELA"]);
-    menus.add("File", &["New Folder", "Open", "Get Info", "-", "Close"]);
+    menus.add(
+        "File",
+        &["New Folder^N", "Open^O", "Get Info^I", "-", "Close^W"],
+    );
     menus.add("Edit", &[]);
     menus.add("View", &["Icons", "List"]);
     menus.add(
         "Special",
-        &["Terminal", "Monitor", "-", "Restart", "Shut Down"],
+        &[
+            "Terminal",
+            "Monitor",
+            "Empty Trash...",
+            "-",
+            "Restart",
+            "Shut Down",
+        ],
     );
     let _ = conn.set_menubar(&menus.to_text());
     // USB disks come and go (P11 K42).
@@ -1578,10 +1765,14 @@ fn main() -> i64 {
         selected: Vec::new(),
         rect,
         note: Vec::new(),
+        sort: model::SortBy::Name,
     });
     m.order.push(id);
     m.load_desktop(0);
-    println!("mouseion: ready, {} volume(s)", m.panes[0].items.len());
+    println!(
+        "mouseion: ready, {} volume(s)",
+        m.panes[0].items.iter().filter(|i| i.volume).count()
+    );
     m.terminal();
     // The folder windows that were open last time (P11).
     m.reopen();
@@ -1624,4 +1815,9 @@ fn about_stela() -> Vec<String> {
         up % 60
     ));
     lines
+}
+
+/// What sorting looks at in an item.
+fn sort_key(i: &Item) -> (&str, bool, u64, &str, u64) {
+    (&i.name, i.is_dir, i.size, i.kind.word(), i.mtime)
 }

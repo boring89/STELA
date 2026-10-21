@@ -99,6 +99,54 @@ impl FolderState {
     }
 }
 
+/// What a folder's list is sorted by (P11 K43: a click on a column's
+/// title in the list view).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SortBy {
+    /// Name, ignoring case (folders first).
+    #[default]
+    Name,
+    /// Size, largest first.
+    Size,
+    /// Kind, then name.
+    Kind,
+    /// Last change, newest first.
+    Date,
+}
+
+/// The column titles of the list view and where they start (in
+/// characters after the icon).
+pub const COLUMNS: [(&str, SortBy, usize); 4] = [
+    ("Name", SortBy::Name, 0),
+    ("Size", SortBy::Size, 26),
+    ("Kind", SortBy::Kind, 38),
+    ("Date", SortBy::Date, 50),
+];
+
+/// The column under character column `col` (counted after the icon).
+pub fn column_at(col: usize) -> SortBy {
+    COLUMNS
+        .iter()
+        .rev()
+        .find(|c| col >= c.2)
+        .map_or(SortBy::Name, |c| c.1)
+}
+
+/// The order of two items (name, folder, size, kind word, mtime) by `by`.
+pub fn compare(
+    by: SortBy,
+    a: (&str, bool, u64, &str, u64),
+    b: (&str, bool, u64, &str, u64),
+) -> core::cmp::Ordering {
+    let name = || a.0.to_lowercase().cmp(&b.0.to_lowercase());
+    match by {
+        SortBy::Name => b.1.cmp(&a.1).then_with(name),
+        SortBy::Size => b.2.cmp(&a.2).then_with(name),
+        SortBy::Kind => a.3.cmp(b.3).then_with(name),
+        SortBy::Date => b.4.cmp(&a.4).then_with(name),
+    }
+}
+
 /// A file's (or folder's, as seen in its parent) icon position.
 pub fn encode_icon(x: i32, y: i32) -> [u8; 32] {
     let mut b = [0u8; 32];
@@ -525,5 +573,20 @@ mod tests {
         assert_eq!(band_select(&rects, band((15, 0), (40, 3))), [1]);
         assert!(band_select(&rects, band((12, 12), (18, 18))).is_empty());
         assert!(keeps_icon_position(true) && keeps_icon_position(false));
+    }
+
+    #[test]
+    fn sorting() {
+        use core::cmp::Ordering::*;
+        let a = ("b.txt", false, 10, "text", 5);
+        let b = ("A", true, 0, "folder", 9);
+        assert_eq!(compare(SortBy::Name, a, b), Greater);
+        assert_eq!(compare(SortBy::Size, a, b), Less);
+        assert_eq!(compare(SortBy::Kind, a, b), Greater);
+        assert_eq!(compare(SortBy::Date, a, b), Greater);
+        assert_eq!(column_at(0), SortBy::Name);
+        assert_eq!(column_at(30), SortBy::Size);
+        assert_eq!(column_at(45), SortBy::Kind);
+        assert_eq!(column_at(70), SortBy::Date);
     }
 }

@@ -20,8 +20,8 @@ use libstela::wait::{self, WaitSet};
 use libstela::{Error, Handle, Message, Rights, bootstrap, println, tag};
 use toolbox::draw::{Canvas, Font, Rect, color, font_for};
 use windowserver::compose::{
-    Clicks, Damage, Menu, Metrics, Part, Stack, Window, menu_box, menu_item_at, menu_titles,
-    parse_menus, visible_parts,
+    Clicks, Damage, Menu, Metrics, Part, Stack, Window, find_shortcut, menu_box, menu_item_at,
+    menu_titles, parse_menus, shortcut, visible_parts,
 };
 
 /// The pointer: `X` outline, `.` fill, space transparent (STELA's own
@@ -116,6 +116,8 @@ struct Server {
     /// changes next (`now_ns`).
     clock: String,
     next_clock: u64,
+    /// Zoomed windows: where their content was before (P11 K43).
+    zoomed: BTreeMap<u32, Rect>,
 }
 
 fn screen_rect(s: &Server) -> Rect {
@@ -437,11 +439,70 @@ impl Server {
     // ---- input ----
 
     fn key(&mut self, key: KeyEvent) {
+        // Alt + a letter that one of the focused client's menu items has
+        // as its shortcut chooses that item (P11 K43).
+        if key.pressed
+            && key.modifiers.alt
+            && !key.modifiers.ctrl
+            && let Some(c) = abi::key::key_to_char(&KeyEvent {
+                modifiers: abi::key::Modifiers::default(),
+                ..key
+            })
+            && c.is_ascii_alphanumeric()
+            && let Some((menu, item)) = find_shortcut(self.menus(), c)
+            && let Some(client) = self.focus.and_then(|f| self.window_owner(f))
+        {
+            self.send(client, &proto::menu_selected(menu as u32, item as u32));
+            return;
+        }
         if let Some(id) = self.focus
             && let Some(client) = self.window_owner(id)
         {
             self.send(client, &proto::key(id, &key));
         }
+    }
+
+    /// The zoom box (P11 K43): the window fills the screen below the menu
+    /// bar, or goes back to where and how big it was; the server moves it
+    /// and asks its client for the size (`ZOOM_REQUESTED`).
+    fn zoom(&mut self, id: u32) {
+        let Some(w) = self.stack.get(id) else {
+            return;
+        };
+        let (before, client) = (w.frame(&self.m), w.client);
+        let m = self.m;
+        let target = match self.zoomed.remove(&id) {
+            Some(saved) => saved,
+            None => {
+                self.zoomed.insert(id, w.content);
+                Rect::new(
+                    m.border,
+                    m.menubar + m.title + m.border,
+                    self.width - 2 * m.border,
+                    self.height - m.menubar - m.title - 2 * m.border,
+                )
+            }
+        };
+        if let Some(w) = self.stack.get_mut(id) {
+            w.content.x = target.x;
+            w.content.y = target.y;
+        }
+        self.mark(before);
+        if let Some(w) = self.stack.get(id) {
+            let after = w.frame(&self.m);
+            self.mark(after);
+        }
+        self.send(
+            client,
+            &proto::window_event(
+                id,
+                window_event::ZOOM_REQUESTED,
+                target.x,
+                target.y,
+                target.w as u32,
+                target.h as u32,
+            ),
+        );
     }
 
     fn pointer(&mut self, e: MouseEvent) {
@@ -535,6 +596,10 @@ impl Server {
                     });
                     self.mark_outline(outline);
                 }
+            }
+            Part::Zoom(id) => {
+                self.set_focus(Some(id));
+                self.zoom(id);
             }
             Part::Close(id) => {
                 self.set_focus(Some(id));
@@ -1063,6 +1128,7 @@ impl Server {
             self.mark(frame);
         }
         self.surfaces.remove(&id);
+        self.zoomed.remove(&id);
         if matches!(self.drag, Some(Drag::Move { id: d, .. } | Drag::Grow { id: d, .. } | Drag::Close { id: d, .. } | Drag::Content { id: d }) if d == id)
         {
             self.drag = None;
@@ -1168,6 +1234,24 @@ fn draw_frame(c: &mut Canvas, w: &Window, m: &Metrics, font: &Font, active: bool
         );
         c.frame(close, color::BLACK);
     }
+    // The zoom box (P11 K43): a box with a smaller one in its corner.
+    let zoom = w.zoom_box(m);
+    if !zoom.is_empty() {
+        c.fill(
+            zoom.inset(-2),
+            if active {
+                color::TERRACOTTA
+            } else {
+                color::STONE
+            },
+        );
+        c.fill(zoom, color::PARCHMENT);
+        c.frame(zoom, color::BLACK);
+        c.frame(
+            Rect::new(zoom.x, zoom.y, zoom.w / 2 + 1, zoom.h / 2 + 1),
+            color::BLACK,
+        );
+    }
 }
 
 fn draw_grow_box(c: &mut Canvas, r: Rect) {
@@ -1244,7 +1328,14 @@ fn draw_menu(
         if let Some(bg) = bg {
             c.fill(Rect::new(area.x + 1, y, area.w - 2, line), bg);
         }
-        c.text(area.x + 2 * font.width, y + 2, item, font, fg, None);
+        let (label, key) = shortcut(item);
+        c.text(area.x + 2 * font.width, y + 2, label, font, fg, None);
+        if let Some(k) = key {
+            // The shortcut at the right: Alt is Command (P11 K43).
+            let hint = alloc::format!("Alt-{k}");
+            let x = area.right() - font.text_width(&hint) - font.width;
+            c.text(x, y + 2, &hint, font, fg, None);
+        }
     }
 }
 
@@ -1357,6 +1448,7 @@ pub fn main() -> i64 {
         clipboard: Vec::new(),
         clock: String::new(),
         next_clock: 0,
+        zoomed: BTreeMap::new(),
     };
     if let Err(e) = input_attach(bootstrap::MAIN_PORT) {
         println!(

@@ -42,8 +42,8 @@ fn main() -> i64 {
         return 1;
     };
     let mut menus = MenuBar::new();
-    menus.add("File", &["Clear", "-", "Quit"]);
-    menus.add("Edit", &["Copy", "Paste"]);
+    menus.add("File", &["Clear", "-", "Quit^Q"]);
+    menus.add("Edit", &["Copy^C", "Paste^V"]);
     let _ = conn.set_menubar(&menus.to_text());
     let line = fh + 4;
     let mut field = TextField::new(Rect::new(8, 8, w - 16, fh + 8), 38);

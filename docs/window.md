@@ -81,6 +81,10 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `ERROR` 0x187 | 請求的 tag、`abi::Error` |
 | `CLIPBOARD` 0x188（P11） | 長度；長度 > 0 時夾帶一份文字的 Memory（client 讀完關掉） |
 
+**選單快捷鍵（P11 K43）**：`SET_MENUBAR` 的項目文字結尾 `^K`（字母或數字）表示 Alt-K（Alt 當 Command）。伺服器在選單右邊畫 `Alt-K`；焦點 client 的選單有這個快捷鍵時，Alt+字母（沒有 Ctrl）不送給程式，改送 `MENU_SELECTED`。其他 Alt 組合照樣送（Classic.app 的 Mac 用 Alt 當 Command 不受影響，它的選單沒有快捷鍵）。toolbox：`MenuBar::item` 傳回去掉 `^K` 的標籤、`menu::shortcut`。標準：New^N、Open^O、Save^S、Close^W、Quit^Q、Undo^Z、Cut^X、Copy^C、Paste^V、Select All^A（Kalamos、Mouseion、Echo、Terminal、Monitor、Periplus、Viewer 都加了）。
+
+**zoom box（P11 K43）**：可改大小的視窗（`RESIZABLE`）標題列右端多一個框中框。按下去：伺服器記住內容區原來的位置與大小、把視窗搬到選單列下的左上角，送 `WINDOW_EVENT` `ZOOM_REQUESTED`（6，x、y、w、h = 整個螢幕減去選單列與框）；再按一次搬回原處、要回原大小。client 跟 `RESIZE_REQUESTED` 一樣回 `RESIZE_WINDOW`（toolbox 把 `ZOOM_REQUESTED` 也解成 `Event::ResizeRequested`，所以程式不用改）；client 可以給不一樣的大小（terminal 對齊格子）。
+
 **系統剪貼簿（P11 K32，使用者尚未審核）**：伺服器自己存一份文字（`Vec<u8>`）；`SET_CLIPBOARD` 從 client 的 Memory 複製進來，`GET_CLIPBOARD` 每次做一塊新的 Memory 放一份給它。只有純文字，沒有「誰擁有」的概念（最後設的贏），伺服器重啟就沒了。toolbox：`Connection::set_clipboard(text)`、`clipboard() -> String`（等 `CLIPBOARD` 時其他事件照樣先存起來）。0x188 以前是 `PING`（P11 K2 拿掉了），現在重新用在 `CLIPBOARD`。
 
 旗標：`TITLE_BAR` 1、`CLOSE_BOX` 2、`RESIZABLE` 4、`DESKTOP` 8（沒有框、永遠在最後面、蓋滿選單列以下的整個畫面：給 P9 的 Mouseion 畫桌面圖示）；`DOCUMENT` = 1|2|4。P11：`WANT_MOTION` 16（沒按按鈕時指標在內容上移動也送 `MOUSE`／`MOVE`，給指標在它下面的那個視窗）、`HIDE_CURSOR_INSIDE` 32（指標在內容上時伺服器不畫箭頭；拖曳中照畫）——Classic.app 兩個都設（Mac 自己畫游標）。

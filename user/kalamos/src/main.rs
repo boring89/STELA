@@ -352,9 +352,12 @@ fn main() -> i64 {
     let mut menus = MenuBar::new();
     menus.add(
         "File",
-        &["New", "Open...", "Save", "Save As...", "-", "Close"],
+        &["New^N", "Open...^O", "Save^S", "Save As...", "-", "Close^W"],
     );
-    menus.add("Edit", &["Undo", "-", "Cut", "Copy", "Paste", "Select All"]);
+    menus.add(
+        "Edit",
+        &["Undo^Z", "-", "Cut^X", "Copy^C", "Paste^V", "Select All^A"],
+    );
     menus.add("View", &["Small Font", "Large Font"]);
     let _ = conn.set_menubar(&menus.to_text());
     let bounds = window.bounds();

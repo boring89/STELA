@@ -719,14 +719,15 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=sata1,bus=ide.1
 
 # The editor (P11, docs/apps.md §2): Kalamos.app opens a file that does
-# not exist yet, the text is typed over QMP and saved with Ctrl-S; Ctrl-Q
+# not exist yet, the text is typed over QMP and saved with Alt-S (the
+# window server's menu shortcut, K43); Ctrl-Q
 # closes it, the shell shuts down, and the host compares the file.
 test-editor: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-editor.img
 	python3 tools/qemu_test.py --exit-code 0 --timeout 120 --log $(BUILD)/test-editor.log \
 		--type "STELA shell" "run Kalamos.app /notes.txt\n" \
 		--type "kalamos: new Data:/notes.txt" "Hello from Kalamos.\nThe second line\n" \
-		--send-keys "kalamos: modified" "ctrl-s" \
+		--send-keys "kalamos: modified" "alt-s" \
 		--send-keys "kalamos: saved Data:/notes.txt" "ctrl-q" \
 		--type "Kalamos exited with code 0" "shutdown\n" \
 		--expect "kalamos: new Data:/notes.txt" --expect "kalamos: modified" \

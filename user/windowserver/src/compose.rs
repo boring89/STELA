@@ -99,6 +99,21 @@ impl Window {
         Rect::new(bar.x + 8, bar.y + (bar.h - m.close) / 2, m.close, m.close)
     }
 
+    /// The zoom box at the title bar's right end (P11 K43; resizable
+    /// windows only).
+    pub fn zoom_box(&self, m: &Metrics) -> Rect {
+        let bar = self.title_bar(m);
+        if bar.is_empty() || self.flags & flags::RESIZABLE == 0 {
+            return Rect::default();
+        }
+        Rect::new(
+            bar.right() - 8 - m.close,
+            bar.y + (bar.h - m.close) / 2,
+            m.close,
+            m.close,
+        )
+    }
+
     /// The grow box, over the content's bottom-right corner (empty when
     /// the window cannot be resized).
     pub fn grow_box(&self, m: &Metrics) -> Rect {
@@ -125,6 +140,8 @@ pub enum Part {
     Title(u32),
     /// A close box.
     Close(u32),
+    /// A zoom box (P11 K43).
+    Zoom(u32),
     /// A grow box.
     Grow(u32),
     /// A window's content (also the desktop window).
@@ -226,6 +243,9 @@ impl Stack {
             }
             if w.close_box(m).contains(x, y) {
                 return Part::Close(w.id);
+            }
+            if w.zoom_box(m).contains(x, y) {
+                return Part::Zoom(w.id);
             }
             if w.grow_box(m).contains(x, y) {
                 return Part::Grow(w.id);
@@ -372,6 +392,31 @@ pub fn parse_menus(text: &str) -> Vec<Menu> {
         .collect()
 }
 
+/// An item's label and shortcut letter: `Save^S` is `Save` with Alt-S
+/// (P11 K43; the same rule as `toolbox::menu::shortcut`).
+pub fn shortcut(item: &str) -> (&str, Option<char>) {
+    let b = item.as_bytes();
+    if b.len() >= 3 && b[b.len() - 2] == b'^' && b[b.len() - 1].is_ascii_alphanumeric() {
+        (
+            &item[..item.len() - 2],
+            Some(b[b.len() - 1].to_ascii_uppercase() as char),
+        )
+    } else {
+        (item, None)
+    }
+}
+
+/// The (menu, item) whose shortcut is `c`, if any.
+pub fn find_shortcut(menus: &[Menu], c: char) -> Option<(usize, usize)> {
+    let c = c.to_ascii_uppercase();
+    menus.iter().enumerate().find_map(|(mi, m)| {
+        m.items
+            .iter()
+            .position(|i| shortcut(i).1 == Some(c))
+            .map(|ii| (mi, ii))
+    })
+}
+
 /// Where menu titles sit in the menu bar: (x, width) of each, after a
 /// leading label of `label_width` pixels.
 pub fn menu_titles(menus: &[Menu], char_width: i32, label_width: i32) -> Vec<(i32, i32)> {
@@ -392,7 +437,11 @@ pub fn menu_box(menu: &Menu, title_x: i32, m: &Metrics, char_width: i32, line: i
     let longest = menu
         .items
         .iter()
-        .map(|i| i.chars().count())
+        .map(|i| match shortcut(i) {
+            // Room for "  Alt-K" after the label.
+            (label, Some(_)) => label.chars().count() + 7,
+            (label, None) => label.chars().count(),
+        })
         .max()
         .unwrap_or(0) as i32;
     Rect::new(
@@ -594,5 +643,14 @@ mod tests {
         let outside = visible_parts(Rect::new(90, 90, 20, 20), &frames, frames.len());
         let area: i64 = outside.iter().map(Rect::area).sum();
         assert_eq!(area, 400 - 100);
+    }
+
+    #[test]
+    fn shortcuts() {
+        let menus = parse_menus("File\tNew^N\tOpen\t-\tClose^W\nEdit\tCopy^C\n");
+        assert_eq!(find_shortcut(&menus, 'w'), Some((0, 3)));
+        assert_eq!(find_shortcut(&menus, 'C'), Some((1, 0)));
+        assert_eq!(find_shortcut(&menus, 'O'), None);
+        assert_eq!(shortcut("New^N"), ("New", Some('N')));
     }
 }

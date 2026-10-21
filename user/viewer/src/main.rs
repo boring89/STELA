@@ -91,7 +91,7 @@ fn main() -> i64 {
         return 1;
     };
     let mut menus = MenuBar::new();
-    menus.add("File", &["Close"]);
+    menus.add("File", &["Close^W"]);
     let _ = conn.set_menubar(&menus.to_text());
     println!("viewer: {name}: {} lines", lines.len());
     let mut top = 0usize;

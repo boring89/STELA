@@ -93,7 +93,10 @@ impl Event {
                 window_event::FOCUS => Event::Focus(w(0)),
                 window_event::BLUR => Event::Blur(w(0)),
                 window_event::MOVED => Event::Moved(w(0), s(2), s(3)),
-                window_event::RESIZE_REQUESTED => Event::ResizeRequested(w(0), w(4), w(5)),
+                // P11 K43: a zoom is a resize the server asks for.
+                window_event::RESIZE_REQUESTED | window_event::ZOOM_REQUESTED => {
+                    Event::ResizeRequested(w(0), w(4), w(5))
+                }
                 window_event::CLOSE_REQUESTED => Event::CloseRequested(w(0)),
                 _ => Event::Other(msg),
             },

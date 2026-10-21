@@ -49,7 +49,9 @@ pub mod request {
     /// 0, window, title.
     pub const SET_TITLE: u32 = 0x105;
     /// 0, length; carries a Memory with the menus as text: one menu per
-    /// line, `Title\tItem\tItem...`; an item `-` is a separator.
+    /// line, `Title\tItem\tItem...`; an item `-` is a separator; an item
+    /// ending in `^K` (a letter or digit) has the keyboard shortcut
+    /// Alt-K (Alt is Command; P11 K43).
     pub const SET_MENUBAR: u32 = 0x106;
     /// 0, window.
     pub const CLOSE_WINDOW: u32 = 0x107;
@@ -138,6 +140,9 @@ pub mod window_event {
     pub const RESIZE_REQUESTED: u32 = 4;
     /// The close box was clicked.
     pub const CLOSE_REQUESTED: u32 = 5;
+    /// The zoom box was clicked (P11 K43): the server moved the window and
+    /// asks for this size (width, height); answer with `RESIZE_WINDOW`.
+    pub const ZOOM_REQUESTED: u32 = 6;
 }
 
 /// `x`/`y` of `CREATE_WINDOW`: let the server place the window.

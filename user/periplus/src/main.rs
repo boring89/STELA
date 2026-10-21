@@ -476,7 +476,7 @@ fn main() -> i64 {
         return 1;
     };
     let mut menus = MenuBar::new();
-    menus.add("File", &["Open Address...", "Reload", "-", "Close"]);
+    menus.add("File", &["Open Address...^L", "Reload^R", "-", "Close^W"]);
     menus.add("Go", &["Back", "Forward", "Home"]);
     let _ = conn.set_menubar(&menus.to_text());
     let bh = font.height + 10;

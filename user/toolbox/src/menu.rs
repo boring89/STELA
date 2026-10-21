@@ -54,13 +54,28 @@ impl MenuBar {
         text
     }
 
-    /// The item's text for a `Event::Menu(menu, item)`.
+    /// The item's text for a `Event::Menu(menu, item)` (without its
+    /// shortcut, `^K`).
     pub fn item(&self, menu: u32, item: u32) -> Option<&str> {
         self.menus
             .get(menu as usize)?
             .items
             .get(item as usize)
-            .map(String::as_str)
+            .map(|i| shortcut(i).0)
+    }
+}
+
+/// An item's label and keyboard shortcut (P11 K43): `Save^S` is `Save`
+/// with Alt-S (Alt is Command).
+pub fn shortcut(item: &str) -> (&str, Option<char>) {
+    let b = item.as_bytes();
+    if b.len() >= 3 && b[b.len() - 2] == b'^' && b[b.len() - 1].is_ascii_alphanumeric() {
+        (
+            &item[..item.len() - 2],
+            Some(b[b.len() - 1].to_ascii_uppercase() as char),
+        )
+    } else {
+        (item, None)
     }
 }
 
@@ -79,5 +94,10 @@ mod tests {
         );
         assert_eq!(bar.item(1, 1), Some("List"));
         assert_eq!(bar.item(2, 0), None);
+        bar.add("Edit", &["Copy^c", "^"]);
+        assert_eq!(bar.item(2, 0), Some("Copy"));
+        assert_eq!(shortcut("Copy^c"), ("Copy", Some('C')));
+        assert_eq!(shortcut("^"), ("^", None));
+        assert_eq!(shortcut("A^-"), ("A^-", None));
     }
 }

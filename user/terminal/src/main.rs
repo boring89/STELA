@@ -378,7 +378,7 @@ fn main() -> i64 {
             return 1;
         }
     };
-    let _ = conn.set_menubar("Terminal\tClear\nEdit\tCopy\tPaste\n");
+    let _ = conn.set_menubar("Terminal\tClear\nEdit\tCopy^C\tPaste^V\n");
     let (slave, master) = match tty::create_with_master() {
         Ok(pair) => pair,
         Err(e) => {

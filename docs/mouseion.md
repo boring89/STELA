@@ -109,6 +109,12 @@ Mouseion 的資料不再放在 Finder 資訊（那 32 bytes 照 HFS 的原意留
 - Mouseion 把 `.app` 資料夾當一個圖示（名稱不顯示 `.app`），雙擊執行；kernel 的 `ProcessSpawn` 接受 bundle 資料夾（`docs/vfs.md` §4.3），所以 shell 的 `run Name.app` 也行。
 - initrd 裡的 `Terminal.app`、`Echo.app`、`Viewer.app` 由 Makefile 的 `BUNDLES` 產生。
 
+### 5.x 垃圾桶與清單排序（P11 K43）
+
+- **垃圾桶**：桌面右下角的 `Trash` 圖示。把項目拖到上面 = 搬到**它所在卷宗**的 `.Trash/`（卷宗根目錄的資料夾，沒有就建；同名的加數字；同一卷宗內的 rename，所以很快；唯讀卷宗沒有垃圾桶）。雙擊 Trash 打開 `Data:/.Trash` 的視窗（可以把東西拖出來）。**Special > Empty Trash...** 先問（`alert`），再把每個卷宗的 `.Trash` 裡的東西連同資料夾內容刪掉，印 `mouseion: emptied the trash (N items)`。Delete 鍵仍是直接刪除（有確認）。
+- **清單檢視的欄位**：第一列是 Name、Size、Kind、Date 的標題，點一個就依它排序（名稱不分大小寫、資料夾在前；大小大的在前；種類；日期新的在前；`model::compare`、`column_at`，host 測試），目前的欄位加底線；Date 欄是本地時間（`docs/time.md` §5.6）。印 `mouseion: sorted by Size`。
+- 都沒有自動測試（要拖放與點擊座標）；排序有 host 測試。
+
 ## 6. Viewer（`Viewer.app`，暫名）
 
 `Viewer 路徑`：`Volume:/path` 或相對工作資料夾；最多 1 MiB；80 欄折行（Tab 到 8 的倍數、控制字元略過、壞 UTF-8 顯示 U+FFFD）；視窗標題 = 檔名；方向鍵、Page Up／Down、Home／End、捲軸捲動；File > Close 或關閉鈕結束。開檔時在 serial 印 `viewer: <路徑>: N lines`。

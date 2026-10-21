@@ -223,7 +223,7 @@ fn main() -> i64 {
         return 1;
     };
     let mut menus = MenuBar::new();
-    menus.add("File", &["End Process", "-", "Close"]);
+    menus.add("File", &["End Process", "-", "Close^W"]);
     let _ = conn.set_menubar(&menus.to_text());
     let bw = 15 * font.width;
     let mut m = Monitor {

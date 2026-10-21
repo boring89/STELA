@@ -69,6 +69,7 @@ musl 的程式（`-static -no-pie -Wl,-z,max-page-size=4096`）是四個 PT_LOAD
 | 結束 | `exit` 60、`exit_group` 231 | `exit_process(code & 0xFF)`（單執行緒，兩者相同） |
 | 檔案 | `read` 0、`write` 1、`open` 2、`close` 3、`stat` 4、`fstat` 5、`lstat` 6、`lseek` 8、`readv` 19、`writev` 20、`access` 21、`dup` 32、`dup2` 33、`fcntl` 72、`getcwd` 79、`chdir` 80、`rename` 82、`mkdir` 83、`rmdir` 84、`unlink` 87、`getdents64` 217、`openat` 257、`mkdirat` 258、`newfstatat` 262、`unlinkat` 263、`renameat` 264、`faccessat` 269 | §5、§7 |
 | 連結 | `readlink` 89、`readlinkat` 267 | 永遠 `ENOENT`（沒有符號連結） |
+| 等待 | `poll` 7、`select` 23、`pselect6` 270、`ppoll` 271 | §5.3（P11） |
 | 終端機 | `ioctl` 16 | tty：`TCGETS`、`TCSETS(W/F)`（ICANON／ECHO／ISIG）、`TIOCGWINSZ`（25×80）、`TIOCGPGRP`／`TIOCSPGRP`；其他 fd → `ENOTTY` |
 | 記憶體 | `mmap` 9、`mprotect` 10、`munmap` 11、`brk` 12 | §8 |
 | 訊號 | `rt_sigaction` 13、`rt_sigprocmask` 14 | 只回 0（舊值讀成預設）；訊號永遠不遞送 |
@@ -115,6 +116,25 @@ errno（`linux/errno.rs`）與 `abi::Error` 的對應：`NotFound` → `ENOENT`�
 - `InputAttach` 的目標可以是 tty：input-router 把每個鍵的字元送進它（`kernel::input::Target::Tty`）。
 - libstela：`tty::create()`、`tty::create_with_master()`、`tty::read`、`tty::write`、`ipc::handle_kind`。
 
+### 5.3 `poll`／`select`（P11，使用者尚未審核）
+
+`kernel/src/linux/poll.rs`，用 kernel 的 WaitSet（`docs/ipc.md` §13）：
+
+```
+ loop：
+   每個 fd 現在的事件：tty（POLLIN 有一行可讀、POLLOUT 永遠）、
+                      socket（READABLE → POLLIN、WRITABLE → POLLOUT、CLOSED → POLLHUP）、
+                      其他（檔案、資料夾、/dev、/etc）永遠 POLLIN|POLLOUT
+   fd < 0 → 略過；不存在的 fd → POLLNVAL（select 則整個 EBADF）
+   有 → 寫回 revents，回傳個數
+   時間到 → 0
+   把 tty 與 socket 放進一個臨時的 WaitSet，等到有變化或時間到
+```
+
+- `poll` 的負逾時 = 永遠；`ppoll`／`pselect6` 用 timespec，signal mask 忽略；`select` 的 timeval 不寫回剩餘時間。最多 1024 個 fd。
+- 訊號永遠不遞送，所以只有被 kill 時才有 `EINTR`（行程正在結束）。
+- 沒有可以等的物件（全是檔案）又沒有就緒的 → 每 100 ms 醒一次看是否被 kill，直到時間到。
+
 ### 5.2 shell 怎麼跑程式
 
 ```
@@ -155,6 +175,7 @@ Linux 程式的 tty：kernel 在 `spawn_linux` 時看 `[1]`：是 Tty 就用它�
  /Initrd/linux      Initrd 卷宗的 linux 資料夾（initrd 的 ustar 子資料夾，§10）
  /tmp/x             Tmp 卷宗的 x（記憶體檔案系統，§7.1）
  /dev               null、zero、tty
+ /etc/resolv.conf   合成的（P11）：nameserver <DHCP 給的 DNS>（還沒有位址時是空檔）
 ```
 
 - `.`、`..` 在 kernel 以字面處理（`normalize(cwd, path)`，`..` 在根停住）；沒有符號連結。
@@ -164,6 +185,7 @@ Linux 程式的 tty：kernel 在 `spawn_linux` 時看 `[1]`：是 Tty 就用它�
 - `rename`：同一卷宗（否則 `EXDEV`）；目標是檔案就先刪掉（Linux 的取代語意），是資料夾 → `EISDIR`。
 - `stat`：`st_dev` = 卷宗 index + 1、`st_ino` = 持久 ID、mode 資料夾 `040755`、檔案 `100644`、裝置與 tty `020666`／`020620`；時間來自後端。
 - `getdents64`：`.`、`..` 在前；每次呼叫重新列出（和 `DirRead` 一樣 O(n²)）；cursor 存在 `OpenFile::Dir`；`lseek(fd, 0, SEEK_SET)` 重來。
+- `/etc` 只有 `resolv.conf`（唯讀，`open` 時才產生內容；寫入 → `EROFS`）；其他名字 → `ENOENT`（musl 找 `/etc/hosts` 時就是這樣，然後走 DNS）。
 - **Linux 程式不受 handle 能力限制**：它看得到所有卷宗（合成根目錄就是全部）。之後的沙箱要收緊（`docs/architecture.md` §4.1）。
 
 ### 7.1 `Tmp`（`vfs/tmpfs.rs`）
@@ -214,6 +236,7 @@ P6 的 `InitrdFs` 把所有檔案放在根目錄；P7 起建一棵樹：成員�
 | `time` | MONOTONIC + nanosleep(20 ms) ≥ 20 ms、REALTIME 年份 ≥ 2024、gettimeofday | `time: OK` |
 | `tty` | isatty（0、1 是，/dev/null 不是）、tcgetattr 有 ICANON、讀一行 | `tty: you typed: …` |
 | `nosys` | fork、pipe、execv → -1 且 errno = ENOSYS | `nosys: OK` |
+| `poll`（P11） | stdout 立刻可寫、stdin 50 ms 沒東西（等滿）、`/dev/null`、fd −1 略過、關掉的 fd → POLLNVAL、`ppoll` 20 ms、`select`（可寫、30 ms 逾時、關掉的 fd → EBADF）、`pselect`；`/etc/resolv.conf` 是一般檔、內容 `nameserver …`、不能寫；最後 `poll(-1)` 等使用者打一行 | `poll: you typed: …`、`poll: OK` |
 
 ## 12. 測試
 
@@ -225,15 +248,15 @@ P6 的 `InitrdFs` 把所有檔案放在根目錄；P7 起建一棵樹：成員�
 | host `kernel::vfs::tmpfs`、`kernel::initrd` | TmpTree（檔案、資料夾、容量、錯誤、改名迴圈）、initrd 的樹 |
 | host `abi` | 編號 33–36、`note::BYTES`、`spawn::FORCE_*`、`tty::MASTER`、`object_kind` |
 | selftest "linux personality" | hello 有 note、裸 ELF 沒有；手組的 Linux 機器碼：write 到 tty（`linux: hello from raw system calls`）、RDX 保留、fork → `-ENOSYS`、exit_group(38)，兩次 PMM 回復；強制 STELA 人格（同一段碼變成 `ThreadExit`，exit 0）；`Initrd:/linux/hello`（musl）exit 3，兩次 PMM 回復 |
-| `make test-linux` | 一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打 `stela rocks`），檢查輸出與 exit code |
+| `make test-linux` | 一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打 `stela rocks`）、`poll`（打 `poll works`），檢查輸出與 exit code |
 | `make test-net`（P10） | `run linux/net PORT host`：BSD socket 抓 host 的 HTTP 檔、`getsockname`／`getpeername`／`getsockopt`、UDP `sendto`、關著的 port → `ECONNREFUSED`、`AF_INET6` → `EAFNOSUPPORT`（`docs/net.md` §7） |
 
 ## 13. 已知限制
 
-- 網路（P10，`docs/net.md` §7）：只有 `AF_INET` 的 `SOCK_STREAM`／`SOCK_DGRAM`；`socket`、`connect`、`bind`、`listen`、`accept`/`accept4`、`sendto`、`recvfrom`、`shutdown`、`getsockname`、`getpeername`、`setsockopt`（忽略）、`getsockopt`（一律 0）；socket 上的 `read`/`write` 等於 recv/send；沒有 `poll`/`select`、`sendmsg`/`recvmsg`，所以 musl 的 `getaddrinfo`（DNS）不能用。
+- 網路（P10，`docs/net.md` §7）：只有 `AF_INET` 的 `SOCK_STREAM`／`SOCK_DGRAM`；`socket`、`connect`、`bind`、`listen`、`accept`/`accept4`、`sendto`、`recvfrom`、`sendmsg`/`recvmsg`（P11，沒有 control 資料）、`shutdown`、`getsockname`、`getpeername`、`setsockopt`（忽略）、`getsockopt`（一律 0）；socket 上的 `read`/`write` 等於 recv/send。P11 起 musl 的 `getaddrinfo`（DNS）可用：`/etc/resolv.conf` + UDP + `poll` + `recvmsg`；TCP 的 DNS 退路（`MSG_FASTOPEN` 的 `sendmsg`）不支援。
 
 - 只有靜態、非 PIE 的 x86-64 程式（`ET_EXEC`）；沒有動態連結、`ET_DYN`、32 位元（`int 0x80`）。
-- 單執行緒：沒有 `clone`／執行緒；`futex` 是單執行緒的簡化；沒有 `fork`／`execve`／`pipe`、訊號遞送（`rt_sigaction` 只回 0）、`/proc`、檔案 mmap、`MAP_FIXED`、`mremap`、`poll`／`select`。
+- 單執行緒：沒有 `clone`／執行緒；`futex` 是單執行緒的簡化；沒有 `fork`／`execve`／`pipe`、訊號遞送（`rt_sigaction` 只回 0）、`/proc`、檔案 mmap、`MAP_FIXED`、`mremap`、`epoll`。
 - Linux 程式不受能力限制：合成根目錄看得到所有卷宗。
 - cwd 只從 `[3]` 的卷宗根開始；`getppid` 是 1；`getrandom` 不安全；時間只有 tick 解析度（沒有 invariant TSC 時 1 ms）。
 - tty：一個 tty 的 `TIOCGWINSZ` 永遠 25×80；沒有 job control（`TIOCSPGRP` 什麼都不做）；VMIN／VTIME 不看；raw 模式下 `read` 有一個字就回。

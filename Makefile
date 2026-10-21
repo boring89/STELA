@@ -32,7 +32,7 @@ MUSL_DIR    := $(BUILD)/musl
 MUSL_GCC    := $(MUSL_DIR)/install/bin/musl-gcc
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys net
+LINUX_TESTS := hello files memory time tty nosys net poll
 LINUX_DIR   := $(USER_DIR)/linux
 LINUX_CFLAGS := -static -O2 -no-pie -fno-pie -Wall -Wextra -Werror \
                -Wl,-z,max-page-size=4096 -Wl,--build-id=none
@@ -313,6 +313,8 @@ NET_CARDS   := e1000 e1000e virtio-net-pci
 NET_DNS_TYPE   = $(if $(HOST_DNS),--type "ping exited" "ifconfig resolve example.com\n",)
 NET_DNS_EXPECT = $(if $(HOST_DNS),--expect "example.com has address",)
 NET_FETCH_AFTER = $(if $(HOST_DNS),ifconfig exited,ping exited)
+NET_LINUX_NAME  = $(if $(HOST_DNS), example.com,)
+NET_LINUX_EXPECT = $(if $(HOST_DNS),--expect "net: resolved example.com to",)
 test-net: esp $(BUILD)/OVMF_VARS.fd
 	mkdir -p $(BUILD)/www
 	printf 'hello from the host over TCP\n' > $(BUILD)/www/hello.txt
@@ -325,10 +327,10 @@ test-net-cards:
 			--type "inet 10.0.2.15" "ping 10.0.2.2 2\n" \
 			$(NET_DNS_TYPE) \
 			--type "$(NET_FETCH_AFTER)" "fetch http://10.0.2.2:$(NET_PORT)/hello.txt\n" \
-			--type "fetch exited" "run linux/net $(NET_PORT) host\n" \
+			--type "fetch exited" "run linux/net $(NET_PORT) host$(NET_LINUX_NAME)\n" \
 			--expect "net: DHCP: 10.0.2.15" --expect "inet 10.0.2.15 mask 255.255.255.0 gateway 10.0.2.2" \
 			--expect "bytes from 10.0.2.2: seq=1" $(NET_DNS_EXPECT) --expect "hello from the host over TCP" \
-			--expect "net: connected from 10.0.2.15" --expect "net: OK" \
+			--expect "net: connected from 10.0.2.15" $(NET_LINUX_EXPECT) --expect "net: OK" \
 			-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio -nic none \
 			-netdev user,id=n0 -device $$card,netdev=n0 || exit 1; \
 	done
@@ -442,6 +444,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "time exited with code" "run linux/nosys\n" \
 		--type "nosys exited with code" "run linux/tty\n" \
 		--type "tty: type a line" "stela rocks\n" \
+		--type "tty exited with code" "run linux/poll\n" \
+		--type "poll: type a line" "poll works\n" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
 		--expect "files: OK" --expect "files exited with code 0" \
@@ -449,6 +453,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "time: OK" --expect "time exited with code 0" \
 		--expect "nosys: OK" --expect "nosys exited with code 0" \
 		--expect "tty: you typed: stela rocks" --expect "tty exited with code 0" \
+		--expect "poll: you typed: poll works" --expect "poll: OK" \
+		--expect "poll exited with code 0" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-linux.img \
 		-device ide-hd,drive=sata1,bus=ide.1

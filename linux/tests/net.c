@@ -6,10 +6,14 @@
  * http://10.0.2.2:PORT/hello.txt (QEMU user networking's host) with
  * socket, connect, write and read, checks getsockname, getpeername and
  * getsockopt, sends a UDP datagram, and expects ECONNREFUSED from a closed
- * port. Usage: net PORT EXPECTED-TEXT. Prints "net: OK" on success.
+ * port. With a third argument, also resolves that host name with
+ * getaddrinfo (musl's DNS client: /etc/resolv.conf, a UDP socket and
+ * poll). Usage: net PORT EXPECTED-TEXT [NAME]. Prints "net: OK" on
+ * success.
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +31,7 @@ int main(int argc, char **argv)
 {
     if (argc < 3)
     {
-        printf("net: usage: net PORT EXPECTED-TEXT\n");
+        printf("net: usage: net PORT EXPECTED-TEXT [NAME]\n");
         return 2;
     }
     int port = atoi(argv[1]);
@@ -99,6 +103,23 @@ int main(int argc, char **argv)
 
     if (socket(AF_INET6, SOCK_STREAM, 0) >= 0 || errno != EAFNOSUPPORT)
         return fail("AF_INET6 must be refused");
+
+    if (argc > 3)
+    {
+        struct addrinfo hints, *res;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        int e = getaddrinfo(argv[3], "80", &hints, &res);
+        if (e != 0)
+        {
+            printf("net: FAIL getaddrinfo %s: %s\n", argv[3], gai_strerror(e));
+            return 1;
+        }
+        struct sockaddr_in *a = (struct sockaddr_in *)res->ai_addr;
+        printf("net: resolved %s to %s\n", argv[3], inet_ntoa(a->sin_addr));
+        freeaddrinfo(res);
+    }
     printf("net: OK\n");
     return 0;
 }

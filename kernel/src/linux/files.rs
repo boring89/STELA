@@ -11,7 +11,7 @@ use super::errno::{
     EROFS, ESPIPE, EXDEV,
 };
 use super::fd::FdError;
-use super::path::{self, Device, PathError, Target};
+use super::path::{self, Config, Device, PathError, Target};
 use super::state::{FileState, OpenFile};
 use super::sys::{LinuxResult, file_of, read_user, write_user};
 use crate::task::Process;
@@ -99,8 +99,22 @@ enum Found {
     DevDir,
     /// A device.
     Device(Device),
+    /// `/etc`.
+    EtcDir,
+    /// A generated file in `/etc`.
+    Config(Config),
     /// An item on a volume.
     Item(Node, NodeInfo),
+}
+
+/// The contents of a generated file.
+fn config_text(c: Config) -> Vec<u8> {
+    match c {
+        Config::ResolvConf => match crate::net::dns_server() {
+            Some([a, b, c, d]) => alloc::format!("nameserver {a}.{b}.{c}.{d}\n").into_bytes(),
+            None => Vec::new(),
+        },
+    }
 }
 
 fn volume(name: &str) -> Result<Arc<Volume>, i64> {
@@ -125,6 +139,8 @@ fn resolve(parts: &[String]) -> Result<Found, i64> {
         Target::Root => Ok(Found::Root),
         Target::DevDir => Ok(Found::DevDir),
         Target::Device(d) => Ok(Found::Device(d)),
+        Target::EtcDir => Ok(Found::EtcDir),
+        Target::Config(c) => Ok(Found::Config(c)),
         Target::Volume(name, rest) => {
             let volume = volume(&name)?;
             let info = walk(&volume, &rest)?;
@@ -198,9 +214,14 @@ pub fn openat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
         Err(e) => return Err(e),
     };
     let file = match found {
-        Found::Root | Found::DevDir if writing => return Err(EISDIR),
-        Found::Root => dir(None),
-        Found::DevDir => dir(None),
+        Found::Root | Found::DevDir | Found::EtcDir if writing => return Err(EISDIR),
+        Found::Root | Found::DevDir | Found::EtcDir => dir(None),
+        Found::Config(_) if flags & O_DIRECTORY != 0 => return Err(ENOTDIR),
+        Found::Config(_) if writing => return Err(EROFS),
+        Found::Config(c) => OpenFile::Text {
+            data: config_text(c),
+            offset: SpinLock::new(0),
+        },
         Found::Device(_) if flags & O_DIRECTORY != 0 => return Err(ENOTDIR),
         Found::Device(Device::Null) => OpenFile::Null,
         Found::Device(Device::Zero) => OpenFile::Zero,
@@ -316,6 +337,13 @@ fn read_file(file: &OpenFile, len: usize) -> Result<Vec<u8>, i64> {
         OpenFile::Zero => Ok(vec![0u8; len]),
         OpenFile::Dir { .. } => Err(EISDIR),
         OpenFile::Socket(socket) => super::socket::read(socket, len),
+        OpenFile::Text { data, offset } => {
+            let mut at = offset.lock();
+            let start = (*at as usize).min(data.len());
+            let end = (start + len).min(data.len());
+            *at = end as u64;
+            Ok(data[start..end].to_vec())
+        }
         OpenFile::File { node, state } => {
             let mut s = state.lock();
             if !s.readable {
@@ -344,6 +372,7 @@ fn write_file(file: &OpenFile, data: &[u8]) -> Result<usize, i64> {
         OpenFile::Null | OpenFile::Zero => Ok(data.len()),
         OpenFile::Dir { .. } => Err(EISDIR),
         OpenFile::Socket(socket) => super::socket::write(socket, data),
+        OpenFile::Text { .. } => Err(EBADF),
         OpenFile::File { node, state } => {
             let mut s = state.lock();
             if !s.writable {
@@ -455,6 +484,18 @@ pub fn lseek(p: &Process, fd: u64, offset: i64, whence: u64) -> LinuxResult {
             *cursor.lock() = 0;
             Ok(0)
         }
+        OpenFile::Text { data, offset: at } => {
+            let mut at = at.lock();
+            let base = match whence {
+                SEEK_SET => 0,
+                SEEK_CUR => *at as i64,
+                SEEK_END => data.len() as i64,
+                _ => return Err(EINVAL),
+            };
+            let new = base.checked_add(offset).filter(|&o| o >= 0).ok_or(EINVAL)?;
+            *at = new as u64;
+            Ok(new as u64)
+        }
         OpenFile::Null | OpenFile::Zero => Ok(0),
         _ => Err(ESPIPE),
     }
@@ -489,6 +530,15 @@ fn stat_of(found: &Found) -> [u8; 144] {
     match found {
         Found::Root => stat_bytes(0, 1, S_IFDIR | 0o755, 0, 0, 0),
         Found::DevDir => stat_bytes(0, 2, S_IFDIR | 0o755, 0, 0, 0),
+        Found::EtcDir => stat_bytes(0, 8, S_IFDIR | 0o755, 0, 0, 0),
+        Found::Config(c) => stat_bytes(
+            0,
+            9 + *c as u64,
+            S_IFREG | 0o444,
+            config_text(*c).len() as u64,
+            0,
+            0,
+        ),
         Found::Device(d) => stat_bytes(0, 3 + *d as u64, S_IFCHR | 0o666, 0, 0, 0),
         Found::Item(node, info) => {
             let mode = if info.is_dir {
@@ -522,6 +572,7 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
         OpenFile::Null => stat_bytes(0, 3, S_IFCHR | 0o666, 0, 0, 0),
         OpenFile::Zero => stat_bytes(0, 4, S_IFCHR | 0o666, 0, 0, 0),
         OpenFile::Socket(_) => stat_bytes(0, 7, S_IFSOCK | 0o777, 0, 0, 0),
+        OpenFile::Text { data, .. } => stat_bytes(0, 9, S_IFREG | 0o444, data.len() as u64, 0, 0),
         OpenFile::File { node, .. }
         | OpenFile::Dir {
             node: Some(node), ..
@@ -530,6 +581,7 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
             stat_of(&Found::Item(node.clone(), info))
         }
         OpenFile::Dir { path, .. } if path == "/dev" => stat_of(&Found::DevDir),
+        OpenFile::Dir { path, .. } if path == "/etc" => stat_of(&Found::EtcDir),
         OpenFile::Dir { .. } => stat_of(&Found::Root),
     };
     write_user(p, buf, &bytes)?;
@@ -542,11 +594,12 @@ pub fn access(p: &Process, dirfd: u64, ptr: u64, mode: u64) -> LinuxResult {
     const W_OK: u64 = 2;
     let parts = parts_of(p, dirfd, ptr)?;
     let found = resolve(&parts)?;
-    if mode & W_OK != 0
-        && let Found::Item(node, _) = &found
-        && node.volume.fs.read_only()
-    {
-        return Err(EROFS);
+    if mode & W_OK != 0 {
+        match &found {
+            Found::Item(node, _) if node.volume.fs.read_only() => return Err(EROFS),
+            Found::Config(_) => return Err(EROFS),
+            _ => {}
+        }
     }
     Ok(0)
 }
@@ -567,7 +620,7 @@ pub fn getcwd(p: &Process, buf: u64, size: u64) -> LinuxResult {
 pub fn chdir(p: &Process, ptr: u64) -> LinuxResult {
     let parts = parts_of(p, AT_FDCWD, ptr)?;
     match resolve(&parts)? {
-        Found::Root | Found::DevDir => {}
+        Found::Root | Found::DevDir | Found::EtcDir => {}
         Found::Item(_, info) if info.is_dir => {}
         _ => return Err(ENOTDIR),
     }
@@ -597,8 +650,8 @@ pub fn unlinkat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
     let parts = parts_of(p, dirfd, ptr)?;
     let is_dir = match resolve(&parts)? {
         Found::Item(_, info) => info.is_dir,
-        Found::Root | Found::DevDir => return Err(errno::EBUSY),
-        Found::Device(_) => return Err(errno::EACCES),
+        Found::Root | Found::DevDir | Found::EtcDir => return Err(errno::EBUSY),
+        Found::Device(_) | Found::Config(_) => return Err(errno::EACCES),
     };
     if flags & AT_REMOVEDIR != 0 && !is_dir {
         return Err(ENOTDIR);
@@ -671,6 +724,7 @@ fn listing(node: &Option<Node>, path: &str) -> Result<Vec<(u64, u8, String)>, i6
                 entries.push((3 + i as u64, DT_CHR, String::from(*name)));
             }
         }
+        None if path == "/etc" => entries.push((9, DT_REG, String::from("resolv.conf"))),
         None => {
             for v in vfs::volumes() {
                 let name = if v.name == "Tmp" {
@@ -681,6 +735,7 @@ fn listing(node: &Option<Node>, path: &str) -> Result<Vec<(u64, u8, String)>, i6
                 entries.push((100 + u64::from(v.index), DT_DIR, name));
             }
             entries.push((2, DT_DIR, String::from("dev")));
+            entries.push((8, DT_DIR, String::from("etc")));
         }
     }
     Ok(entries)

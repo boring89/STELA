@@ -172,6 +172,7 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 | `connect` | 42 | `net::connect`（阻塞） |
 | `accept`／`accept4` | 43／288 | `net::accept`，寫回對方位址 |
 | `sendto`／`recvfrom` | 44／45 | `net::send`／`net::recv`（`MSG_DONTWAIT`、非阻塞 → `EAGAIN`） |
+| `sendmsg`／`recvmsg` | 46／47 | P11：iovec 合成一次 send／一次 recv 分散到 iovec；`msg_name` 是位址；不支援 control 資料（`EOPNOTSUPP`） |
 | `shutdown` | 48 | `SHUT_WR`/`SHUT_RDWR` 送 FIN；`SHUT_RD` 什麼都不做 |
 | `bind`／`listen` | 49／50 | 只看 port |
 | `getsockname`／`getpeername` | 51／52 | |
@@ -188,7 +189,7 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 | host `libstela` | DNS 查詢的格式、回覆（CNAME + 壓縮指標、NXDOMAIN）、URL、HTTP 回應 |
 | host `abi` | 編號 39–46、錯誤 22–25、`pack`、`NetInfo` |
 | selftest "network card"／"network stack" | 原始的 DHCP DISCOVER → slirp 的 OFFER；堆疊 10 秒內拿到位址（q35 預設的 e1000e；`test-qemu-min` 同樣） |
-| `make test-net` | `tools/with_http.py` 在 host 的 127.0.0.1:8642 serve `build/www/`，e1000、e1000e、virtio-net 各開機一次：`ifconfig`（10.0.2.15）、`ping 10.0.2.2 2`、（host 能解析名字時）`ifconfig resolve example.com`、`fetch http://10.0.2.2:8642/hello.txt`、`run linux/net 8642 host`；約 1 分鐘 |
+| `make test-net` | `tools/with_http.py` 在 host 的 127.0.0.1:8642 serve `build/www/`，e1000、e1000e、virtio-net 各開機一次：`ifconfig`（10.0.2.15）、`ping 10.0.2.2 2`、（host 能解析名字時）`ifconfig resolve example.com`、`fetch http://10.0.2.2:8642/hello.txt`、`run linux/net 8642 host`（host 能解析名字時加 `example.com`：musl 的 `getaddrinfo`，P11）；約 1 分鐘 |
 
 手動驗證過：1 MiB 的檔案用 `fetch` 存進 `Tmp:/`（大小正確）。
 
@@ -204,8 +205,7 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 
 - 一次一張網卡；沒有 IPv6、IP 分片重組、IP 選項、多播、路由表（只有預設閘道）、DHCP 續租。
 - TCP：沒有亂序重組、延遲 ACK、Nagle、壅塞控制（慢啟動）、SACK、視窗縮放、keepalive、RTT 估計（固定 1 s 起跳）；TIME-WAIT 只有 2 秒。
-- socket 沒有 port set／poll：一個執行緒一次只能等一個 socket；等待者被「任何事件」全部叫醒再各自檢查（簡單但 socket 多時浪費）。
-- Linux：沒有 `poll`/`select`/`epoll`、`sendmsg`/`recvmsg`，所以 musl 的 DNS（`getaddrinfo`）不能用；只能用 IP 字面值。
+- P11 起 socket 可以放進 WaitSet（`docs/ipc.md` §13），Linux 有 `poll`/`select`（`docs/linux.md` §5.3）與 `sendmsg`/`recvmsg`，musl 的 `getaddrinfo` 經合成的 `/etc/resolv.conf` 可用；等待者仍被「任何事件」全部叫醒再各自檢查（簡單但 socket 多時浪費）；沒有 `epoll`。
 - 任何程式都能開 socket（沒有能力限制）。
 - e1000 輪詢會讓閒置時每 5 ms 醒一次。
 - I219（P520）只依資料手冊與 68k_HAL 的經驗實作，**沒有在實機驗證**（PHY、ULP、Management Engine 都可能讓 link 起不來）。

@@ -8,7 +8,7 @@
 use super::errno::{self, EAGAIN, EBADF, EFAULT, EINVAL, ENOSYS, ENOTTY};
 use super::stack::{self, at};
 use super::state::OpenFile;
-use super::{files, memory, nr, socket};
+use super::{files, memory, nr, poll, socket};
 use crate::task::{self, Process};
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
@@ -101,6 +101,10 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::UNLINK => files::unlinkat(p, files::AT_FDCWD, a0, 0),
         nr::UNLINKAT => files::unlinkat(p, a0, a1, a2),
         nr::GETDENTS64 => files::getdents64(p, a0, a1, a2),
+        nr::POLL => poll::poll(p, a0, a1, a2),
+        nr::PPOLL => poll::ppoll(p, a0, a1, a2),
+        nr::SELECT => poll::select(p, [a0, a1, a2, a3, a4]),
+        nr::PSELECT6 => poll::pselect6(p, [a0, a1, a2, a3, a4]),
         // No symbolic links anywhere.
         nr::READLINK | nr::READLINKAT => Err(errno::ENOENT),
         nr::IOCTL => ioctl(p, a0, a1, a2),
@@ -135,7 +139,9 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::ACCEPT => socket::accept(p, a0, a1, a2, 0),
         nr::ACCEPT4 => socket::accept(p, a0, a1, a2, a3),
         nr::SENDTO => socket::sendto(p, a0, a1, a2, a4, a5),
-        nr::RECVFROM => socket::recvfrom(p, a0, a1, a2, a4, a5),
+        nr::RECVFROM => socket::recvfrom(p, [a0, a1, a2, a3, a4, a5]),
+        nr::SENDMSG => socket::sendmsg(p, a0, a1),
+        nr::RECVMSG => socket::recvmsg(p, a0, a1, a2),
         nr::SHUTDOWN => socket::shutdown(p, a0, a1),
         nr::GETSOCKNAME => socket::name(p, a0, a1, a2, false),
         nr::GETPEERNAME => socket::name(p, a0, a1, a2, true),

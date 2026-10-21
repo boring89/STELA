@@ -14,6 +14,7 @@ pub const CLOSE: u64 = 3;
 pub const STAT: u64 = 4;
 pub const FSTAT: u64 = 5;
 pub const LSTAT: u64 = 6;
+pub const POLL: u64 = 7;
 pub const LSEEK: u64 = 8;
 pub const MMAP: u64 = 9;
 pub const MPROTECT: u64 = 10;
@@ -26,6 +27,7 @@ pub const READV: u64 = 19;
 pub const WRITEV: u64 = 20;
 pub const ACCESS: u64 = 21;
 pub const PIPE: u64 = 22;
+pub const SELECT: u64 = 23;
 pub const DUP: u64 = 32;
 pub const DUP2: u64 = 33;
 pub const NANOSLEEP: u64 = 35;
@@ -35,6 +37,8 @@ pub const CONNECT: u64 = 42;
 pub const ACCEPT: u64 = 43;
 pub const SENDTO: u64 = 44;
 pub const RECVFROM: u64 = 45;
+pub const SENDMSG: u64 = 46;
+pub const RECVMSG: u64 = 47;
 pub const SHUTDOWN: u64 = 48;
 pub const BIND: u64 = 49;
 pub const LISTEN: u64 = 50;
@@ -77,6 +81,8 @@ pub const UNLINKAT: u64 = 263;
 pub const RENAMEAT: u64 = 264;
 pub const READLINKAT: u64 = 267;
 pub const FACCESSAT: u64 = 269;
+pub const PSELECT6: u64 = 270;
+pub const PPOLL: u64 = 271;
 pub const PIPE2: u64 = 293;
 pub const ACCEPT4: u64 = 288;
 pub const GETRANDOM: u64 = 318;
@@ -102,5 +108,7 @@ mod tests {
             (228, 231, 257, 262)
         );
         assert_eq!((PIPE2, GETRANDOM, CLONE3), (293, 318, 435));
+        assert_eq!((POLL, SELECT, PSELECT6, PPOLL), (7, 23, 270, 271));
+        assert_eq!((SENDMSG, RECVMSG), (46, 47));
     }
 }

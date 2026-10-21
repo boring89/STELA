@@ -10,6 +10,7 @@
 //!  /Initrd/linux     Initrd:/linux
 //!  /tmp/x            Tmp:/x (the kernel's memory file system)
 //!  /dev              null, zero, tty
+//!  /etc              resolv.conf (made from the network's DNS server)
 //! ```
 //!
 //! `.` and `..` are resolved here, textually (there are no symbolic
@@ -32,6 +33,13 @@ pub enum Device {
     Tty,
 }
 
+/// The generated files under `/etc`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Config {
+    /// `/etc/resolv.conf`: `nameserver` with the DNS server DHCP gave.
+    ResolvConf,
+}
+
 /// Where an absolute, normalised path leads.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -41,6 +49,10 @@ pub enum Target {
     DevDir,
     /// A device.
     Device(Device),
+    /// `/etc`.
+    EtcDir,
+    /// A generated file in `/etc`.
+    Config(Config),
     /// An item on a volume: its name (`tmp` means the `Tmp` volume) and
     /// the path inside it (empty for its root).
     Volume(String, Vec<String>),
@@ -102,6 +114,9 @@ pub fn target(parts: &[String]) -> Target {
             "tty" => Target::Device(Device::Tty),
             _ => Target::Volume(String::from("dev"), alloc::vec![name.clone()]),
         },
+        [etc] if etc == "etc" => Target::EtcDir,
+        [etc, name] if etc == "etc" && name == "resolv.conf" => Target::Config(Config::ResolvConf),
+        [etc, rest @ ..] if etc == "etc" => Target::Volume(String::from("etc"), rest.to_vec()),
         [first, rest @ ..] => {
             let volume = if first == "tmp" {
                 String::from("Tmp")
@@ -152,6 +167,15 @@ mod tests {
         assert_eq!(target(&s(&["dev", "null"])), Target::Device(Device::Null));
         assert_eq!(target(&s(&["dev", "tty"])), Target::Device(Device::Tty));
         assert_eq!(target(&s(&["dev", "zero"])), Target::Device(Device::Zero));
+        assert_eq!(target(&s(&["etc"])), Target::EtcDir);
+        assert_eq!(
+            target(&s(&["etc", "resolv.conf"])),
+            Target::Config(Config::ResolvConf)
+        );
+        assert_eq!(
+            target(&s(&["etc", "hosts"])),
+            Target::Volume(String::from("etc"), s(&["hosts"]))
+        );
         assert_eq!(
             target(&s(&["tmp", "x"])),
             Target::Volume(String::from("Tmp"), s(&["x"]))

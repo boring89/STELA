@@ -192,6 +192,17 @@ fn wait<T>(
     }
 }
 
+/// The DNS server DHCP gave, once configured.
+pub fn dns_server() -> Option<[u8; 4]> {
+    let guard = NET.lock();
+    let net = guard.as_ref()?;
+    if !net.stack.configured() {
+        return None;
+    }
+    let dns = net.stack.config().dns;
+    (dns != [0; 4]).then_some(dns)
+}
+
 /// The `abi::wait` events of socket `s` (`CLOSED` without a card).
 pub fn events(s: &Socket) -> u32 {
     use abi::wait;

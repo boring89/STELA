@@ -38,6 +38,13 @@ pub struct LinuxSocket {
     nonblock: AtomicBool,
 }
 
+impl LinuxSocket {
+    /// The kernel socket (for `poll`).
+    pub fn kernel_socket(&self) -> &Arc<crate::net::Socket> {
+        &self.socket
+    }
+}
+
 fn socket_of(p: &Process, fd: u64) -> Result<Arc<LinuxSocket>, i64> {
     match &*file_of(p, fd)? {
         OpenFile::Socket(s) => Ok(Arc::clone(s)),
@@ -169,18 +176,124 @@ pub fn sendto(p: &Process, fd: u64, buf: u64, len: u64, addr: u64, alen: u64) ->
         })
 }
 
-/// `recvfrom(fd, buf, len, flags, addr, addr_len)`.
-pub fn recvfrom(p: &Process, fd: u64, buf: u64, len: u64, addr: u64, alen: u64) -> LinuxResult {
+/// `recvfrom(fd, buf, len, flags, addr, addr_len)`; `MSG_DONTWAIT` does
+/// not wait.
+pub fn recvfrom(p: &Process, args: [u64; 6]) -> LinuxResult {
+    let [fd, buf, len, flags, addr, alen] = args;
     let s = socket_of(p, fd)?;
-    let nonblock = timeout(&s, 0) == 0;
+    let nonblock = timeout(&s, flags) == 0;
     let (data, ip, port) = crate::net::recv(
         &s.socket,
         (len as usize).min(crate::net::CHUNK),
-        timeout(&s, 0),
+        timeout(&s, flags),
     )
     .map_err(|e| nonblocking_error(e, nonblock))?;
     write_user(p, buf, &data)?;
     write_addr(p, addr, alen, ip, port)?;
+    Ok(data.len() as u64)
+}
+
+/// The (base, len) pairs of the caller's iovec array.
+fn iovecs(p: &Process, iov: u64, count: u64) -> Result<Vec<(u64, u64)>, i64> {
+    if count > 1024 {
+        return Err(EINVAL);
+    }
+    let raw = read_user(p, iov, count as usize * 16)?;
+    Ok(raw
+        .as_chunks::<16>()
+        .0
+        .iter()
+        .map(|c| {
+            let mut a = [0u8; 8];
+            let mut b = [0u8; 8];
+            a.copy_from_slice(&c[..8]);
+            b.copy_from_slice(&c[8..]);
+            (u64::from_le_bytes(a), u64::from_le_bytes(b))
+        })
+        .collect())
+}
+
+/// A `struct msghdr` (56 bytes): name, name length, iovecs and count;
+/// control data is not supported (its length must be 0).
+struct MsgHdr {
+    name: u64,
+    name_len: u64,
+    iov: Vec<(u64, u64)>,
+}
+
+fn read_msghdr(p: &Process, ptr: u64) -> Result<MsgHdr, i64> {
+    let b = read_user(p, ptr, 56)?;
+    let w = |at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap_or([0; 8]));
+    let (name, name_len, iov, iovlen, control_len) =
+        (w(0), w(8) & 0xFFFF_FFFF, w(16), w(24), w(40));
+    if control_len != 0 {
+        return Err(EOPNOTSUPP);
+    }
+    Ok(MsgHdr {
+        name,
+        name_len,
+        iov: iovecs(p, iov, iovlen)?,
+    })
+}
+
+/// `sendmsg(fd, msg, flags)`: the iovecs as one datagram (or stream
+/// piece) to `msg_name`.
+pub fn sendmsg(p: &Process, fd: u64, msg: u64) -> LinuxResult {
+    let s = socket_of(p, fd)?;
+    let h = read_msghdr(p, msg)?;
+    let mut data = Vec::new();
+    for (base, len) in &h.iov {
+        if data.len() + *len as usize > crate::net::CHUNK {
+            return Err(errno::EMSGSIZE);
+        }
+        data.extend_from_slice(&read_user(p, *base, *len as usize)?);
+    }
+    let to = if h.name != 0 && s.kind == Kind::Udp {
+        Some(read_addr(p, h.name, h.name_len)?)
+    } else {
+        None
+    };
+    crate::net::send(&s.socket, &data, to)
+        .map(|n| n as u64)
+        .map_err(|e| match e {
+            abi::Error::InvalidArgument => ENOTCONN,
+            e => errno::from_error(e),
+        })
+}
+
+/// `recvmsg(fd, msg, flags)`: one receive spread over the iovecs; the
+/// source goes to `msg_name`, `msg_namelen` and `msg_flags` are updated.
+pub fn recvmsg(p: &Process, fd: u64, msg: u64, flags: u64) -> LinuxResult {
+    let s = socket_of(p, fd)?;
+    let h = read_msghdr(p, msg)?;
+    let total: u64 = h.iov.iter().map(|v| v.1).sum();
+    let nonblock = timeout(&s, flags) == 0;
+    let (data, ip, port) = crate::net::recv(
+        &s.socket,
+        (total as usize).min(crate::net::CHUNK),
+        timeout(&s, flags),
+    )
+    .map_err(|e| nonblocking_error(e, nonblock))?;
+    let mut at = 0usize;
+    for (base, len) in &h.iov {
+        if at >= data.len() {
+            break;
+        }
+        let n = (*len as usize).min(data.len() - at);
+        write_user(p, *base, &data[at..at + n])?;
+        at += n;
+    }
+    if h.name != 0 {
+        let mut sa = [0u8; 16];
+        sa[0..2].copy_from_slice(&(AF_INET as u16).to_le_bytes());
+        sa[2..4].copy_from_slice(&port.to_be_bytes());
+        sa[4..8].copy_from_slice(&ip);
+        write_user(p, h.name, &sa[..(h.name_len as usize).min(16)])?;
+        write_user(p, msg + 8, &16u32.to_le_bytes())?;
+    }
+    // msg_controllen and msg_flags.
+    write_user(p, msg + 40, &0u64.to_le_bytes())?;
+    write_user(p, msg + 48, &0u32.to_le_bytes())?;
     Ok(data.len() as u64)
 }
 

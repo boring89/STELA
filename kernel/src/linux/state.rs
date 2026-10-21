@@ -41,6 +41,14 @@ pub enum OpenFile {
     },
     /// An `AF_INET` socket (`docs/net.md`).
     Socket(Arc<super::socket::LinuxSocket>),
+    /// A generated, read-only file (`/etc/resolv.conf`): its bytes, made
+    /// when opened, and the offset.
+    Text {
+        /// The contents.
+        data: Vec<u8>,
+        /// Where the next read starts.
+        offset: SpinLock<u64>,
+    },
 }
 
 /// The changing part of an open file.

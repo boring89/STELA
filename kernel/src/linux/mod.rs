@@ -22,6 +22,8 @@ mod files;
 #[cfg(target_os = "none")]
 mod memory;
 #[cfg(target_os = "none")]
+mod poll;
+#[cfg(target_os = "none")]
 mod socket;
 #[cfg(target_os = "none")]
 mod state;

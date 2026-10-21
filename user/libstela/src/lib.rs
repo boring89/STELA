@@ -29,11 +29,13 @@ pub use abi::{Error, Handle, MESSAGE_DATA, Message, PORT_QUEUE_DEPTH, Rights, bo
 pub mod audio;
 pub mod fs;
 pub mod heap;
+pub mod io;
 pub mod ipc;
 pub mod line;
 pub mod net;
 pub mod path;
 pub mod pipe;
+pub mod pipeline;
 pub mod process;
 pub mod sync;
 pub mod sys;

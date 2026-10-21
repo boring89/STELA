@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone wc
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
@@ -170,7 +170,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion
+test: test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -440,6 +440,31 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "shell" --expect "ended)" --expect "memory: " --expect "uptime: " \
 		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+
+# Pipes and jobs (P11, docs/userland.md §6): hello into wc, into a file
+# and appended, wc from the file, a Linux program into wc, a job killed
+# in the background and one brought to the foreground.
+test-pipe: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-pipe.img
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-pipe.log \
+		--type "STELA shell" "hello | wc\n" \
+		--type "wc exited with code" "hello > out.txt\n" \
+		--type "hello exited with code" "cat out.txt\n" \
+		--type "hello from a second thread" "hello >> out.txt\n" \
+		--type "hello exited with code" "wc < out.txt\n" \
+		--type "wc: 6 lines" "run linux/hello x | wc\n" \
+		--type "wc exited with code" "proctest wait &\n" \
+		--type "[1] proctest wait" "jobs\n" \
+		--type "[1] running" "kill 1\n" \
+		--type "[1] killed" "spin &\n" \
+		--type "[2] spin" "fg 2\n" \
+		--expect "STELA shell" --expect "wc: 3 lines" --expect "wc exited with code 0" \
+		--expect "hello from user mode" --expect "wc: 6 lines" --expect "wc: 5 lines" \
+		--expect "[1] running  proctest wait" --expect "[1] killed (137)" \
+		--expect "spin: " --expect "[2] exited with code 0" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-pipe.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 
 # Power: `shutdown` in the shell flushes the volumes and turns the machine

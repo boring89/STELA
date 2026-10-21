@@ -14,6 +14,12 @@
 //! `run` looks in the current folder, then in `Initrd:/`; the program runs
 //! in the foreground (Ctrl-C kills it), with the current folder as its
 //! working directory, and the keyboard comes back afterwards.
+//!
+//! P11 (`docs/userland.md` §6): a line with `|`, `<`, `>`, `>>` or `&`
+//! runs programs (no built-in commands) connected by pipes: each one's
+//! `[1]` writes into the next one's `[5]`; `< file` and `> file` are fed
+//! and drained by the shell through pipes; `&` starts a job in the
+//! background (`jobs`, `fg N`, `kill N`).
 
 #![no_std]
 #![no_main]
@@ -52,6 +58,25 @@ struct Shell {
     /// The window server, when the shell runs in a terminal window: given
     /// to the programs it starts as their `[2]`.
     window_server: Option<Handle>,
+    /// Jobs started with `&`.
+    jobs: Vec<Job>,
+    next_job: u32,
+}
+
+/// A pipeline running in the background.
+struct Job {
+    id: u32,
+    /// Its processes, the last one's exit code is the job's.
+    procs: Vec<Owned>,
+    text: String,
+}
+
+/// A program ready to start: its file, the folder it is in, its
+/// arguments.
+struct Prepared {
+    file: Owned,
+    folder: Option<Owned>,
+    args: Vec<String>,
 }
 
 fn describe(e: Error) -> &'static str {
@@ -77,6 +102,12 @@ impl Shell {
     }
 
     fn run_line(&mut self, line: &str) -> bool {
+        if libstela::pipeline::is_pipeline(line) {
+            if let Err(why) = self.pipeline(line) {
+                println!("{why}");
+            }
+            return true;
+        }
         let words: Vec<&str> = line.split_whitespace().collect();
         let Some((&command, args)) = words.split_first() else {
             return true;
@@ -108,6 +139,12 @@ impl Shell {
             // docs/sound.md).
             ("ifconfig" | "ping" | "fetch" | "tone", rest) => self.run(command, rest),
             ("ps", []) => ps(),
+            ("jobs", []) => {
+                self.list_jobs();
+                Ok(())
+            }
+            ("fg", [n]) => self.fg(n),
+            ("kill", [n]) => self.kill_job(n),
             ("mem", []) => mem(),
             ("uptime", []) => uptime(),
             ("vols", []) => vols(),
@@ -266,6 +303,324 @@ impl Shell {
         Err(alloc::format!("{name}: no such program"))
     }
 
+    /// The program `program` with arguments `rest`, found and named.
+    fn prepare(&self, program: &str, rest: &[String]) -> Result<Prepared, String> {
+        let (file, folder) = self.find_program(program)?;
+        let base = program.rsplit(['/', ':']).next().unwrap_or(program);
+        let base = base.trim_end_matches('/');
+        let base = if is_bundle(base) {
+            &base[..base.len() - 4]
+        } else {
+            base
+        };
+        let mut args = vec![String::from(base)];
+        args.extend(rest.iter().cloned());
+        Ok(Prepared { file, folder, args })
+    }
+
+    /// Our terminal for a program: ours if we run in one, else a new one
+    /// that prints on the console.
+    fn program_tty(&self) -> Result<Owned, String> {
+        if handle_kind(bootstrap::CONSOLE) == Ok(object_kind::TTY) {
+            handle_duplicate(
+                bootstrap::CONSOLE,
+                Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+            )
+            .map(Owned)
+            .map_err(|e| String::from(describe(e)))
+        } else {
+            tty::create()
+                .map(Owned)
+                .map_err(|e| String::from(describe(e)))
+        }
+    }
+
+    /// Starts `p` with `out` as its `[1]` and `input` as its `[5]`.
+    fn start(&self, p: &Prepared, out: Handle, input: Handle) -> Result<Owned, String> {
+        let cwd = open_at(&self.cwd, open::READ | open::WRITE)
+            .or_else(|_| open_at(&self.cwd, open::READ))
+            .map_err(|e| alloc::format!("{}: {}", self.cwd, describe(e)))?;
+        // A pipe's writing end (with WRITE) or a terminal (without).
+        let out = match pass(out, Rights::SEND | Rights::WRITE | Rights::DUPLICATE) {
+            Handle::NONE => pass(out, Rights::SEND | Rights::DUPLICATE),
+            h => h,
+        };
+        let handles = [
+            out,
+            self.window_server.map_or(Handle::NONE, |ws| {
+                pass(ws, Rights::SEND | Rights::DUPLICATE)
+            }),
+            process::pass_dir(cwd.0),
+            p.folder
+                .as_ref()
+                .map_or(Handle::NONE, |f| process::pass_dir(f.0)),
+            if input == Handle::NONE {
+                Handle::NONE
+            } else {
+                pass(input, Rights::READ | Rights::WAIT | Rights::DUPLICATE)
+            },
+        ];
+        let mut caps = process::inherited();
+        if let Some(i) = process::pass_capability(libstela::abi::capability::INPUT) {
+            caps.push((libstela::abi::capability::INPUT, i));
+        }
+        let args: Vec<&str> = p.args.iter().map(String::as_str).collect();
+        process::spawn_with(p.file.0, &args, &handles, &caps)
+            .map(Owned)
+            .map_err(|e| alloc::format!("{}: {}", p.args[0], describe(e)))
+    }
+
+    /// A line with pipes, redirections or `&`.
+    fn pipeline(&mut self, line: &str) -> Result<(), String> {
+        use libstela::pipe;
+        let p = libstela::pipeline::parse(line).map_err(|e| String::from(e.describe()))?;
+        if p.background && (p.input.is_some() || p.output.is_some()) {
+            return Err(String::from("< and > need the foreground"));
+        }
+        let mut prepared = Vec::new();
+        for s in &p.stages {
+            let (name, rest) = match s.args.split_first() {
+                Some((run, rest)) if run == "run" && !rest.is_empty() => (&rest[0], &rest[1..]),
+                Some((name, rest)) => (name, rest),
+                None => return Err(String::from("nothing to run")),
+            };
+            prepared.push(self.prepare(name, rest)?);
+        }
+        // The files: what we feed in and what we fill.
+        let input = match &p.input {
+            Some(path) => {
+                let loc = self.resolve(path)?;
+                Some(
+                    open_at(&loc, open::READ)
+                        .map_err(|e| alloc::format!("{loc}: {}", describe(e)))?,
+                )
+            }
+            None => None,
+        };
+        let output = match &p.output {
+            Some((path, append)) => {
+                let loc = self.resolve(path)?;
+                let mut flags = open::READ | open::WRITE | open::CREATE;
+                if !append {
+                    flags |= open::TRUNCATE;
+                }
+                let f =
+                    open_at(&loc, flags).map_err(|e| alloc::format!("{loc}: {}", describe(e)))?;
+                let at = if *append {
+                    fs::stat(f.0).map(|s| s.size).unwrap_or(0)
+                } else {
+                    0
+                };
+                Some((f, at))
+            }
+            None => None,
+        };
+        let tty = self.program_tty()?;
+        let pipe = |_: ()| pipe::create().map(|(r, w)| (Owned(r), Owned(w)));
+        let err = |e: Error| String::from(describe(e));
+        // Pipes between the stages, and around the files.
+        let mut links = Vec::new();
+        for _ in 1..prepared.len() {
+            links.push(pipe(()).map_err(err)?);
+        }
+        let feed = if input.is_some() {
+            Some(pipe(()).map_err(err)?)
+        } else {
+            None
+        };
+        let drain = if output.is_some() {
+            Some(pipe(()).map_err(err)?)
+        } else {
+            None
+        };
+        let mut procs = Vec::new();
+        let last = prepared.len() - 1;
+        for (i, prog) in prepared.iter().enumerate() {
+            let out = if i < last {
+                links[i].1.0
+            } else {
+                drain.as_ref().map_or(tty.0, |d| d.1.0)
+            };
+            let input = if i > 0 {
+                links[i - 1].0.0
+            } else {
+                feed.as_ref().map_or(Handle::NONE, |f| f.0.0)
+            };
+            match self.start(prog, out, input) {
+                Ok(h) => procs.push(h),
+                Err(e) => {
+                    for h in &procs {
+                        let _ = process::kill(h.0);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        // Only the children hold the pipes between them now.
+        drop(links);
+        let (feed_w, drain_r) = (
+            feed.map(|(r, w)| {
+                drop(r);
+                w
+            }),
+            drain.map(|(r, w)| {
+                drop(w);
+                r
+            }),
+        );
+        let text = String::from(line.trim().trim_end_matches('&').trim());
+        if p.background {
+            let id = self.next_job;
+            self.next_job += 1;
+            println!("[{id}] {text}");
+            self.jobs.push(Job { id, procs, text });
+            return Ok(());
+        }
+        let base = prepared[last].args[0].clone();
+        let code = self.foreground(&procs, &tty, input.zip(feed_w), output.zip(drain_r))?;
+        println!("{base} exited with code {code}");
+        Ok(())
+    }
+
+    /// Waits for the processes (the last one's exit code), passing keys
+    /// on, feeding `input` into its pipe and draining the output pipe
+    /// into its file.
+    fn foreground(
+        &self,
+        procs: &[Owned],
+        tty: &Owned,
+        mut input: Option<(Owned, Owned)>,
+        mut output: Option<((Owned, u64), Owned)>,
+    ) -> Result<i64, String> {
+        use libstela::pipe;
+        let Some(last) = procs.last() else {
+            return Err(String::from("nothing to run"));
+        };
+        let mut in_at = 0u64;
+        let mut chunk = vec![0u8; 4096];
+        let mut code = None;
+        loop {
+            // Feed: as much as the pipe takes now.
+            if let Some((file, w)) = &input {
+                let n = fs::read(file.0, &mut chunk, in_at).unwrap_or(0);
+                if n == 0 {
+                    input = None; // the end: closing the pipe tells the reader
+                } else {
+                    match pipe::write(w.0, &chunk[..n], 0) {
+                        Ok(k) => in_at += k as u64,
+                        Err(Error::TimedOut) => {}
+                        Err(_) => input = None,
+                    }
+                }
+            }
+            // Drain: what came out so far.
+            if let Some(((file, at), r)) = &mut output {
+                loop {
+                    match pipe::read(r.0, &mut chunk, 0) {
+                        Ok(0) => {
+                            output = None;
+                            break;
+                        }
+                        Ok(n) => {
+                            let _ = fs::write(file.0, &chunk[..n], *at);
+                            *at += n as u64;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            if code.is_none() {
+                match process::wait(last.0, 10_000_000) {
+                    Ok(c) => code = Some(c),
+                    Err(Error::TimedOut) => {}
+                    Err(e) => return Err(String::from(describe(e))),
+                }
+            }
+            if let Some(c) = code
+                && output.is_none()
+            {
+                // The others: a moment to finish, then they go.
+                for p in procs {
+                    if process::wait(p.0, 1_000_000_000).is_err() {
+                        let _ = process::kill(p.0);
+                    }
+                }
+                let _ = input_attach(bootstrap::MAIN_PORT);
+                return Ok(c);
+            }
+            if code.is_some() {
+                // Wait for the rest of the output.
+                libstela::sleep_ms(1);
+            }
+            let mut msg = Message::new();
+            while port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_ok() {
+                if msg.tag != tag::INPUT_KEY {
+                    continue;
+                }
+                if KeyEvent::decode(msg.payload()).and_then(|e| key_to_char(&e)) == Some('\u{3}') {
+                    println!("^C");
+                    for p in procs {
+                        let _ = process::kill(p.0);
+                    }
+                } else {
+                    let _ = port_send(tty.0, &msg);
+                }
+            }
+        }
+    }
+
+    fn list_jobs(&mut self) {
+        for job in &self.jobs {
+            let last = job.procs.last().map(|p| p.0);
+            match last.map(|h| process::wait(h, 0)) {
+                Some(Ok(code)) => println!("[{}] done ({code})  {}", job.id, job.text),
+                _ => println!("[{}] running  {}", job.id, job.text),
+            }
+        }
+        // Finished jobs are listed once.
+        self.jobs.retain(|j| {
+            j.procs
+                .last()
+                .is_none_or(|p| process::wait(p.0, 0) == Err(Error::TimedOut))
+        });
+    }
+
+    fn take_job(&mut self, n: &str) -> Result<Job, String> {
+        let id: u32 = n
+            .trim_start_matches('%')
+            .parse()
+            .map_err(|_| String::from("no such job"))?;
+        let at = self
+            .jobs
+            .iter()
+            .position(|j| j.id == id)
+            .ok_or_else(|| String::from("no such job"))?;
+        Ok(self.jobs.remove(at))
+    }
+
+    fn fg(&mut self, n: &str) -> Result<(), String> {
+        let job = self.take_job(n)?;
+        println!("{}", job.text);
+        let tty = self.program_tty()?;
+        let code = self.foreground(&job.procs, &tty, None, None)?;
+        println!("[{}] exited with code {code}", job.id);
+        Ok(())
+    }
+
+    fn kill_job(&mut self, n: &str) -> Result<(), String> {
+        let job = self.take_job(n)?;
+        for p in &job.procs {
+            let _ = process::kill(p.0);
+        }
+        let code = job
+            .procs
+            .last()
+            .and_then(|p| process::wait(p.0, 1_000_000_000).ok())
+            .unwrap_or(-1);
+        println!("[{}] killed ({code})", job.id);
+        Ok(())
+    }
+
     fn run(&self, program: &str, rest: &[&str]) -> Result<(), String> {
         let (file, folder) = self.find_program(program)?;
         let cwd = open_at(&self.cwd, open::READ | open::WRITE)
@@ -364,6 +719,8 @@ fn help() {
         "  run prog [args]  run a program or Name.app (current folder, then Initrd:/); Ctrl-C stops it"
     );
     println!("  ps, mem, uptime  processes, memory, time since boot");
+    println!("  a | b, a > f, a >> f, a < f, a &   pipes, files, background (programs only)");
+    println!("  jobs, fg N, kill N                 background jobs");
     println!("  vols             volumes");
     println!("  ifconfig         the network card and address");
     println!("  ping host [n]    send ICMP echo requests");
@@ -448,6 +805,8 @@ fn main() -> i64 {
     let mut shell = Shell {
         cwd: Location::root(&start_volume()),
         window_server: None,
+        jobs: Vec::new(),
+        next_job: 1,
     };
     // Report in to whoever started us (init attaches the keyboard).
     let reported = handle_duplicate(bootstrap::MAIN_PORT, Rights::SEND | Rights::TRANSFER)

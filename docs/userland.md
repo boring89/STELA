@@ -175,6 +175,26 @@ Data:/> ps
 (1 ended)
 ```
 
+### 6.1 管線、重新導向、背景工作（P11，使用者尚未審核）
+
+**比喻**：以前櫃台一次只叫一個人辦事；現在可以排一條生產線，前一個人做完的東西直接用輸送帶（pipe）交給下一個人；原料可以從倉庫（檔案）搬來，成品可以直接入庫；不急的工作可以叫人在後面慢慢做（背景），櫃台繼續接下一位。
+
+```
+ hello | wc                 hello 的 [1] = pipe 的寫端，wc 的 [5] = 讀端
+ hello > out.txt            shell 建一條 pipe 給 hello 當 [1]，自己把讀端倒進檔案
+ hello >> out.txt           同上，從檔案結尾接著寫
+ wc < out.txt               shell 建一條 pipe 給 wc 當 [5]，自己把檔案灌進寫端
+ run linux/hello x | wc     Linux 程式：[1] 是 pipe 寫端時 fd 1、2 就是它；[5] 是 fd 0
+ proctest wait &            背景：印 [1] proctest wait，提示符馬上回來
+ jobs / fg N / kill N       列出（結束的列一次就移除）、拉到前景等、全部 kill
+```
+
+- 解析：`libstela::pipeline`（純邏輯，host 測試）：`|`、`<`、`>`、`>>`、`&` 前後不必空白；`<` 只能給第一個程式、`>`／`>>` 只能給最後一個、`&` 必須在行尾。有這些符號的行，**每一段都是程式**（不是內建指令；開頭的 `run` 可寫可不寫）；沒有的行照舊。
+- `[5]`（`bootstrap::STDIN`）：P11 定為標準輸入（pipe 讀端或檔案）。libstela `io::has_stdin()`、`io::read(buf)`（pipe → `PipeRead`，檔案 → `FileRead` 記著位置）；輸出仍是 `[1]`——pipe 的寫端收 `CONSOLE_WRITE`（`docs/ipc.md` §14），所以 `println!` 不用改。
+- 前景：shell 一個迴圈同時做四件事——把 `<` 的檔案一塊塊灌進 pipe（不等）、把 `>` 的 pipe 倒進檔案、每 10 ms 看最後一段結束沒、把鍵盤轉給 tty（Ctrl-C kill 每一段）。最後一段結束、輸出也倒完後，其他段給 1 秒，還沒結束就 kill；印 `prog exited with code N`（最後一段的）。
+- 背景：不能有 `<`／`>`（shell 不在旁邊灌與倒）；輸出照樣到 terminal；背景工作拿不到鍵盤。
+- 新程式 `wc`：數 `[5]` 的行、字、位元組（`wc: L lines, W words, B bytes`）；沒有輸入就說明後結束（1）。
+
 ## 7. 怎麼寫一個程式
 
 ```rust
@@ -203,9 +223,10 @@ fn main() -> i64 {
 
 | 測試 | 內容 |
 |---|---|
-| host `libstela` | 路徑解析（相對、`..`、根、卷宗、冒號在名字裡）、行編輯（Backspace、Ctrl-U、上限、控制字元、Tab、UTF-8）、參數切分 |
+| host `libstela` | P11：管線的解析（段、`<`、`>>`、`&`、各種錯誤）；路徑解析（相對、`..`、根、卷宗、冒號在名字裡）、行編輯（Backspace、Ctrl-U、上限、控制字元、Tab、UTF-8）、參數切分 |
 | host `abi` | 編號 27–31、`KILL`、`ProcessInfo`／`MemInfo` 編碼、`BOOTSTRAP_ARGS`、`EXIT_KILLED` |
 | host `frame::console::text` | backspace 退一格、不會小於 0 |
+| `make test-pipe`（P11） | 一般 kernel + AHCI 測試磁碟：`hello | wc`（3 行）、`hello > out.txt`、`cat out.txt`、`hello >> out.txt`、`wc < out.txt`（6 行）、`run linux/hello x | wc`（5 行）、`proctest wait &`、`jobs`、`kill 1`（137）、`spin &`、`fg 2` |
 | selftest "processes" | `proctest` 跑兩次（第二次前後 PMM 頁框數相同、沒有 Zombie） |
 | `proctest`（使用者程式） | heap：1 MiB 的 `Vec`、1000 個 `Box`；自己的參數；從 `Initrd:/proctest` 啟動自己並傳 300 bytes 的參數（走 Memory）→ exit 42、再等一次同樣的值；另一個永遠等的子行程：10 ms 逾時、行程表裡有兩個 proctest、kill → 137；spawn 資料夾 → `IsDir`、wait 檔案 → `WrongType`、wait 自己 → `AccessDenied`；`SysInfo` 的記憶體與時間 |
 | `make test-fb` | 一般 kernel：看到 `STELA shell` 後打 `uptime`，看到 `uptime:` 後 screendump |
@@ -216,7 +237,7 @@ fn main() -> i64 {
 ## 9. 已知限制
 
 - 沒有 Thread 物件（`ThreadCreate` 仍回 id；沒有 join）——目前沒有使用者，延後。
-- 沒有環境變數、沒有管線與重新導向、沒有背景工作；`run` 的程式拿不到鍵盤（除非它自己 `InputAttach`）。
+- 沒有環境變數；管線與重新導向只接程式（內建指令不行，例如 `ls | wc`）、沒有 `2>`、引號與跳脫；背景工作不能重新導向；`run` 的程式拿不到鍵盤（除非它自己 `InputAttach`）。
 - shell 一行 200 字元、沒有歷史與游標移動；`cp` 整個檔案讀進記憶體。
 - 行程表的已結束紀錄永遠不清（`ps` 只顯示數量）。
 - heap 不把記憶體還給 kernel；沒有 `realloc` 的就地成長（GlobalAlloc 的預設：配新的再複製）。

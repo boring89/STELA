@@ -31,6 +31,6 @@ mod state;
 mod sys;
 
 #[cfg(target_os = "none")]
-pub use state::{OpenFile, State};
+pub use state::{FileState, OpenFile, State};
 #[cfg(target_os = "none")]
 pub use sys::{dispatch, initial_stack};

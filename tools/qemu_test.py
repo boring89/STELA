@@ -121,7 +121,8 @@ class Qmp:
         self.sock.close()
 
 
-SHIFTED = {":": "semicolon", "_": "minus", "!": "1", "?": "slash", "\"": "apostrophe"}
+SHIFTED = {":": "semicolon", "_": "minus", "!": "1", "?": "slash", "\"": "apostrophe",
+           "|": "backslash", ">": "dot", "<": "comma", "&": "7"}
 PLAIN = {" ": "spc", "/": "slash", ".": "dot", "-": "minus", ";": "semicolon",
          ",": "comma", "=": "equal", "\n": "ret", "'": "apostrophe"}
 

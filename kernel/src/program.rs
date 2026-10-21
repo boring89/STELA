@@ -261,6 +261,40 @@ fn spawn_linux(
         }) => Arc::clone(tty),
         _ => Tty::new(false),
     };
+    // A pipe as [1] is the output, a pipe or file as [5] the input (P11).
+    let stdout = match &initial[0] {
+        Some(Entry {
+            object: KernelObject::PipeWrite(end),
+            ..
+        }) => Some(crate::linux::OpenFile::PipeWrite(
+            Arc::clone(end),
+            core::sync::atomic::AtomicBool::new(false),
+        )),
+        _ => None,
+    };
+    let stdin = match &initial[4] {
+        Some(Entry {
+            object: KernelObject::PipeRead(end),
+            ..
+        }) => Some(crate::linux::OpenFile::PipeRead(
+            Arc::clone(end),
+            core::sync::atomic::AtomicBool::new(false),
+        )),
+        Some(Entry {
+            object: KernelObject::File(node),
+            ..
+        }) => Some(crate::linux::OpenFile::File {
+            node: node.clone(),
+            state: frame::sync::SpinLock::new(crate::linux::FileState {
+                offset: 0,
+                append: false,
+                readable: true,
+                writable: false,
+                flags: 0,
+            }),
+        }),
+        _ => None,
+    };
     let folder = |e: &Option<Entry>| match e {
         Some(Entry {
             object: KernelObject::Directory(node),
@@ -285,7 +319,8 @@ fn spawn_linux(
     }
     volumes.dedup();
     let (_, image_end) = elf.image_span();
-    let mut state = crate::linux::State::new(Arc::clone(&tty), cwd, image_end);
+    let mut state =
+        crate::linux::State::with_streams(Arc::clone(&tty), stdin, stdout, cwd, image_end);
     state.network = network;
     state.volumes = volumes;
     let process = task::process::create_with(name, initial, Some(state))?;

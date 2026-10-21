@@ -32,6 +32,7 @@ members = [
     "user/ping",
     "user/fetch",
     "user/tone",
+    "user/wc",
     "classic",
     "tools/ehfs",
 ]

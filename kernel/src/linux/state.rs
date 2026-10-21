@@ -110,12 +110,26 @@ impl State {
     /// A new state: descriptors 0, 1 and 2 on `tty`, working directory
     /// `cwd`, the break at `image_end` (rounded up to a page).
     pub fn new(tty: Arc<Tty>, cwd: String, image_end: u64) -> State {
+        State::with_streams(tty, None, None, cwd, image_end)
+    }
+
+    /// Like [`State::new`], with descriptor 0 on `stdin` and 1, 2 on
+    /// `stdout` when given (P11: a shell pipeline's pipes or files).
+    pub fn with_streams(
+        tty: Arc<Tty>,
+        stdin: Option<OpenFile>,
+        stdout: Option<OpenFile>,
+        cwd: String,
+        image_end: u64,
+    ) -> State {
         let mut fds = FdTable::new();
         let file = Arc::new(OpenFile::Tty(Arc::clone(&tty)));
-        for _ in 0..3 {
-            // An empty table has room for three.
-            let _ = fds.insert(Arc::clone(&file));
-        }
+        let input = stdin.map_or_else(|| Arc::clone(&file), Arc::new);
+        let output = stdout.map_or_else(|| Arc::clone(&file), Arc::new);
+        // An empty table has room for three.
+        let _ = fds.insert(input);
+        let _ = fds.insert(Arc::clone(&output));
+        let _ = fds.insert(output);
         let start = image_end.next_multiple_of(4096);
         State {
             fds: SpinLock::new(fds),

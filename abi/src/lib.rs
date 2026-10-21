@@ -867,6 +867,12 @@ pub mod time {
     /// -14:00 to +14:00).
     pub fn parse_offset(text: &str) -> Option<i32> {
         let t = text.trim();
+        // Only ASCII is valid; checking first keeps the slicing below on
+        // character boundaries (P11 K45: the fuzzer found `+` followed
+        // by a three-byte character).
+        if !t.is_ascii() {
+            return None;
+        }
         let (sign, rest) = match t.as_bytes().first()? {
             b'+' => (1, &t[1..]),
             b'-' => (-1, &t[1..]),
@@ -1992,6 +1998,8 @@ mod tests {
         assert_eq!(time::parse_offset("08:00"), None);
         assert_eq!(time::parse_offset("+15:00"), None);
         assert_eq!(time::parse_offset("+08:60"), None);
+        // Found by the fuzzer (P11 K45): not on a character boundary.
+        assert_eq!(time::parse_offset("+中a"), None);
         assert_eq!(&time::offset_text(-330), b"-05:30");
         let mut tz = [0u8; 12];
         let n = time::posix_tz(480, &mut tz);

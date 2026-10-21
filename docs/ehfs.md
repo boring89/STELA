@@ -38,7 +38,7 @@ eHFS 像 Classic Mac 的 HFS：一個**卡片櫃**（B-tree 目錄），每個�
 
 - superblock：magic `"eHFS\0\r\n\x1a"`、版本 1、區塊大小 4096、區塊數、空閒數、下一個 CNID、檔案／資料夾數、compat／ro_compat／incompat（不認得 incompat 就拒絕掛載）、狀態（clean／mounted／errors）、UUID、時間、6 個特殊檔案的 fork 描述（144 bytes：長度、區塊數、8 段 extent）、卷宗名、Unicode 版本（1240，`0x0F0000`）、節點大小（1244，16384）。
 - CNID：1 根的父親、2 根、3–8 特殊檔案、16 起配給檔案；不重用；不超過 2³²−1（E5，Mac 端是 32 位元）。
-- B-tree 節點 16 KiB：32 bytes 標頭（CRC、種類、高度、筆數、前後節點、空閒起點），紀錄從前往後（u16 鍵長、鍵、u16 值長、值），偏移表從尾端往前。節點 0 是標頭節點（根、深度、節點數、空閒數、筆數、首尾 leaf、節點使用 bitmap）。**鍵裡的整數是大端序**，三棵樹都用位元組比較。
+- B-tree 節點 16 KiB：32 bytes 標頭（CRC、種類、高度、筆數、前後節點、空閒起點），紀錄從前往後（u16 鍵長、鍵、u16 值長、值），偏移表從尾端往前。節點 0 是標頭節點（根、深度、節點數、空閒數、筆數、首尾 leaf、節點使用 bitmap）。**鍵裡的整數是大端序**，三棵樹都用位元組比較。讀進來的 index／leaf 節點除了 CRC，還要**結構完整**才用（`btree::well_formed`：紀錄都在資料區內且不重疊、偏移表放得下、index 節點的值放得下子節點編號；P11 K45 的 fuzz 找到 CRC 對但偏移指到節點外的情況，`docs/testing.md` §3.1）。
 - catalog：鍵 = 父 CNID（8 bytes BE）+ 名稱的比較形式；thread 紀錄的鍵只有 CNID（排在該資料夾的子項目前）。檔案紀錄含兩個 fork 描述與原名（UTF-8）。
 - extents：鍵 = CNID（BE）+ fork（0/1）+ 起始檔案區塊（BE），值 = 8 段。
 - attributes：鍵 = CNID（BE）+ 名稱（原樣、分大小寫）；值 = u16 種類 1、u32 長度、內容（≤ 3 KiB）。

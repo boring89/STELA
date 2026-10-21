@@ -102,6 +102,38 @@ fn free_space(n: &[u8]) -> usize {
     NODE_SIZE - 2 * count(n) - usize::from(le16(n, node::FREE))
 }
 
+/// Whether an index or leaf node read from the disk can be used: the
+/// records lie between `DATA` and `FREE` without overlapping, the offset
+/// table fits, an index node's values are child numbers (P11 K45: the
+/// fuzzer found a record past the node's end; every accessor above
+/// trusts these).
+pub(crate) fn well_formed(n: &[u8]) -> bool {
+    let c = count(n);
+    let free = usize::from(le16(n, node::FREE));
+    if free < node::DATA || free + 2 * c > NODE_SIZE {
+        return false;
+    }
+    let mut spans = Vec::with_capacity(c);
+    for i in 0..c {
+        let o = offset_of(n, i);
+        if o < node::DATA || o + 2 > free {
+            return false;
+        }
+        let k = usize::from(le16(n, o));
+        if o + 4 + k > free {
+            return false;
+        }
+        let v = usize::from(le16(n, o + 2 + k));
+        let end = o + 4 + k + v;
+        if end > free || (n[node::KIND] == node::KIND_INDEX && v < 8) {
+            return false;
+        }
+        spans.push((o, end));
+    }
+    spans.sort_unstable();
+    spans.windows(2).all(|w| w[0].1 <= w[1].0)
+}
+
 pub(crate) fn child_of(n: &[u8], i: usize) -> u64 {
     le64(value_of(n, i), 0)
 }
@@ -214,7 +246,10 @@ impl<D: BlockDevice> Volume<D> {
     pub(crate) fn read_node(&mut self, tree: Special, n: u64) -> Result<Node, Error> {
         let mut buf = new_node();
         self.node_io(tree, n, &mut buf, false)?;
-        if n != 0 && buf[node::KIND] != node::KIND_INDEX && buf[node::KIND] != node::KIND_LEAF {
+        if n != 0
+            && (buf[node::KIND] != node::KIND_INDEX && buf[node::KIND] != node::KIND_LEAF
+                || !well_formed(&buf))
+        {
             return Err(Error::Corrupt);
         }
         Ok(buf)

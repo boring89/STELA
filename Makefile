@@ -64,7 +64,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
 USER_CRATES := libstela toolbox bin $(USER_PROGRAMS)
 
-.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
+.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
@@ -177,7 +177,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-browser
+test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-browser
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -188,6 +188,15 @@ test-host: initrd host-images
 	diff -r $(BUILD)/assets-check assets/generated
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 	cargo test --lib $(addprefix -p ,$(HOST_LIB_CRATES))
+
+# Fuzzing on the host (P11 K45, docs/testing.md §3): the parsers of
+# disks (eHFS, FAT, GPT, MBR), the initrd, network frames (and two stacks
+# talking over a lossy wire), HTTP, DNS, HTML, boot.cfg/classic.cfg and
+# paths get changed valid inputs; a panic or a hang fails, the input is
+# saved to build/fuzz-<target>.bin. At most 60 s.
+test-fuzz: host-images
+	cargo build --profile fuzz -p fuzz
+	$(BUILD)/target/fuzz/fuzz $(BUILD)
 
 # The keyboard self test prints "input: waiting"; the script then types
 # "stela" and Enter through QMP send-key.
@@ -824,6 +833,7 @@ clippy:
 	cargo clippy --tests $(addprefix -p ,$(HOST_CRATES)) -- -D warnings
 	cargo clippy --tests --lib -p classic -- -D warnings
 	cargo clippy --bins -p ehfs-tools -- -D warnings
+	cargo clippy --bins -p fuzz -- -D warnings
 	cargo clippy --lib --tests $(addprefix -p ,$(HOST_LIB_CRATES)) -- -D warnings
 
 fmt:

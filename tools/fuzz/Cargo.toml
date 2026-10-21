@@ -1,0 +1,29 @@
+[package]
+name = "fuzz"
+description = "Host fuzzing of STELA's parsers: random mutations of valid inputs must not panic or hang (P11 K45)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fuzz"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+block = { path = "../../block" }
+bootinfo = { path = "../../bootinfo" }
+classic = { path = "../../classic" }
+ehfs = { path = "../../ehfs" }
+kernel = { path = "../../kernel" }
+libstela = { path = "../../user/libstela" }
+net = { path = "../../net" }
+periplus = { path = "../../user/periplus" }
+toolbox = { path = "../../user/toolbox" }
+
+[lints]
+workspace = true

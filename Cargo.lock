@@ -123,6 +123,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "block",
+ "bootinfo",
+ "classic",
+ "ehfs",
+ "kernel",
+ "libstela",
+ "net",
+ "periplus",
+ "toolbox",
+]
+
+[[package]]
 name = "hello"
 version = "0.1.0"
 dependencies = [

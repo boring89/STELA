@@ -124,6 +124,21 @@ fn boot_information(info: &'static BootInfo) {
 /// The free frame count once it reaches `expected`, or after 200 ms: a
 /// process whose end `wait_process` reported may still be freeing its
 /// memory on another processor (`docs/smp.md`).
+/// The free frame count once it stops changing (two readings 5 ms apart
+/// agree).
+fn stable_frames() -> usize {
+    let mut last = pmm::stats().0;
+    for _ in 0..100 {
+        task::sleep_ms(5);
+        let now = pmm::stats().0;
+        if now == last {
+            break;
+        }
+        last = now;
+    }
+    last
+}
+
 fn settled_frames(expected: usize) -> usize {
     for _ in 0..200 {
         if pmm::stats().0 == expected {
@@ -1509,10 +1524,12 @@ fn linux_personality(_: &'static BootInfo) {
     // second run gives back every frame (descriptors, tty, memory).
     let pid = program::spawn_with("linux-raw", &raw, None).expect("spawn failed");
     assert_eq!(task::wait_process(pid), Some(38));
-    let (free, _) = pmm::stats();
+    // With several processors the ended thread may be freed a little
+    // after the exit is recorded (by the next thread on its processor).
+    let free = stable_frames();
     let pid = program::spawn_with("linux-raw", &raw, None).expect("spawn failed");
     assert_eq!(task::wait_process(pid), Some(38));
-    assert_eq!(pmm::stats().0, free, "a Linux process leaked memory");
+    assert_eq!(settled_frames(free), free, "a Linux process leaked memory");
     // Forced personality: the same code as a STELA program makes STELA
     // calls (1 = ThreadExit), so it ends with code 0 without printing.
     let pid = program::spawn_with("forced", &raw, Some(Personality::Stela)).expect("spawn failed");

@@ -6,7 +6,7 @@
 Usage: fb_check.py <screen.ppm> [--min-ink 0.001] [--max-ink 0.3]
                    [--expect-rect X,Y,W,H,#RRGGBB] ...
                    [--expect-text X,Y,W,H,#RRGGBB,BANDS] ...
-                   [--expect-pattern X,Y,W,H,#RRGGBB,#RRGGBB] ...
+                   [--expect-pattern X,Y,W,H,#RRGGBB,#RRGGBB[,CELL]] ...
 
 Without rectangle options (the text console): the most common colour is
 taken as the background; "ink" is every other pixel. The screen passes if
@@ -20,7 +20,8 @@ the rectangle, the pixels that are not the given background colour must
 form at least BANDS separate bands of rows (lines of text in a window).
 --expect-pattern: the rectangle is a checkerboard of the two colours
 (each pixel differs from its right and lower neighbours: the Mac's 50%
-gray desktop pattern).
+gray desktop pattern); with CELL, of CELL x CELL squares (the pattern
+enlarged; X,Y must be a square's corner).
 """
 import argparse
 import sys
@@ -86,9 +87,9 @@ def main():
     return 0
 
 
-def parse_rect(spec, extra):
+def parse_rect(spec, extra, optional=0):
     parts = spec.split(",")
-    if len(parts) != 5 + extra:
+    if not 5 + extra <= len(parts) <= 5 + extra + optional:
         sys.exit(f"bad rectangle {spec!r}")
     x, y, w, h = (int(p) for p in parts[:4])
     colour = bytes.fromhex(parts[4].lstrip("#"))
@@ -129,8 +130,9 @@ def check_rects(args, width, height, pixels):
             print(f"fb_check: FAIL expected at least {extra[0]} lines", file=sys.stderr)
             ok = False
     for spec in args.expect_pattern:
-        x, y, w, h, first, extra = parse_rect(spec, 1)
+        x, y, w, h, first, extra = parse_rect(spec, 1, 1)
         second = bytes.fromhex(extra[0].lstrip("#"))
+        cell = int(extra[1]) if len(extra) > 1 else 1
         rows = region(width, height, pixels, x, y, w, h)
         cells = sum(len(r) for r in rows)
         good = 0
@@ -138,7 +140,7 @@ def check_rects(args, width, height, pixels):
             # The colour of the top left pixel fixes the phase.
             phase = 0 if rows[0][0] == first else 1
             good = sum(1 for j, row in enumerate(rows) for i, c in enumerate(row)
-                       if c == (first if (i + j + phase) % 2 == 0 else second))
+                       if c == (first if (i // cell + j // cell + phase) % 2 == 0 else second))
         print(f"fb_check: {x},{y} {w}x{h}: checkerboard of #{first.hex()} and #{second.hex()} "
               f"{good / max(cells, 1):.0%}")
         if cells == 0 or good != cells:

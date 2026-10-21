@@ -112,6 +112,18 @@ QEMU（TCG，無 KVM）裡 Finder 在約 300 影格、14 秒後出現。
 
 CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 
+## 6. 限制與下一輪
+
+- 內建視訊 640x480、1 位元（System 的預設；Monitors 控制台可以改 2/4/8 位元，renderer 支援）；P11 起可以改用 NuBus 顯示卡（§8，大解析度、16/32 位元）。P11 K24 起視窗可以整數放大（§10）。
+- P11：視窗設 `WANT_MOTION` 與 `HIDE_CURSOR_INSIDE`（`docs/window.md` §3）：沒按按鈕的移動也送進來，Mac 的游標一直跟著；指標在視窗內時 STELA 的箭頭不畫，只看到 Mac 的游標。座標直接對應（沒有 Mac 的滑鼠加速）。
+- 一顆磁碟（`System.img`）；`.Disk` 的多磁碟、Applications 卷宗下一輪（程式碼已複製，沒接上）。P11 起 Data 卷宗經 FSM 給 Mac（§7）；只有 Data 一顆，沒有 Desktop Manager（Finder 自己在 Data 的根建 `Desktop` 檔）。
+- 聲音（ASC）已接到 `Audio`（S 完成後補上，`--test-beep` 驗證 SysBeep）；最近鄰的重新取樣、沒有音量控制；Classic.app 開著時別的程式（`tone`）拿不到音效（`Busy`）。
+- 序列埠、網路、SCSI 裝置都沒有。
+- 時鐘當成 UTC（STELA 的 RTC 也當成 UTC，`docs/time.md` §5.5），所以 Mac 的時間比台灣時間慢 8 小時。
+- 效能：TCG 下約 22 fps（比真的 IIci 慢約 3 倍）；實機（KVM 或 P520）應該可以到 60 fps，沒有驗證。
+- Classic.app 一次一個（C 的全域狀態是每個行程一份，所以兩個 Classic.app 行程其實可以同時跑，只是會用同一個 `System.img`——不要這樣做）。
+- P11 起設定在 `classic.cfg`（§9）；開機選項 `classic=off` 仍然有效。
+
 ## 7. Data 卷宗：File System Manager 外掛（P11 K9，使用者尚未審核）
 
 **比喻**：玻璃櫃裡的舊電腦本來只有一顆自己的硬碟（`System.img`）。現在在它的背面接一條線到 STELA 的 Data 卷宗：舊電腦以為那是一顆「網路磁碟」，它的檔案櫃管理員（File Manager）每次要找檔案、讀寫，就經這條線問 STELA。
@@ -157,7 +169,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 ### 8.1 測試
 
 - host：`card_modes`（640x480 = 0、800x600 = 1、1024x768 = 2、1280x960 = 5、沒有的 → None；8 位元 = 3、32 位元 = 5）。
-- `make test-classic`（本機）的第三次開機：`run Classic.app resolution=800x600 depth=1`，要看到 `classic: screen 800x600` 與 Finder 的桌面；截圖檢查 640 以右的選單列（白）與 480 以下的桌面格紋。
+- `make test-classic`（本機）的第三次開機：`classic.cfg` 寫 `ram=32`、`resolution=800x600`、`depth=1`、`scale=1`（K12、K24），要看到 `classic: screen 800x600 (scale 1)` 與 Finder 的桌面；截圖檢查 640 以右的選單列（白）與 480 以下的桌面格紋。
 
 ## 9. `Data:/Classic/classic.cfg`（P11 K12，使用者尚未審核）
 
@@ -168,7 +180,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 | `ram=16` | 16 | Mac 的 RAM（MiB），8–1024 |
 | `resolution=800x600` | （沒有：內建視訊 640x480） | 用 NuBus 顯示卡（§8）的這個模式；`builtin` = 內建視訊 |
 | `depth=8` | 8 | 卡的色深：1、2、4、8、16、32 |
-| `scale=2` | （沒有：螢幕寬 ≥ 1920 時 2，否則 1） | 視窗像素／Mac 像素（F 部分的 K24） |
+| `scale=2` | （沒有：螢幕寬 ≥ 1920 且放大後放得下時 2，否則 1） | 視窗像素／Mac 像素（§10） |
 | `fs=off` | on | 不把 Data 卷宗給 Mac（§7） |
 | `disk2=Applications.img` | （沒有） | `Data:/Classic/` 裡的第二顆磁碟（F 部分的 K25）；`,ro` 唯讀、`,rw` 讀寫 |
 
@@ -179,14 +191,12 @@ resolution=1024x768
 depth=8
 ```
 
-## 6. 限制與下一輪
+## 10. 整數放大（P11 K24，使用者尚未審核）
 
-- 內建視訊 640x480、1 位元（System 的預設；Monitors 控制台可以改 2/4/8 位元，renderer 支援）；P11 起可以改用 NuBus 顯示卡（§8，大解析度、16/32 位元）。HiDPI（整數放大）見 F 部分。
-- P11：視窗設 `WANT_MOTION` 與 `HIDE_CURSOR_INSIDE`（`docs/window.md` §3）：沒按按鈕的移動也送進來，Mac 的游標一直跟著；指標在視窗內時 STELA 的箭頭不畫，只看到 Mac 的游標。座標直接對應（沒有 Mac 的滑鼠加速）。
-- 一顆磁碟（`System.img`）；`.Disk` 的多磁碟、Applications 卷宗下一輪（程式碼已複製，沒接上）。P11 起 Data 卷宗經 FSM 給 Mac（§7）；只有 Data 一顆，沒有 Desktop Manager（Finder 自己在 Data 的根建 `Desktop` 檔）。
-- 聲音（ASC）已接到 `Audio`（S 完成後補上，`--test-beep` 驗證 SysBeep）；最近鄰的重新取樣、沒有音量控制；Classic.app 開著時別的程式（`tone`）拿不到音效（`Busy`）。
-- 序列埠、網路、SCSI 裝置都沒有。
-- 時鐘當成 UTC（STELA 的 RTC 也當成 UTC，`docs/time.md` §5.5），所以 Mac 的時間比台灣時間慢 8 小時。
-- 效能：TCG 下約 22 fps（比真的 IIci 慢約 3 倍）；實機（KVM 或 P520）應該可以到 60 fps，沒有驗證。
-- Classic.app 一次一個（C 的全域狀態是每個行程一份，所以兩個 Classic.app 行程其實可以同時跑，只是會用同一個 `System.img`——不要這樣做）。
-- P11 起設定在 `classic.cfg`（§9）；開機選項 `classic=off` 仍然有效。
+**比喻**：2560 寬的螢幕上，640x480 的 Mac 只有郵票大小。把每個 Mac 像素畫成 2x2 的方塊（像把照片放大到兩倍，不做平滑），視窗就變成 1280x960，字也看得清楚。
+
+- `scale`（`classic.cfg` 或參數，1 或 2）；沒設時 `Config::scale_for(螢幕, Mac 解析度)`：螢幕寬 ≥ 1920 **而且**放大後的視窗放得下（寬 ≤ 螢幕寬、高 + 64（選單列與標題列，`config::ROOM`）≤ 螢幕高）才是 2，否則 1。明確寫的值一律照做。
+- 畫面：Mac 的畫面緩衝仍是 Mac 的大小；改變的列（`Screen::update`）用 `screen::scale_rows` 最近鄰放大（每個像素重複 scale 次、每列重複 scale 次）再複製進視窗，damage 的矩形也乘上 scale。scale 1 直接複製（不經過放大緩衝）。
+- 滑鼠：視窗座標除以 scale 再給 Mac。
+- Monitors 換解析度時重新算 scale（自動時可能從 2 變 1），視窗改成 Mac 解析度 × scale；印 `classic: screen WxH (scale N)`。
+- 測試：host 的 `rows_are_enlarged`（2x2 → 4x4、3 倍、1 倍不變、超出畫面的列略過）、`defaults`（2560x1600 → 2、1920x1080 上 1024x768 → 1、2560x1600 上 1280x800 → 1）。本機 `make test-classic` 的第一次開機沒有 cfg：QEMU 的 2560x1600 → `classic: screen 640x480 (scale 2)`，截圖檢查放大的選單列與 2x2 方格的桌面（`fb_check.py --expect-pattern …,2`）；第三次開機的 cfg 加 `scale=1`（800x600 的卡、原來的檢查）。

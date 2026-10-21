@@ -11,7 +11,7 @@
 //!                      built-in 640x480 video)
 //!  depth=8             the card's bits per pixel: 1, 2, 4, 8, 16, 32
 //!  scale=2             window pixels per Mac pixel, 1 or 2 (none: 2 on
-//!                      screens 1920 or more wide)
+//!                      screens 1920 or more wide where the window fits)
 //!  fs=off              the Data volume is not given to the Mac
 //!  disk2=Apps.img      a second disk from Data:/Classic/ (",ro": read
 //!                      only)
@@ -54,6 +54,9 @@ impl Default for Config {
 
 /// Smallest and largest RAM.
 pub const RAM_MIB: core::ops::RangeInclusive<u32> = 8..=1024;
+/// Rows of the screen the automatic scale leaves for the menu bar and the
+/// window's title bar.
+pub const ROOM: u32 = 64;
 /// The depths the card has.
 pub const DEPTHS: [u32; 6] = [1, 2, 4, 8, 16, 32];
 
@@ -144,10 +147,16 @@ impl Config {
         Ok(())
     }
 
-    /// The scale for a screen `screen_width` pixels wide.
-    pub fn scale_for(&self, screen_width: u32) -> u32 {
-        self.scale
-            .unwrap_or(if screen_width >= 1920 { 2 } else { 1 })
+    /// The scale for a Mac screen of `mac` pixels on a STELA screen of
+    /// `screen` pixels: the setting, or 2 on screens at least 1920 wide
+    /// when the doubled window fits (with [`ROOM`] for the menu bar and
+    /// the title bar), else 1.
+    pub fn scale_for(&self, screen: (u32, u32), mac: (u32, u32)) -> u32 {
+        if let Some(scale) = self.scale {
+            return scale;
+        }
+        let fits = mac.0 * 2 <= screen.0 && mac.1 * 2 + ROOM <= screen.1;
+        if screen.0 >= 1920 && fits { 2 } else { 1 }
     }
 }
 
@@ -162,8 +171,13 @@ mod tests {
         assert!(p.is_empty());
         assert_eq!(c.ram_mib, 16);
         assert!(c.fs);
-        assert_eq!(c.scale_for(2560), 2);
-        assert_eq!(c.scale_for(1280), 1);
+        assert_eq!(c.scale_for((2560, 1600), (640, 480)), 2);
+        assert_eq!(c.scale_for((1920, 1080), (640, 480)), 2);
+        assert_eq!(c.scale_for((1280, 800), (640, 480)), 1);
+        // The doubled window would not fit.
+        assert_eq!(c.scale_for((1920, 1080), (1024, 768)), 1);
+        assert_eq!(c.scale_for((2560, 1600), (1280, 768)), 2);
+        assert_eq!(c.scale_for((2560, 1600), (1280, 800)), 1);
     }
 
     #[test]
@@ -175,7 +189,7 @@ mod tests {
         assert_eq!(c.resolution, Some((1024, 768)));
         assert_eq!(c.depth, 32);
         assert_eq!(c.scale, Some(1));
-        assert_eq!(c.scale_for(4000), 1);
+        assert_eq!(c.scale_for((4000, 3000), (640, 480)), 1);
         assert!(!c.fs);
         assert_eq!(c.disk2, Some((String::from("Apps.img"), true)));
     }

@@ -52,6 +52,34 @@ impl Screen {
     }
 }
 
+/// Rows `first .. first + count` of `picture` (`width` pixels a row)
+/// enlarged `scale` times by repeating every pixel (nearest neighbour,
+/// P11 `docs/classic.md` §10) into `out`: `count * scale` rows of
+/// `width * scale` pixels.
+pub fn scale_rows(
+    picture: &[u32],
+    width: usize,
+    first: usize,
+    count: usize,
+    scale: usize,
+    out: &mut Vec<u32>,
+) {
+    out.clear();
+    let wide = width * scale;
+    for y in first..first + count {
+        let Some(row) = picture.get(y * width..(y + 1) * width) else {
+            break;
+        };
+        let start = out.len();
+        for &p in row {
+            out.extend(core::iter::repeat_n(p, scale));
+        }
+        for _ in 1..scale {
+            out.extend_from_within(start..start + wide);
+        }
+    }
+}
+
 /// Seconds between 1904-01-01 (the Mac's epoch) and 1970-01-01 (Unix).
 pub const MAC_EPOCH_OFFSET: u64 = 2_082_844_800;
 
@@ -93,6 +121,22 @@ mod tests {
     fn short_picture_is_safe() {
         let mut s = Screen::new(4, 4);
         assert_eq!(s.update(&[7; 8], 0), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn rows_are_enlarged() {
+        // 2x2: 1 2 / 3 4.
+        let picture = [1, 2, 3, 4];
+        let mut out = Vec::new();
+        scale_rows(&picture, 2, 0, 2, 2, &mut out);
+        assert_eq!(out, vec![1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4]);
+        scale_rows(&picture, 2, 1, 1, 3, &mut out);
+        assert_eq!(out, [3, 3, 3, 4, 4, 4].repeat(3));
+        scale_rows(&picture, 2, 0, 2, 1, &mut out);
+        assert_eq!(out, picture);
+        // Rows past the picture are left out.
+        scale_rows(&picture, 2, 1, 5, 2, &mut out);
+        assert_eq!(out.len(), 8);
     }
 
     #[test]

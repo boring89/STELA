@@ -278,10 +278,12 @@ CLASSIC_FS_IMAGE = $(IMAGES)/classic-fs.img
 CLASSIC_WAV := $(BUILD)/classic.wav
 # The Classic window lands at 70,138 (content, 640x480): the Mac's menu
 # bar (white, 20 rows) on top, the desktop pattern below it.
-CLASSIC_CHECKS := --expect-rect 340,142,200,10,\#ffffff \
-	--expect-pattern 120,200,400,300,\#000000,\#ffffff
-# With the NuBus card at 800x600 (P11): the menu bar and the pattern
-# beyond the built-in 640x480.
+CLASSIC_CHECKS := --expect-rect 610,146,400,20,\#ffffff \
+	--expect-pattern 170,262,800,600,\#000000,\#ffffff,2
+# The first boot has no classic.cfg: on QEMU's 2560x1600 screen the
+# window is doubled (P11 K24, content at 70,138; the pattern in 2x2
+# squares). With the NuBus card at 800x600 and scale=1 (P11): the menu bar
+# and the pattern beyond the built-in 640x480.
 CLASSIC_CARD_CHECKS := --expect-rect 600,142,250,10,\#ffffff \
 	--expect-pattern 400,640,200,80,\#000000,\#ffffff
 classic: user
@@ -299,7 +301,8 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	cp $(CLASSIC_IMAGE) $(CLASSIC_FS_IMAGE)
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic.ppm --log $(BUILD)/test-classic.log \
 		--type "STELA shell" "run Classic.app\n" \
-		--expect "STELA shell" --expect "classic: started" --expect "classic: finder desktop shown" \
+		--expect "STELA shell" --expect "classic: started" --expect "classic: screen 640x480 (scale 2)" \
+		--expect "classic: finder desktop shown" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
@@ -314,12 +317,12 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0 \
 		-audiodev wav,id=a0,path=$(CLASSIC_WAV) -device intel-hda -device hda-duplex,audiodev=a0
 	python3 tools/check_wav.py $(CLASSIC_WAV) 0.05 0
-	printf '# make test-classic\nram=32\nresolution=800x600\ndepth=1\n' > $(BUILD)/classic.cfg
+	printf '# make test-classic\nram=32\nresolution=800x600\ndepth=1\nscale=1\n' > $(BUILD)/classic.cfg
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in $(BUILD)/classic.cfg /Classic/classic.cfg
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic-card.ppm --log $(BUILD)/test-classic-card.log \
 		--type "STELA shell" "run Classic.app\n" \
 		--expect "classic: started (ROM 368CADFE, 32 MiB" \
-		--expect "classic: screen 800x600" --expect "classic: finder desktop shown" \
+		--expect "classic: screen 800x600 (scale 1)" --expect "classic: finder desktop shown" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0

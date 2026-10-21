@@ -46,7 +46,7 @@ use classic::config::Config;
 use classic::ffi::{Card, Mac, MacDisk, MacFs, Power, StartError, card_depth, card_resolution};
 use classic::hostfs::HostFs;
 use classic::keys::adb_code;
-use classic::screen::{Screen, mac_seconds};
+use classic::screen::{Screen, mac_seconds, scale_rows};
 use classic::sound::Resampler;
 use libstela::audio::Audio;
 use libstela::fs::{self, open};
@@ -354,27 +354,51 @@ fn data_volume() -> Option<Box<dyn MacFs>> {
     }
 }
 
-/// Copies the changed rows of `picture` into the window and damages them.
-fn show(conn: &Connection, window: &mut Window, screen: &mut Screen, picture: &[u32]) {
-    let bands = screen.update(picture, 8);
-    if bands.is_empty() {
-        return;
-    }
-    let w = screen.width;
-    {
-        let mut c = window.canvas();
-        for &(first, count) in &bands {
-            c.copy_from(
-                0,
-                first as i32,
-                picture,
-                w,
-                Rect::new(0, first as i32, w as i32, count as i32),
-            );
+/// The window's picture: the Mac's screen, the rows shown last, and the
+/// scale (window pixels per Mac pixel; `docs/classic.md` §10).
+struct View {
+    screen: Screen,
+    picture: Vec<u32>,
+    scale: usize,
+    /// Enlarged rows on their way to the window.
+    wide: Vec<u32>,
+}
+
+impl View {
+    fn new(w: u32, h: u32, scale: u32) -> View {
+        View {
+            screen: Screen::new(w as usize, h as usize),
+            picture: vec![0u32; (w * h) as usize],
+            scale: scale as usize,
+            wide: Vec::new(),
         }
     }
-    for (first, count) in bands {
-        let _ = conn.damage(window, Rect::new(0, first as i32, w as i32, count as i32));
+
+    /// Copies the changed rows of the picture into the window, enlarged,
+    /// and damages them.
+    fn show(&mut self, conn: &Connection, window: &mut Window) {
+        let bands = self.screen.update(&self.picture, 8);
+        if bands.is_empty() {
+            return;
+        }
+        let (w, s) = (self.screen.width, self.scale);
+        {
+            let mut c = window.canvas();
+            for &(first, count) in &bands {
+                if s == 1 {
+                    let band = Rect::new(0, first as i32, w as i32, count as i32);
+                    c.copy_from(0, first as i32, &self.picture, w, band);
+                } else {
+                    scale_rows(&self.picture, w, first, count, s, &mut self.wide);
+                    let band = Rect::new(0, 0, (w * s) as i32, (count * s) as i32);
+                    c.copy_from(0, (first * s) as i32, &self.wide, w * s, band);
+                }
+            }
+        }
+        for (first, count) in bands {
+            let band = Rect::new(0, (first * s) as i32, (w * s) as i32, (count * s) as i32);
+            let _ = conn.damage(window, band);
+        }
     }
 }
 
@@ -395,10 +419,11 @@ fn main() -> i64 {
         }
     };
     let (mut w, mut h) = mac.screen_size();
-    println!("classic: screen {w}x{h}");
+    let mut scale = config.scale_for(conn.screen, (w, h));
+    println!("classic: screen {w}x{h} (scale {scale})");
     let Ok(mut window) = conn.create_window(
-        w,
-        h,
+        w * scale,
+        h * scale,
         flags::TITLE_BAR | flags::CLOSE_BOX | flags::WANT_MOTION | flags::HIDE_CURSOR_INSIDE,
         AUTO,
         AUTO,
@@ -440,8 +465,7 @@ fn main() -> i64 {
         }
     };
     let mut resampler = Resampler::default();
-    let mut screen = Screen::new(w as usize, h as usize);
-    let mut picture = vec![0u32; (w * h) as usize];
+    let mut view = View::new(w, h, scale);
     let start_ns = libstela::now_ns();
     let mut frame: u64 = 0;
     let mut finder = false;
@@ -463,6 +487,7 @@ fn main() -> i64 {
                         MouseKind::Up => false,
                         MouseKind::Move => button,
                     };
+                    let (x, y) = (x / scale as i32, y / scale as i32);
                     mac.mouse(x.clamp(0, w as i32 - 1), y.clamp(0, h as i32 - 1), button);
                 }
                 Event::Menu(0, 0) | Event::CloseRequested(_) => {
@@ -487,14 +512,14 @@ fn main() -> i64 {
         // The Monitors control panel switched the card's resolution: the
         // window follows.
         let (nw, nh) = mac.screen_size();
-        if (nw, nh) != (w, h) && conn.resize(&mut window, nw, nh).is_ok() {
-            (w, h) = (nw, nh);
-            screen = Screen::new(w as usize, h as usize);
-            picture = vec![0u32; (w * h) as usize];
-            println!("classic: screen {w}x{h}");
+        let ns = config.scale_for(conn.screen, (nw, nh));
+        if (nw, nh) != (w, h) && conn.resize(&mut window, nw * ns, nh * ns).is_ok() {
+            (w, h, scale) = (nw, nh, ns);
+            view = View::new(w, h, scale);
+            println!("classic: screen {w}x{h} (scale {scale})");
         }
-        if frame.is_multiple_of(2) && mac.render(&mut picture) {
-            show(&conn, &mut window, &mut screen, &picture);
+        if frame.is_multiple_of(2) && mac.render(&mut view.picture) {
+            view.show(&conn, &mut window);
         }
         if !fs_mounted && frame.is_multiple_of(30) && mac.fs_status().mounted {
             fs_mounted = true;

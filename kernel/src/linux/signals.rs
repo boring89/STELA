@@ -338,7 +338,7 @@ pub fn rt_sigreturn(p: &Process, frame: &mut SyscallFrame) -> LinuxResult {
     let start = frame.rsp().wrapping_sub(8);
     let bytes = read_user(p, start, signal::FRAME_SIZE).map_err(|_| EFAULT);
     let Some(restored) = bytes.ok().as_deref().and_then(signal::parse) else {
-        terminate(sig::SIGSEGV);
+        return force_sigsegv(p);
     };
     if restored.fpstate != 0
         && let Ok(fp) = read_user(p, restored.fpstate, 512)
@@ -347,16 +347,43 @@ pub fn rt_sigreturn(p: &Process, frame: &mut SyscallFrame) -> LinuxResult {
         area.copy_from_slice(&fp);
         frame::task::set_fpu_state(&area);
     }
+    if restored.regs.sanitized().is_err() {
+        return force_sigsegv(p);
+    }
     if let Some(t) = task::current_linux() {
         let mut s = t.signals.lock();
         s.mask = restored.mask & !signal::UNBLOCKABLE;
         t.update(&s);
     }
     if frame.set_regs(&restored.regs).is_err() {
-        terminate(sig::SIGSEGV);
+        return force_sigsegv(p);
     }
     // The dispatcher puts the result in RAX: give back the restored one.
     Ok(restored.regs.rax)
+}
+
+/// A frame `rt_sigreturn` cannot use: SIGSEGV with its default action and
+/// unblocked (Linux's `force_sigsegv`), so the process ends on its way
+/// back to user mode. Never ended here: this system call's own references
+/// (the process) are still on the stack.
+fn force_sigsegv(p: &Process) -> LinuxResult {
+    if let Some(linux) = p.linux() {
+        linux.actions.lock()[(sig::SIGSEGV - 1) as usize] = Action::default();
+    }
+    if let Some(t) = task::current_linux() {
+        send_thread(
+            &t,
+            Info {
+                signo: sig::SIGSEGV,
+                code: signal::SI_KERNEL,
+                ..Info::default()
+            },
+        );
+        let mut s = t.signals.lock();
+        s.mask &= !signal::bit(sig::SIGSEGV);
+        t.update(&s);
+    }
+    Err(EFAULT)
 }
 
 /// The signal for an exception in ring 3 (vector) and its `si_code`.

@@ -68,6 +68,9 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::WaitSetAdd) => wait_set_add(a0, a1, a2, args[3]),
         Some(Syscall::WaitSetRemove) => wait_set_remove(a0, a1),
         Some(Syscall::WaitSetWait) => wait_set_wait(a0, a1, a2, args[3]),
+        Some(Syscall::PipeCreate) => pipe_create(a0),
+        Some(Syscall::PipeRead) => pipe_read(a0, a1, a2, args[3]),
+        Some(Syscall::PipeWrite) => pipe_write(a0, a1, a2, args[3]),
         Some(call) => file_call(call, args),
         None => Err(Error::InvalidSyscall),
     };
@@ -152,6 +155,7 @@ fn port_send(handle: u64, msg_ptr: u64) -> Result<u64, Error> {
         let target = match &entry.object {
             KernelObject::Port(port) => SendTarget::Port(Arc::clone(port)),
             KernelObject::Tty(tty) => SendTarget::Tty(Arc::clone(tty)),
+            KernelObject::PipeWrite(p) => SendTarget::Pipe(Arc::clone(p)),
             _ => return Err(Error::WrongType),
         };
         if !entry.rights.contains(Rights::SEND) {
@@ -171,6 +175,17 @@ fn port_send(handle: u64, msg_ptr: u64) -> Result<u64, Error> {
     let port = match target {
         SendTarget::Port(port) => port,
         SendTarget::Tty(tty) => return tty_send(&tty, &msg),
+        SendTarget::Pipe(pipe) => {
+            // A STELA program's output to a pipe (its [1] in a shell
+            // pipeline): CONSOLE_WRITE text goes in, waiting for room.
+            if msg.handles != 0 {
+                return Err(Error::InvalidArgument);
+            }
+            if msg.tag == tag::CONSOLE_WRITE {
+                pipe.0.write_all(msg.payload())?;
+            }
+            return Ok(0);
+        }
     };
     // Refuse early when the message could not be queued, so that the
     // handles stay where they are. (A send racing with this one may still
@@ -201,6 +216,7 @@ fn port_send(handle: u64, msg_ptr: u64) -> Result<u64, Error> {
 enum SendTarget {
     Port(Arc<Port>),
     Tty(Arc<Tty>),
+    Pipe(Arc<crate::object::pipe::WriteEnd>),
 }
 
 /// `PortSend` to a tty: `CONSOLE_WRITE` is output, `INPUT_KEY` is typed
@@ -474,7 +490,108 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::Audio(_) => k::AUDIO,
         KernelObject::WaitSet(_) => k::WAIT_SET,
         KernelObject::Capability(_) => k::CAPABILITY,
+        KernelObject::PipeRead(_) => k::PIPE_READ,
+        KernelObject::PipeWrite(_) => k::PIPE_WRITE,
     })
+}
+
+/// `PipeCreate(&mut [u32; 2])`.
+fn pipe_create(out: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    if !process.space().check(out, 8, true) {
+        return Err(Error::BadAddress);
+    }
+    let (read, write) = crate::object::pipe::Pipe::create();
+    let (r, w) = {
+        let mut handles = process.handles().lock();
+        let r = handles.insert(Entry {
+            object: KernelObject::PipeRead(read),
+            rights: Rights::READ | Rights::WAIT | Rights::DUPLICATE | Rights::TRANSFER,
+        })?;
+        let w = match handles.insert(Entry {
+            object: KernelObject::PipeWrite(write),
+            rights: Rights::WRITE
+                | Rights::SEND
+                | Rights::WAIT
+                | Rights::DUPLICATE
+                | Rights::TRANSFER,
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = handles.remove(r);
+                return Err(e);
+            }
+        };
+        (r, w)
+    };
+    let mut b = [0u8; 8];
+    b[..4].copy_from_slice(&r.0.to_le_bytes());
+    b[4..].copy_from_slice(&w.0.to_le_bytes());
+    process
+        .space()
+        .write(out, &b)
+        .map_err(|_| Error::BadAddress)?;
+    Ok(0)
+}
+
+/// Most bytes one `PipeRead` or `PipeWrite` moves.
+const PIPE_CHUNK: u64 = 64 * 1024;
+
+/// `PipeRead(read_end, buf, len, timeout_ns) -> bytes`.
+fn pipe_read(handle: u64, buf: u64, len: u64, timeout: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let pipe = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(handle))?;
+        let KernelObject::PipeRead(p) = &entry.object else {
+            return Err(Error::WrongType);
+        };
+        if !entry.rights.contains(Rights::READ) {
+            return Err(Error::AccessDenied);
+        }
+        Arc::clone(p)
+    };
+    let len = len.min(PIPE_CHUNK) as usize;
+    if !process.space().check(buf, len, true) {
+        return Err(Error::BadAddress);
+    }
+    let deadline = match timeout {
+        u64::MAX => None,
+        t => Some(frame::time::now_ns().saturating_add(t)),
+    };
+    let data = pipe.0.read(len, deadline)?;
+    process
+        .space()
+        .write(buf, &data)
+        .map_err(|_| Error::BadAddress)?;
+    Ok(data.len() as u64)
+}
+
+/// `PipeWrite(write_end, buf, len, timeout_ns) -> bytes`.
+fn pipe_write(handle: u64, buf: u64, len: u64, timeout: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let pipe = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(handle))?;
+        let KernelObject::PipeWrite(p) = &entry.object else {
+            return Err(Error::WrongType);
+        };
+        if !entry.rights.contains(Rights::WRITE) {
+            return Err(Error::AccessDenied);
+        }
+        Arc::clone(p)
+    };
+    let len = len.min(PIPE_CHUNK) as usize;
+    let mut data = alloc::vec![0u8; len];
+    process
+        .space()
+        .read(buf, &mut data)
+        .map_err(|_| Error::BadAddress)?;
+    let deadline = match timeout {
+        u64::MAX => None,
+        t => Some(frame::time::now_ns().saturating_add(t)),
+    };
+    pipe.0.write(&data, deadline).map(|n| n as u64)
 }
 
 /// `WaitSetCreate() -> handle`.

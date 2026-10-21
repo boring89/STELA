@@ -370,3 +370,27 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 | host `abi` | 編號 49–52、`WAIT_SET` = 11、`wait::ALL` = 31、`Ready` 的編碼往返 |
 | host `net` | `Stack::readiness`：連線中、已連線可寫、listener 有連線、有資料可讀、對方關閉後 `readable + closed`、UDP 可寫 |
 | selftest（`proctest` 的第 15–22 步） | port + tty master（`READABLE`）+ 子行程一起等：不等 → `TimedOut`；送信 → key 1；印到 tty → key 2；kill 子行程 → key 3 `EXITED`；移除兩次 → `NotFound`；另一個執行緒 5 ms 後送信叫醒正在等的主執行緒（至少等了 4 ms）；關掉的 port 自動移出；WaitSet 放進自己 → `WrongType`；未定義的 mask → `InvalidArgument` |
+
+## 14. Pipe（P11，使用者尚未審核）
+
+**比喻**：一條 64 KiB 的水管，一頭灌、一頭接。灌的人在水管滿時等；接的人在水管空時等；灌的人全走了，接的人把剩下的接完就知道「沒了」（讀到 0）；接的人全走了，灌的人會被告知「沒人要」（`PeerClosed`）。
+
+| 編號 | 名稱 | 參數 | 回傳 |
+|---|---|---|---|
+| 54 | `PipeCreate` | &mut [u32; 2] | 0；寫入讀端（`READ|WAIT|DUPLICATE|TRANSFER`）與寫端（`WRITE|SEND|WAIT|DUPLICATE|TRANSFER`）的 handle |
+| 55 | `PipeRead` | 讀端, buf, len（≤ 64 KiB）, timeout_ns | 讀到的 bytes；0 = 結束（所有寫端都關了而且空了）；`TimedOut` |
+| 56 | `PipeWrite` | 寫端, buf, len, timeout_ns | 寫進去的 bytes（至少 1）；`PeerClosed`（沒有讀端）；`TimedOut` |
+
+- kernel：`object/pipe.rs`——`Pipe`（`VecDeque<u8>`、`reader`／`writer` 還在不在、讀等待者、寫等待者、watchers），`ReadEnd(Arc<Pipe>)`／`WriteEnd(Arc<Pipe>)` 各是一個 kernel 物件（`KernelObject::PipeRead`／`PipeWrite`，`object_kind` 13、14）。同一端的 handle 共用同一個 `Arc<ReadEnd>`，最後一個 handle 放掉時 `Drop` 把那一端關掉、叫醒所有等待者。
+- **`PortSend` 到寫端**：`CONSOLE_WRITE` 的文字寫進 pipe（滿了就等）——所以 `[1]` 是 pipe 寫端的 STELA 程式，`println!` 什麼都不用改（shell 的管線，`docs/userland.md` §6）。
+- WaitSet：讀端 `READABLE`（有資料或結束）、`CLOSED`（寫端都關了）；寫端 `WRITABLE`（有空間）、`CLOSED`（讀端都關了）。
+- libstela `pipe::create`、`read`、`write`、`write_all`。
+- Linux：`pipe`（22）、`pipe2`（293，`O_CLOEXEC`、`O_NONBLOCK`）是 `OpenFile::PipeRead`／`PipeWrite`；`read`／`write`（非阻塞 → `EAGAIN`；沒有讀端 → `EPIPE`，沒有 SIGPIPE）、`poll`（`POLLIN`／`POLLHUP`、`POLLOUT`／`POLLERR`）、`fstat`（`S_IFIFO`）、`dup2`（既有的 fd 表）（`docs/linux.md` §4）。
+
+### 14.1 測試
+
+| 測試 | 內容 |
+|---|---|
+| host `abi` | 編號 54–56、`PIPE_READ`／`PIPE_WRITE`、`PIPE_BUFFER` |
+| selftest（proctest 第 26–28 步） | 依序、空的時候逾時、寫端關掉後 WaitSet 看到 `READABLE|CLOSED` 而且讀到 0、沒有讀端時 `PeerClosed`、子行程的 `[1]` 是 pipe：它的 `debug_println!` 從讀端出來，結束後讀到 0 |
+| `make test-linux` | `linux/pipe`：fstat、poll、依序讀寫、dup2、結束、EPIPE、`pipe2(O_NONBLOCK|O_CLOEXEC)` 的 EAGAIN 與 FD_CLOEXEC；`nosys` 不再測 pipe |

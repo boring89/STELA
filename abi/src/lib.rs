@@ -203,11 +203,21 @@ pub enum Syscall {
     /// volume (`/` for the root, `/a/b`; UTF-8, no NUL); the whole length
     /// is returned even when `len` cut it (P11, `docs/vfs.md` §4.4).
     FilePath = 53,
+    /// `PipeCreate(&mut [u32; 2])`: a pipe (P11, `docs/ipc.md` §14); writes
+    /// the reading end's handle (`READ | WAIT | DUPLICATE | TRANSFER`) and
+    /// the writing end's (`WRITE | SEND | WAIT | DUPLICATE | TRANSFER`).
+    PipeCreate = 54,
+    /// `PipeRead(read_end, buf, len, timeout_ns) -> bytes`: waits until
+    /// there are some; 0 at the end (every writing handle gone).
+    PipeRead = 55,
+    /// `PipeWrite(write_end, buf, len, timeout_ns) -> bytes`: waits for
+    /// room; `PeerClosed` once every reading handle is gone.
+    PipeWrite = 56,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 53] = [
+    pub const ALL: [Syscall; 56] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -261,6 +271,9 @@ impl Syscall {
         Syscall::WaitSetRemove,
         Syscall::WaitSetWait,
         Syscall::FilePath,
+        Syscall::PipeCreate,
+        Syscall::PipeRead,
+        Syscall::PipeWrite,
     ];
 
     /// The call with number `raw`, if any.
@@ -750,6 +763,9 @@ pub mod spawn {
 /// layout is in `docs/mouseion.md`.
 pub const FINDER_INFO_SIZE: usize = 32;
 
+/// Bytes a pipe holds (`PipeCreate`).
+pub const PIPE_BUFFER: usize = 64 * 1024;
+
 /// `TtyCreate` flags.
 pub mod tty {
     /// Make a master end too (the terminal application's side).
@@ -782,6 +798,10 @@ pub mod object_kind {
     pub const WAIT_SET: u64 = 11;
     /// A capability (`capability`).
     pub const CAPABILITY: u64 = 12;
+    /// A pipe's reading end.
+    pub const PIPE_READ: u64 = 13;
+    /// A pipe's writing end.
+    pub const PIPE_WRITE: u64 = 14;
 }
 
 /// Waiting on several objects (`WaitSetAdd`, `WaitSetWait`;
@@ -1785,6 +1805,10 @@ mod tests {
         assert_eq!(Syscall::WaitSetRemove.raw(), 51);
         assert_eq!(Syscall::WaitSetWait.raw(), 52);
         assert_eq!(Syscall::FilePath.raw(), 53);
+        assert_eq!(Syscall::PipeCreate.raw(), 54);
+        assert_eq!(Syscall::PipeWrite.raw(), 56);
+        assert_eq!((object_kind::PIPE_READ, object_kind::PIPE_WRITE), (13, 14));
+        assert_eq!(PIPE_BUFFER, 65536);
         assert_eq!(object_kind::WAIT_SET, 11);
         assert_eq!(wait::ALL, 31);
         let r = wait::Ready {

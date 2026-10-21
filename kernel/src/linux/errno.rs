@@ -36,6 +36,7 @@ pub const ERANGE: i64 = 34;
 pub const ENAMETOOLONG: i64 = 36;
 pub const ENOSYS: i64 = 38;
 pub const ENOTEMPTY: i64 = 39;
+pub const EPIPE: i64 = 32;
 pub const ENOTSOCK: i64 = 88;
 pub const EMSGSIZE: i64 = 90;
 pub const EPROTONOSUPPORT: i64 = 93;

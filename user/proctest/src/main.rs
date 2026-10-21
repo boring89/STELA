@@ -241,7 +241,8 @@ fn wait_sets(me: Handle) -> Result<(), i64> {
         set.wait(&mut ready, 0) == Err(Error::TimedOut),
         "send-only port sees no messages",
     )?;
-    capabilities()
+    capabilities()?;
+    pipes(me)
 }
 
 /// Without the POWER capability (the self test gives none), SystemPower
@@ -277,6 +278,66 @@ fn capabilities() -> Result<(), i64> {
     Ok(())
 }
 
+/// Pipes (P11): in order, the end of the stream, a writer without a
+/// reader, a wait set, and a child printing into one as its [1].
+fn pipes(me: Handle) -> Result<(), i64> {
+    use libstela::pipe;
+    let (r, w) = pipe::create().map_err(|_| 26i64)?;
+    pipe::write_all(w, b"abc").map_err(|_| 26i64)?;
+    pipe::write_all(w, b"def").map_err(|_| 26i64)?;
+    let mut buf = [0u8; 64];
+    check(26, pipe::read(r, &mut buf, 0) == Ok(6), "read")?;
+    check(26, &buf[..6] == b"abcdef", "in order")?;
+    check(
+        26,
+        pipe::read(r, &mut buf, 1_000_000) == Err(Error::TimedOut),
+        "empty",
+    )?;
+    let set = WaitSet::new().map_err(|_| 26i64)?;
+    set.add(r, 1, 0).map_err(|_| 26i64)?;
+    let mut ready = [Ready::default(); 2];
+    libstela::ipc::handle_close(w).map_err(|_| 26i64)?;
+    check(
+        26,
+        set.wait(&mut ready, 0) == Ok(1) && ready[0].events == wait::READABLE | wait::CLOSED,
+        "writer gone",
+    )?;
+    check(26, pipe::read(r, &mut buf, 0) == Ok(0), "end of the stream")?;
+    let (r2, w2) = pipe::create().map_err(|_| 27i64)?;
+    libstela::ipc::handle_close(r2).map_err(|_| 27i64)?;
+    check(
+        27,
+        pipe::write(w2, b"x", 0) == Err(Error::PeerClosed),
+        "no reader",
+    )?;
+    // A child whose [1] is a pipe: what it prints comes out here.
+    let (r3, w3) = pipe::create().map_err(|_| 28i64)?;
+    let out = process::pass(w3, libstela::Rights::SEND | libstela::Rights::WRITE);
+    libstela::ipc::handle_close(w3).map_err(|_| 28i64)?;
+    let child = process::spawn(
+        me,
+        &["proctest", "print"],
+        [out, Handle::NONE, Handle::NONE],
+    )
+    .map_err(|_| 28i64)?;
+    let mut got = [0u8; 128];
+    let mut n = 0;
+    loop {
+        match pipe::read(r3, &mut got[n..], 2_000_000_000) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(_) => return Err(28),
+        }
+    }
+    check(28, process::wait_forever(child) == Ok(0), "child")?;
+    check(
+        28,
+        &got[..n] == b"proctest: through a pipe\n",
+        "child's output",
+    )?;
+    Ok(())
+}
+
 fn main() -> i64 {
     let args = process::args();
     match args.get(1).map(String::as_str) {
@@ -287,6 +348,10 @@ fn main() -> i64 {
                 debug_println!("proctest: child got {} argument(s)", args.len());
                 1
             }
+        }
+        Some("print") => {
+            debug_println!("proctest: through a pipe");
+            0
         }
         Some("wait") => {
             let mut msg = Message::new();

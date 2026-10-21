@@ -283,6 +283,34 @@ pub fn dup(p: &Process, fd: u64) -> LinuxResult {
     Ok(new as u64)
 }
 
+/// `pipe(fds)` and `pipe2(fds, flags)`: `O_CLOEXEC` and `O_NONBLOCK`.
+pub fn pipe2(p: &Process, fds_ptr: u64, flags: u64) -> LinuxResult {
+    const O_NONBLOCK: u64 = 0o4000;
+    if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
+        return Err(EINVAL);
+    }
+    if !p.space().check(fds_ptr, 8, true) {
+        return Err(errno::EFAULT);
+    }
+    let (r, w) = crate::object::pipe::Pipe::create();
+    let nb = flags & O_NONBLOCK != 0;
+    let cloexec = flags & O_CLOEXEC != 0;
+    use core::sync::atomic::AtomicBool;
+    let rfd = add_fd(p, OpenFile::PipeRead(r, AtomicBool::new(nb)), cloexec)?;
+    let wfd = match add_fd(p, OpenFile::PipeWrite(w, AtomicBool::new(nb)), cloexec) {
+        Ok(fd) => fd,
+        Err(e) => {
+            let _ = close(p, rfd);
+            return Err(e);
+        }
+    };
+    let mut b = [0u8; 8];
+    b[..4].copy_from_slice(&(rfd as u32).to_le_bytes());
+    b[4..].copy_from_slice(&(wfd as u32).to_le_bytes());
+    write_user(p, fds_ptr, &b)?;
+    Ok(0)
+}
+
 /// `dup2(fd, to)`.
 pub fn dup2(p: &Process, fd: u64, to: u64) -> LinuxResult {
     let linux = p.linux().ok_or(EBADF)?;
@@ -347,6 +375,18 @@ fn read_file(file: &OpenFile, len: usize) -> Result<Vec<u8>, i64> {
         OpenFile::Zero => Ok(vec![0u8; len]),
         OpenFile::Dir { .. } => Err(EISDIR),
         OpenFile::Socket(socket) => super::socket::read(socket, len),
+        OpenFile::PipeRead(end, nonblock) => {
+            let deadline = if nonblock.load(core::sync::atomic::Ordering::Relaxed) {
+                Some(0)
+            } else {
+                None
+            };
+            end.0.read(len, deadline).map_err(|e| match e {
+                abi::Error::TimedOut => errno::EAGAIN,
+                e => errno::from_error(e),
+            })
+        }
+        OpenFile::PipeWrite(..) => Err(EBADF),
         OpenFile::Text { data, offset } => {
             let mut at = offset.lock();
             let start = (*at as usize).min(data.len());
@@ -382,7 +422,26 @@ fn write_file(file: &OpenFile, data: &[u8]) -> Result<usize, i64> {
         OpenFile::Null | OpenFile::Zero => Ok(data.len()),
         OpenFile::Dir { .. } => Err(EISDIR),
         OpenFile::Socket(socket) => super::socket::write(socket, data),
-        OpenFile::Text { .. } => Err(EBADF),
+        OpenFile::Text { .. } | OpenFile::PipeRead(..) => Err(EBADF),
+        OpenFile::PipeWrite(end, nonblock) => {
+            let deadline = if nonblock.load(core::sync::atomic::Ordering::Relaxed) {
+                Some(0)
+            } else {
+                None
+            };
+            let mut done = 0;
+            while done < data.len() {
+                match end.0.write(&data[done..], deadline) {
+                    Ok(n) => done += n,
+                    Err(abi::Error::TimedOut) if done > 0 => break,
+                    Err(abi::Error::TimedOut) => return Err(errno::EAGAIN),
+                    // No signals: EPIPE alone (Linux also raises SIGPIPE).
+                    Err(abi::Error::PeerClosed) => return Err(errno::EPIPE),
+                    Err(e) => return Err(errno::from_error(e)),
+                }
+            }
+            Ok(done)
+        }
         OpenFile::File { node, state } => {
             let mut s = state.lock();
             if !s.writable {
@@ -516,6 +575,7 @@ const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFCHR: u32 = 0o020000;
 const S_IFSOCK: u32 = 0o140000;
+const S_IFIFO: u32 = 0o010000;
 
 /// The kernel's `struct stat` on x86-64 (144 bytes).
 fn stat_bytes(dev: u64, ino: u64, mode: u32, size: u64, ctime: u64, mtime: u64) -> [u8; 144] {
@@ -582,6 +642,9 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
         OpenFile::Null => stat_bytes(0, 3, S_IFCHR | 0o666, 0, 0, 0),
         OpenFile::Zero => stat_bytes(0, 4, S_IFCHR | 0o666, 0, 0, 0),
         OpenFile::Socket(_) => stat_bytes(0, 7, S_IFSOCK | 0o777, 0, 0, 0),
+        OpenFile::PipeRead(..) | OpenFile::PipeWrite(..) => {
+            stat_bytes(0, 10, S_IFIFO | 0o600, 0, 0, 0)
+        }
         OpenFile::Text { data, .. } => stat_bytes(0, 9, S_IFREG | 0o444, data.len() as u64, 0, 0),
         OpenFile::File { node, .. }
         | OpenFile::Dir {

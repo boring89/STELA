@@ -78,7 +78,8 @@ musl 的程式（`-static -no-pie -Wl,-z,max-page-size=4096`）是四個 PT_LOAD
 | TLS | `arch_prctl` 158、`set_tid_address` 218 | §9 |
 | 同步 | `futex` 202 | `FUTEX_WAIT`：值不同 → `EAGAIN`；相同 → 睡到逾時（沒有逾時就睡到被 kill）；`FUTEX_WAKE` → 0 |
 | 亂數 | `getrandom` 318 | splitmix64 混合時鐘——**不安全**，不可當密碼學亂數 |
-| 不做 | `pipe` 22、`pipe2` 293、`clone` 56、`fork` 57、`vfork` 58、`execve` 59、`clone3` 435 | `ENOSYS` |
+| pipe（P11） | `pipe` 22、`pipe2` 293 | `OpenFile::PipeRead`／`PipeWrite`（`docs/ipc.md` §14） |
+| 不做 | `clone` 56、`fork` 57、`vfork` 58、`execve` 59、`clone3` 435 | `ENOSYS` |
 | 其他 | | `ENOSYS`，每個號碼第一次印一行 `linux: process N (name): system call X is not supported (ENOSYS)` |
 
 errno（`linux/errno.rs`）與 `abi::Error` 的對應：`NotFound` → `ENOENT`、`Exists` → `EEXIST`、`NotDir` → `ENOTDIR`、`IsDir` → `EISDIR`、`NotEmpty` → `ENOTEMPTY`、`ReadOnly` → `EROFS`、`NoSpace` → `ENOSPC`、`IoError` → `EIO`、`BadAddress` → `EFAULT`、`InvalidArgument` → `EINVAL`、`OutOfMemory` → `ENOMEM`……
@@ -237,7 +238,8 @@ P6 的 `InitrdFs` 把所有檔案放在根目錄；P7 起建一棵樹：成員�
 | `memory` | 8 MiB malloc、2000 個小 malloc、brk 長大／縮回／太遠、mmap 1 MiB（清零、對齊）、mprotect、munmap、PROT_EXEC 被拒 | `memory: OK` |
 | `time` | MONOTONIC + nanosleep(20 ms) ≥ 20 ms、REALTIME 年份 ≥ 2024、gettimeofday | `time: OK` |
 | `tty` | isatty（0、1 是，/dev/null 不是）、tcgetattr 有 ICANON、讀一行 | `tty: you typed: …` |
-| `nosys` | fork、pipe、execv → -1 且 errno = ENOSYS | `nosys: OK` |
+| `nosys` | fork、execv → -1 且 errno = ENOSYS | `nosys: OK` |
+| `pipe`（P11） | fstat S_IFIFO、poll、依序讀寫、dup2、寫端全關 → 0、沒有讀端 → EPIPE、`pipe2(O_NONBLOCK|O_CLOEXEC)` → EAGAIN、FD_CLOEXEC | `pipe: OK` |
 | `poll`（P11） | stdout 立刻可寫、stdin 50 ms 沒東西（等滿）、`/dev/null`、fd −1 略過、關掉的 fd → POLLNVAL、`ppoll` 20 ms、`select`（可寫、30 ms 逾時、關掉的 fd → EBADF）、`pselect`；`/etc/resolv.conf` 是一般檔、內容 `nameserver …`、不能寫；最後 `poll(-1)` 等使用者打一行 | `poll: you typed: …`、`poll: OK` |
 
 ## 12. 測試
@@ -258,7 +260,7 @@ P6 的 `InitrdFs` 把所有檔案放在根目錄；P7 起建一棵樹：成員�
 - 網路（P10，`docs/net.md` §7）：只有 `AF_INET` 的 `SOCK_STREAM`／`SOCK_DGRAM`；`socket`、`connect`、`bind`、`listen`、`accept`/`accept4`、`sendto`、`recvfrom`、`sendmsg`/`recvmsg`（P11，沒有 control 資料）、`shutdown`、`getsockname`、`getpeername`、`setsockopt`（忽略）、`getsockopt`（一律 0）；socket 上的 `read`/`write` 等於 recv/send。P11 起 musl 的 `getaddrinfo`（DNS）可用：`/etc/resolv.conf` + UDP + `poll` + `recvmsg`；TCP 的 DNS 退路（`MSG_FASTOPEN` 的 `sendmsg`）不支援。
 
 - 只有靜態、非 PIE 的 x86-64 程式（`ET_EXEC`）；沒有動態連結、`ET_DYN`、32 位元（`int 0x80`）。
-- 單執行緒：沒有 `clone`／執行緒；`futex` 是單執行緒的簡化；沒有 `fork`／`execve`／`pipe`、訊號遞送（`rt_sigaction` 只回 0）、`/proc`、檔案 mmap、`MAP_FIXED`、`mremap`、`epoll`。
+- 單執行緒：沒有 `clone`／執行緒；`futex` 是單執行緒的簡化；沒有 `fork`／`execve`、訊號遞送（所以 pipe 沒有 SIGPIPE）（`rt_sigaction` 只回 0）、`/proc`、檔案 mmap、`MAP_FIXED`、`mremap`、`epoll`。
 - Linux 程式在 `[3]`、`[4]` 的卷宗裡不受 handle 權限限制（整個卷宗，不只那個資料夾以下）。
 - `getppid` 是 1；`getrandom` 不安全；時間只有 tick 解析度（沒有 invariant TSC 時 1 ms）。
 - tty：一個 tty 的 `TIOCGWINSZ` 永遠 25×80；沒有 job control（`TIOCSPGRP` 什麼都不做）；VMIN／VTIME 不看；raw 模式下 `read` 有一個字就回。

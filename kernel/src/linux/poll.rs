@@ -67,6 +67,28 @@ fn file_events(file: &OpenFile) -> (i16, Option<KernelObject>) {
             }
             (r, Some(KernelObject::Socket(Arc::clone(socket))))
         }
+        OpenFile::PipeRead(end, _) => {
+            let e = end.0.events(true);
+            let mut r = 0;
+            if e & wait::READABLE != 0 {
+                r |= POLLIN;
+            }
+            if e & wait::CLOSED != 0 {
+                r |= POLLHUP;
+            }
+            (r, Some(KernelObject::PipeRead(Arc::clone(end))))
+        }
+        OpenFile::PipeWrite(end, _) => {
+            let e = end.0.events(false);
+            let mut r = 0;
+            if e & wait::WRITABLE != 0 {
+                r |= POLLOUT;
+            }
+            if e & wait::CLOSED != 0 {
+                r |= POLLERR;
+            }
+            (r, Some(KernelObject::PipeWrite(Arc::clone(end))))
+        }
         // Files, folders and devices never block.
         _ => (POLLIN | POLLOUT, None),
     }

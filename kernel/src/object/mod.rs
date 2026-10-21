@@ -11,6 +11,8 @@
 pub mod handle;
 pub mod ldisc;
 #[cfg(target_os = "none")]
+pub mod pipe;
+#[cfg(target_os = "none")]
 pub mod port;
 pub mod regions;
 #[cfg(target_os = "none")]
@@ -60,6 +62,10 @@ mod target {
         /// A capability: holding it is the permission (`abi::capability`;
         /// `docs/userland.md` §2.3).
         Capability(u32),
+        /// A pipe's reading end (`docs/ipc.md` §14).
+        PipeRead(Arc<super::pipe::ReadEnd>),
+        /// A pipe's writing end.
+        PipeWrite(Arc<super::pipe::WriteEnd>),
     }
 
     impl KernelObject {

@@ -33,6 +33,7 @@ pub mod ipc;
 pub mod line;
 pub mod net;
 pub mod path;
+pub mod pipe;
 pub mod process;
 pub mod sync;
 pub mod sys;

@@ -41,6 +41,17 @@ pub enum OpenFile {
     },
     /// An `AF_INET` socket (`docs/net.md`).
     Socket(Arc<super::socket::LinuxSocket>),
+    /// A pipe's reading end (P11) and whether reads do not wait
+    /// (`O_NONBLOCK`).
+    PipeRead(
+        Arc<crate::object::pipe::ReadEnd>,
+        core::sync::atomic::AtomicBool,
+    ),
+    /// A pipe's writing end.
+    PipeWrite(
+        Arc<crate::object::pipe::WriteEnd>,
+        core::sync::atomic::AtomicBool,
+    ),
     /// A generated, read-only file (`/etc/resolv.conf`): its bytes, made
     /// when opened, and the offset.
     Text {

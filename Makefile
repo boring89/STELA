@@ -32,7 +32,7 @@ MUSL_DIR    := $(BUILD)/musl
 MUSL_GCC    := $(MUSL_DIR)/install/bin/musl-gcc
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys net poll
+LINUX_TESTS := hello files memory time tty nosys net poll pipe
 LINUX_DIR   := $(USER_DIR)/linux
 LINUX_CFLAGS := -static -O2 -no-pie -fno-pie -Wall -Wextra -Werror \
                -Wl,-z,max-page-size=4096 -Wl,--build-id=none
@@ -481,6 +481,7 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "tty: type a line" "stela rocks\n" \
 		--type "tty exited with code" "run linux/poll\n" \
 		--type "poll: type a line" "poll works\n" \
+		--type "poll exited with code" "run linux/pipe\n" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
 		--expect "files: working directory /Data/linuxdir" \
@@ -491,6 +492,7 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "tty: you typed: stela rocks" --expect "tty exited with code 0" \
 		--expect "poll: you typed: poll works" --expect "poll: OK" \
 		--expect "poll exited with code 0" \
+		--expect "pipe: OK" --expect "pipe exited with code 0" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-linux.img \
 		-device ide-hd,drive=sata1,bus=ide.1

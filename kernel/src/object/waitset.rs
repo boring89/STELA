@@ -37,6 +37,8 @@ enum Target {
     Socket(Weak<crate::net::Socket>),
     Process(ProcessId),
     Audio(Weak<crate::audio::AudioSession>),
+    PipeRead(Weak<super::pipe::ReadEnd>),
+    PipeWrite(Weak<super::pipe::WriteEnd>),
 }
 
 impl Target {
@@ -48,6 +50,8 @@ impl Target {
             KernelObject::Socket(s) => Target::Socket(Arc::downgrade(s)),
             KernelObject::Process(id) => Target::Process(*id),
             KernelObject::Audio(a) => Target::Audio(Arc::downgrade(a)),
+            KernelObject::PipeRead(p) => Target::PipeRead(Arc::downgrade(p)),
+            KernelObject::PipeWrite(p) => Target::PipeWrite(Arc::downgrade(p)),
             _ => return Err(Error::WrongType),
         })
     }
@@ -60,6 +64,8 @@ impl Target {
             (Target::Socket(a), Target::Socket(b)) => a.ptr_eq(b),
             (Target::Process(a), Target::Process(b)) => a == b,
             (Target::Audio(a), Target::Audio(b)) => a.ptr_eq(b),
+            (Target::PipeRead(a), Target::PipeRead(b)) => a.ptr_eq(b),
+            (Target::PipeWrite(a), Target::PipeWrite(b)) => a.ptr_eq(b),
             _ => false,
         }
     }
@@ -96,6 +102,8 @@ impl Target {
                 a.upgrade()?;
                 crate::audio::events()
             }
+            Target::PipeRead(p) => p.upgrade()?.0.events(true),
+            Target::PipeWrite(p) => p.upgrade()?.0.events(false),
         })
     }
 
@@ -130,6 +138,16 @@ impl Target {
                     crate::audio::watch(me)
                 } else {
                     crate::audio::unwatch(me)
+                }
+            }
+            Target::PipeRead(p) => {
+                if let Some(p) = p.upgrade() {
+                    if on { p.0.watch(me) } else { p.0.unwatch(me) }
+                }
+            }
+            Target::PipeWrite(p) => {
+                if let Some(p) = p.upgrade() {
+                    if on { p.0.watch(me) } else { p.0.unwatch(me) }
                 }
             }
         }

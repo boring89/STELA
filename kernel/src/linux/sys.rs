@@ -147,9 +147,9 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::GETPEERNAME => socket::name(p, a0, a1, a2, true),
         nr::SETSOCKOPT => socket::setsockopt(p, a0),
         nr::GETSOCKOPT => socket::getsockopt(p, a0, a3, a4),
-        nr::PIPE | nr::PIPE2 | nr::CLONE | nr::CLONE3 | nr::FORK | nr::VFORK | nr::EXECVE => {
-            Err(ENOSYS)
-        }
+        nr::PIPE => files::pipe2(p, a0, 0),
+        nr::PIPE2 => files::pipe2(p, a0, a1),
+        nr::CLONE | nr::CLONE3 | nr::FORK | nr::VFORK | nr::EXECVE => Err(ENOSYS),
         _ => unknown(p, number),
     };
     drop(process);

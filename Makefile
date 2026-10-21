@@ -61,7 +61,7 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
                -device isa-debug-exit,iobase=0xf4,iosize=0x04 -display none -serial stdio
 # The hardware baseline (docs/architecture.md section 3): a Core 2 class CPU
 # without the NX bit, 256 MiB, no KVM. -m comes last and overrides 512M.
-QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 256M
+QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 128M
 
 # Crates that run on the host and have unit tests.
 HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox pkgcore
@@ -651,6 +651,13 @@ test-window: esp $(BUILD)/OVMF_VARS.fd
 		--expect "echo_win: hello" --expect "echo_win: copied hello" --expect "echo_win: hello" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm $(WINDOW_CHECKS)
+	# P12 (docs/architecture.md §3.1): the same desktop in 128 MiB.
+	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-window-128.log \
+		--type "STELA shell" "uptime\n" --type "uptime:" "run Echo.app\n" \
+		--type "echo_win: ready" "hello\n" \
+		--expect "kernel: " --expect "mouseion: ready" --expect "STELA shell" --expect "uptime:" \
+		--expect "echo_win: hello" \
+		-- $(QEMU) $(subst -m 512M,-m 128M,$(QEMU_FLAGS)) -display none -serial stdio
 
 # The shell on the normal kernel with the AHCI test disk (a copy of its
 # own) on two processors (docs/smp.md): commands typed through QMP, their

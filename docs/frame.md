@@ -201,7 +201,7 @@ loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。k
 虛擬位址                       內容
 0xFFFF_8000_0000_0000 ...      HHDM
 0x0000_0000_0000_0000 ...      使用者半部：每個行程自己的（P3）
-0xFFFF_FF00_0000_0000 ...      動態區：heap（32 MiB，P11；P5 前是 4 MiB、P5–P10 是 16 MiB），之後是其他映射
+0xFFFF_FF00_0000_0000 ...      動態區：heap（P12：開機 4 MiB、按需成長到最多 64 MiB；P11 是固定 32 MiB），之後是其他映射
 0xFFFF_FF10_0000_0000 ...      動態區 + 64 GiB：kernel 堆疊的 slot（每個 64 KiB = 32 KiB guard + 32 KiB 堆疊，P3）
 0xFFFF_FF40_0000_0000 ...      動態區上半：MMIO 視窗（不快取）
 0xFFFF_FFFF_8000_0000 ...      kernel 映像
@@ -209,7 +209,7 @@ loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。k
 
 ## 8. Kernel heap
 
-`HEAP_BASE = 0xFFFF_FF00_0000_0000`，固定 32 MiB（P5 為了區塊快取與 B-tree 節點從 4 MiB 加大到 16 MiB，P11 快取加大後到 32 MiB）：從 PMM 拿 8192 個頁框（不需要連續）一頁一頁映射上去，交給 `linked_list_allocator::Heap`（MIT/Apache-2.0，關掉預設 feature 所以不帶 `spinning_top`），外面包 frame 自己的 `SpinLock`，註冊成 `#[global_allocator]`。之後 kernel 就能用 `Vec`、`String`、`Box`。`heap::stats()` 回報大小、已用、可用。
+`HEAP_BASE = 0xFFFF_FF00_0000_0000`。**P12（使用者尚未審核）：開機時 4 MiB（`HEAP_INITIAL`），配置放不下時在尾端再映射至少 1 MiB（`GROW_STEP`；夠這次的請求）、`Heap::extend` 交給配置器、重試，最多 64 MiB（`HEAP_MAX`）；不縮回。** 成長在 heap 的鎖裡做（分頁與 PMM 不用 heap，所以不會自己卡住）；映射到一半頁框不夠時把這次映射的還回去、回傳 null。selftest：要一塊比剩下的大 2 MiB 的記憶體，heap 變大、放掉後用量回到原值。以前（P11）：固定 32 MiB（P5 為了區塊快取與 B-tree 節點從 4 MiB 加大到 16 MiB，P11 快取加大後到 32 MiB）：從 PMM 拿 8192 個頁框（不需要連續）一頁一頁映射上去，交給 `linked_list_allocator::Heap`（MIT/Apache-2.0，關掉預設 feature 所以不帶 `spinning_top`），外面包 frame 自己的 `SpinLock`，註冊成 `#[global_allocator]`。之後 kernel 就能用 `Vec`、`String`、`Box`。`heap::stats()` 回報大小、已用、可用。
 
 ## 9. 鎖
 

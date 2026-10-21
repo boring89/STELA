@@ -16,7 +16,7 @@ use frame::bootinfo::BootInfo;
 use frame::input::{self, InputEvent};
 use frame::mm::paging::{self, Flags};
 use frame::mm::user::UserFlags;
-use frame::mm::{DYNAMIC_BASE, HEAP_SIZE, MMIO_BASE, heap, mmio, pmm};
+use frame::mm::{DYNAMIC_BASE, HEAP_INITIAL, HEAP_MAX, MMIO_BASE, heap, mmio, pmm};
 use frame::sync::{IrqGuard, SpinLock, interrupts_enabled};
 use frame::trap::{Report, TrapFrame};
 use frame::{cpu, irq, kprintln, time};
@@ -360,7 +360,7 @@ fn page_mapping(info: &'static BootInfo) {
 
 fn heap(_: &'static BootInfo) {
     let before = heap::stats();
-    assert_eq!(before.size, HEAP_SIZE as usize);
+    assert!(before.size >= HEAP_INITIAL as usize && before.size <= HEAP_MAX as usize);
     {
         // black_box keeps the optimiser from removing the allocations.
         let numbers: Vec<u64> = black_box((1..=10_000).collect());
@@ -378,6 +378,17 @@ fn heap(_: &'static BootInfo) {
             during.size / 1024,
             during.used / 1024
         );
+    }
+    assert_eq!(heap::stats().used, before.used);
+    // P12: an allocation larger than what is free makes the heap grow
+    // (1 MiB steps, at most HEAP_MAX); it does not shrink afterwards.
+    let size = heap::stats().free + (2 << 20);
+    {
+        let big: Box<[u8]> = black_box(vec![9u8; size].into_boxed_slice());
+        assert_eq!(big[size - 1], 9);
+        let grown = heap::stats();
+        assert!(grown.size > before.size && grown.size <= HEAP_MAX as usize);
+        kprintln!("selftest:   the heap grew to {} KiB", grown.size / 1024);
     }
     assert_eq!(heap::stats().used, before.used);
 }

@@ -353,7 +353,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 
 - **先 watch 再看**：看完到睡之間如果有事件發生，wake 會留下 `wake_pending`，`block_until` 立刻返回（§9.2），不會漏掉。
 - 每個物件的 watchers：Port 的 `Inner.watchers`（送信與關閉時全部叫醒；`waiters` 仍只叫醒一個收信的人）、Tty 的 `watchers`（輸出與可讀的輸入）、網路的 `net.waiters`（協定堆疊一有事件就全部叫醒，和 socket syscall 共用）、行程表的 `waiters`（結束時）、音效的 `WATCHERS`（餵資料的執行緒每 5 ms 看一次，環有一半空就叫醒）。
-- 成員以 **Weak** 參考：集合不會讓 socket 保持開著或讓 port 活著；物件消失的成員在下一次 wait 時自動移除。成員的身分用指標比較（`Weak::ptr_eq`；行程用 id），所以 `WaitSetRemove` 給同一個物件的任何 handle 都可以。
+- 成員以 **Weak** 參考：集合不會讓 socket 保持開著或讓 port 活著；物件消失的成員在下一次 wait 時自動移除。**行程例外**：以 id 記（行程表的紀錄永遠在），結束後一直是 `EXITED`，要自己 `WaitSetRemove`（terminal 換新 shell 時就這樣做）。成員的身分用指標比較（`Weak::ptr_eq`；行程用 id），所以 `WaitSetRemove` 給同一個物件的任何 handle 都可以。
 - 單一物件的阻塞呼叫（`PortReceive`、`TtyRead`、socket 的 recv…）不變。
 - 一個執行緒一次只在一個 WaitSet 等（自然成立：它在 syscall 裡）。
 

@@ -142,13 +142,15 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
  視窗伺服器 ── KEY ──► terminal ── INPUT_KEY ──► shell 的主 port
                                                （shell 跑程式時再轉給 tty）
  shell 與它的程式 ── 印到 [1] = tty ──► master
- 輸出執行緒：TtyRead(master) ──► OUTPUT 訊息到 terminal 的主 port
-                             └─► 同一份送到 console（serial）
- 主執行緒：grid.write(輸出) → 重畫有變的列 → DAMAGE
+ 一個執行緒，WaitSet 等三樣東西（P11）：
+   主 port（key 0）：視窗事件、SHELL_READY
+   master（key 1）：TtyRead 到沒有為止 → grid.write → 重畫有變的列 → DAMAGE
+                   └─► 同一份送到 console（serial）
+   shell 行程（key 2，EXITED）：印 [shell exited…]、啟動新的
 ```
 
 - 視窗：80×25 格（16x32 字型時 1288×808，四邊 4 像素）、`DOCUMENT`、標題 `Terminal`；選單 `Terminal > Clear`。
-- `TtyCreate(MASTER)`：slave 給 shell 當 `[1]`；master 由輸出執行緒讀（libstela 的 `ThreadStack` + `spawn`：沒有同時等兩個東西的 syscall，所以用一個執行緒把 tty 輸出變成主 port 的訊息）。
+- `TtyCreate(MASTER)`：slave 給 shell 當 `[1]`；master 和主 port 放在同一個 WaitSet（P11；P8 時沒有同時等兩個東西的 syscall，用一個輸出執行緒把 tty 輸出轉成主 port 的訊息，現在拿掉了）。toolbox 等回覆時先收下的事件（`Connection::has_pending()`）在每次等待前處理掉。shell 行程也在集合裡（`EXITED`），不再每 500 ms 檢查一次；行程成員以 id 記，換新 shell 前先 `remove`。
 - **serial 鏡像**：輸出也送到 terminal 自己的 `[1]`（console 服務 → serial），所以 `make test-shell`、`test-linux`、`test-shutdown` 在桌面模式下照樣從 serial 檢查 shell 的輸出（鍵盤經 QMP → PS/2 → 視窗伺服器 → terminal → shell）。
 - 文字格（`grid.rs`）：UTF-8 可以在任何地方被切開；`\n` 換行（底部捲動）、`\r`、Backspace、Tab（8 的倍數）、`ESC [ … 結尾字元` 略過；記錄改過的列。游標是反白的格子（失去焦點時不畫）。
 - shell 結束時印 `[shell exited with code N]` 並啟動新的；關閉鈕：kill shell、結束 terminal。

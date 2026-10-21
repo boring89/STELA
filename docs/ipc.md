@@ -86,7 +86,9 @@ user/ipc_server、ipc_client、echo
 | 4 | `READ` | 映射記憶體（唯讀或可寫都要） |
 | 5 | `WRITE` | 可寫映射 |
 | 6 | `MAP` | `MemoryMap` |
-| 7 | `WAIT` | 保留（P6 的 `ProcessWait`） |
+| 7 | `WAIT` | 保留（P6 的 `ProcessWait`；P11 的 `WaitSetWait`） |
+| 8 | `KILL` | `ProcessKill`（P6） |
+| 9 | `MANAGE` | `FileSetInfo`（P11）：改檔案與資料夾的中繼資料；`VolumeOpen` 與可寫卷宗的根有，`DirOpen` 從有它的資料夾往下繼承，`HandleDuplicate` 可以拿掉 |
 
 未定義的位元 → `InvalidArgument`。
 
@@ -278,7 +280,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 | 12 | `MemoryCreate` | size | handle |
 | 13 | `MemoryMap` | memory, flags | 位址 |
 | 14 | `MemoryUnmap` | addr | 0 |
-| 15 | `InputAttach` | port | 0 |
+| 15 | `InputAttach` | port, input（P11：`capability::INPUT`） | 0 |
 
 錯誤（接 P3 的 1–5）：6 `BadHandle`、7 `AccessDenied`、8 `WrongType`、9 `Full`、10 `TimedOut`、11 `PeerClosed`、12 `OutOfHandles`、13 `AlreadyMapped`。
 

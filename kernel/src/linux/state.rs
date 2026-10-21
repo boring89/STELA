@@ -87,6 +87,9 @@ pub struct State {
     pub tty: Arc<Tty>,
     /// `set_tid_address` (kept, never used: no threads).
     pub tid_address: AtomicU64,
+    /// Whether it was given the `NETWORK` capability (`socket` needs it;
+    /// P11).
+    pub network: bool,
 }
 
 impl State {
@@ -110,6 +113,7 @@ impl State {
             }),
             tty,
             tid_address: AtomicU64::new(0),
+            network: false,
         }
     }
 

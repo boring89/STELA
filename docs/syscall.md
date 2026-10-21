@@ -52,7 +52,7 @@
 | 12 | `MemoryCreate` | size | handle | 4 KiB 倍數，≤ 64 MiB |
 | 13 | `MemoryMap` | memory, flags | 位址 | 在 `MAP_BASE..MAP_END` |
 | 14 | `MemoryUnmap` | addr | 0 | |
-| 15 | `InputAttach` | port | 0 | 鍵盤事件送到 port |
+| 15 | `InputAttach` | port, input | 0 | 鍵盤事件送到 port；P11 起要 `INPUT` 能力（`docs/userland.md` §2.3） |
 | 16–26 | `DirOpen`…`VolumeOpenById` | | | 檔案與卷宗，見 `docs/vfs.md` §4（P5，使用者已於 2026-10-20 審核） |
 | 27–31 | `ProcessSpawn`、`ProcessWait`、`ProcessKill`、`ProcessSelf`、`SysInfo` | | | 行程，見 `docs/userland.md` §2（P6，使用者已於 2026-10-20 審核） |
 | 32 | `SystemPower` | kind | —（成功不返回） | 卸載卷宗後關機（0）或重新開機（1），見 `docs/acpi.md`（P6.5，使用者已於 2026-10-20 審核） |

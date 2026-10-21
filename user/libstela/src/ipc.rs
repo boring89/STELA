@@ -169,7 +169,9 @@ impl Drop for Mapping {
 }
 
 /// Keyboard events go to `port` (a handle with `SEND`) as `INPUT_KEY`
-/// messages from now on, replacing whoever was attached before.
+/// messages from now on, replacing whoever was attached before. Needs the
+/// `INPUT` capability (`AccessDenied` without).
 pub fn input_attach(port: Handle) -> Result<(), Error> {
-    syscall1(Syscall::InputAttach, port.raw()).map(|_| ())
+    let input = crate::process::capability(abi::capability::INPUT).unwrap_or(Handle::NONE);
+    syscall2(Syscall::InputAttach, port.raw(), input.raw()).map(|_| ())
 }

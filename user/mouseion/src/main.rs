@@ -500,8 +500,7 @@ impl Mouseion {
         let handles = [
             pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
             pass(bootstrap::BOOTSTRAP, Rights::SEND | Rights::DUPLICATE),
-            pass(cwd, Rights::READ | Rights::WRITE | Rights::DUPLICATE)
-                .then_or(|| pass(cwd, Rights::READ | Rights::DUPLICATE)),
+            process::pass_dir(cwd),
         ];
         match process::spawn(file, args, handles) {
             Ok(p) => {
@@ -1003,17 +1002,6 @@ impl Mouseion {
             }
             _ => {}
         }
-    }
-}
-
-/// `pass` with a fallback when the first handle could not be made.
-trait OrElse {
-    fn then_or(self, other: impl FnOnce() -> Handle) -> Handle;
-}
-
-impl OrElse for Handle {
-    fn then_or(self, other: impl FnOnce() -> Handle) -> Handle {
-        if self == Handle::NONE { other() } else { self }
     }
 }
 

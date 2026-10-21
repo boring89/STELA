@@ -1172,10 +1172,7 @@ fn start_programs(names: &[String]) {
                 bootstrap::MAIN_PORT,
                 Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
             ),
-            pass(
-                bootstrap::CWD,
-                Rights::READ | Rights::WRITE | Rights::DUPLICATE,
-            ),
+            process::pass_dir(bootstrap::CWD),
         ];
         let base = name.rsplit('/').next().unwrap_or(name);
         let base = base.strip_suffix(".app").unwrap_or(base);

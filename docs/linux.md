@@ -186,6 +186,7 @@ Linux 程式的 tty：kernel 在 `spawn_linux` 時看 `[1]`：是 Tty 就用它�
 - `stat`：`st_dev` = 卷宗 index + 1、`st_ino` = 持久 ID、mode 資料夾 `040755`、檔案 `100644`、裝置與 tty `020666`／`020620`；時間來自後端。
 - `getdents64`：`.`、`..` 在前；每次呼叫重新列出（和 `DirRead` 一樣 O(n²)）；cursor 存在 `OpenFile::Dir`；`lseek(fd, 0, SEEK_SET)` 重來。
 - `/etc` 只有 `resolv.conf`（唯讀，`open` 時才產生內容；寫入 → `EROFS`）；其他名字 → `ENOENT`（musl 找 `/etc/hosts` 時就是這樣，然後走 DNS）。
+- P11：`socket()` 要行程啟動時拿到 `NETWORK` 能力（`docs/userland.md` §2.3），否則 `EACCES`。
 - **Linux 程式不受 handle 能力限制**：它看得到所有卷宗（合成根目錄就是全部）。之後的沙箱要收緊（`docs/architecture.md` §4.1）。
 
 ### 7.1 `Tmp`（`vfs/tmpfs.rs`）

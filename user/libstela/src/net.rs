@@ -28,8 +28,10 @@ impl Drop for Socket {
 }
 
 impl Socket {
+    /// Needs the `NETWORK` capability (`AccessDenied` without).
     fn create(kind: u64) -> Result<Socket, Error> {
-        syscall1(Syscall::SocketCreate, kind).map(|h| Socket(Handle::from_raw(h)))
+        let network = crate::process::capability(abi::capability::NETWORK).unwrap_or(Handle::NONE);
+        syscall2(Syscall::SocketCreate, kind, network.raw()).map(|h| Socket(Handle::from_raw(h)))
     }
 
     /// A UDP socket.

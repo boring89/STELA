@@ -95,6 +95,10 @@ fn granted(asked: u64, parent: Rights, read_only: bool) -> Result<Rights, Error>
         }
         rights = rights | Rights::WRITE;
     }
+    // Metadata may be changed below a folder where it may be (P11).
+    if parent.contains(Rights::MANAGE) && !read_only {
+        rights = rights | Rights::MANAGE;
+    }
     Ok(rights)
 }
 
@@ -170,7 +174,7 @@ pub fn file_get_info(process: &Process, handle: u64, ptr: u64) -> Result<u64, Er
 /// `FileSetInfo(file or folder, &[u8; 32])`: needs `WRITE`.
 pub fn file_set_info(process: &Process, handle: u64, ptr: u64) -> Result<u64, Error> {
     let (node, _, rights) = node_of(process, handle)?;
-    if !rights.contains(Rights::WRITE) {
+    if !rights.contains(Rights::WRITE | Rights::MANAGE) {
         return Err(Error::AccessDenied);
     }
     let mut info = [0u8; abi::FINDER_INFO_SIZE];
@@ -366,7 +370,7 @@ pub fn volume_list(process: &Process, index: u64, ptr: u64) -> Result<u64, Error
 pub fn root_rights(volume: &vfs::Volume) -> Rights {
     let mut rights = Rights::READ | Rights::DUPLICATE | Rights::TRANSFER;
     if !volume.fs.read_only() {
-        rights = rights | Rights::WRITE;
+        rights = rights | Rights::WRITE | Rights::MANAGE;
     }
     rights
 }

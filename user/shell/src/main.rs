@@ -290,10 +290,17 @@ impl Shell {
             self.window_server.map_or(Handle::NONE, |ws| {
                 pass(ws, Rights::SEND | Rights::DUPLICATE)
             }),
-            pass(cwd.0, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
+            process::pass_dir(cwd.0),
         ];
-        let child =
-            Owned(process::spawn(file.0, &args, handles).map_err(|e| String::from(describe(e)))?);
+        // In text mode the shell has INPUT (for `run echo`) and passes it.
+        let mut caps = process::inherited();
+        if let Some(input) = process::pass_capability(libstela::abi::capability::INPUT) {
+            caps.push((libstela::abi::capability::INPUT, input));
+        }
+        let child = Owned(
+            process::spawn_with(file.0, &args, handles, &caps)
+                .map_err(|e| String::from(describe(e)))?,
+        );
         // Wait, watching the keyboard for Ctrl-C (unless the program took
         // the keyboard for itself); other keys go to the program's tty.
         let code = loop {

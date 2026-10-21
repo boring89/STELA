@@ -122,6 +122,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
   - 關閉鈕：按著時反黑，放開仍在框內 → `CLOSE_REQUESTED`（client 自己決定要不要關）。
   - grow box：拖外框，放開送 `RESIZE_REQUESTED(w, h)`，client 回 `RESIZE_WINDOW`。
   - 內容：取得焦點、送 `MOUSE DOWN`（含雙擊判定：500 ms、4 像素內）；按著時的移動與放開都送給這個視窗（capture）。
+- P11（計畫的 B5）：鍵盤只給焦點視窗的 client、選單列只顯示焦點視窗的 client 的選單——沒有視窗的 client 設了 `SET_MENUBAR` 也不會顯示（存著，等它有視窗）。所以不另外拒絕（Mouseion 先設選單再建桌面視窗）。
 - 焦點：點到的視窗，或新建的視窗；換焦點送 `BLUR`／`FOCUS`，重畫兩個標題列與選單列。`DESKTOP` 視窗不會被提到前面。
 - 新視窗的位置（`AUTO`）：從左上角 (40, 選單列 + 標題列 + 30) 起，每個往右下 30 像素（8 個一輪）。
 

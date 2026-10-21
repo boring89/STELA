@@ -86,7 +86,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 | 編號 | 名稱 | 參數 | 權限 |
 |---|---|---|---|
 | 37 | `FileGetInfo` | 檔案或資料夾, &mut [u8; 32] | — |
-| 38 | `FileSetInfo` | 檔案或資料夾, &[u8; 32] | WRITE；唯讀卷宗 → `ReadOnly` |
+| 38 | `FileSetInfo` | 檔案或資料夾, &[u8; 32] | WRITE + `MANAGE`（P11）；唯讀卷宗 → `ReadOnly` |
 
 每個項目 32 bytes 的 Finder 資訊（`abi::FINDER_INFO_SIZE`），kernel 不解讀：eHFS 存在目錄記錄裡（格式本來就有，`docs/ehfs.md`），`Tmp` 存在記憶體；FAT 與 Initrd 回 `NotSupported`。後端：`FileSystem::get_info`／`set_info`（預設 `NotSupported`）。Mouseion 的配置（視窗矩形、圖示位置）見 `docs/mouseion.md`。
 

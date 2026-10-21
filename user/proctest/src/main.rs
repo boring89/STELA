@@ -263,6 +263,17 @@ fn capabilities() -> Result<(), i64> {
         bootstrap::MAIN_PORT.raw(),
     );
     check(24, raw == Err(Error::AccessDenied), "a port is not POWER")?;
+    // Nor INPUT nor NETWORK.
+    check(
+        25,
+        libstela::ipc::input_attach(bootstrap::MAIN_PORT) == Err(Error::AccessDenied),
+        "input without INPUT",
+    )?;
+    check(
+        25,
+        libstela::net::Socket::udp().err() == Some(Error::AccessDenied),
+        "socket without NETWORK",
+    )?;
     Ok(())
 }
 

@@ -201,7 +201,12 @@ pub fn spawn_process(
     let personality = force.unwrap_or_else(|| personality_of(&elf));
     let args = args.unwrap_or_else(|| name_args(name));
     if personality == Personality::Linux {
-        return spawn_linux(name, &elf, initial, &args);
+        // A Linux program keeps no handles for its capabilities: only
+        // whether it may use the network.
+        let network = capabilities
+            .iter()
+            .any(|(kind, _)| *kind == abi::capability::NETWORK);
+        return spawn_linux(name, &elf, initial, &args, network);
     }
     let process = task::process::create_with(name, initial, None)?;
     // On failure the process has no thread; dropping it frees what was
@@ -247,6 +252,7 @@ fn spawn_linux(
     elf: &Elf,
     initial: task::process::Initial,
     args: &QueuedMessage,
+    network: bool,
 ) -> Result<Arc<Process>, LoadError> {
     let tty = match &initial[0] {
         Some(Entry {
@@ -264,7 +270,8 @@ fn spawn_linux(
         _ => String::from("/Initrd"),
     };
     let (_, image_end) = elf.image_span();
-    let state = crate::linux::State::new(Arc::clone(&tty), cwd, image_end);
+    let mut state = crate::linux::State::new(Arc::clone(&tty), cwd, image_end);
+    state.network = network;
     let process = task::process::create_with(name, initial, Some(state))?;
     load(process.space(), elf)?;
     let argv = message_args(args);

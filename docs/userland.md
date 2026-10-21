@@ -47,8 +47,8 @@ tools/qemu_test.py           --type：經 QMP 打字
 | kind | 名稱 | 守著什麼 | 誰拿到 |
 |---|---|---|---|
 | 1 | `POWER` | `SystemPower`（`docs/acpi.md`） | init → 視窗伺服器 → 它啟動的程式（Mouseion：特別 → 關機／重新開機） |
-| 2 | `INPUT` | `InputAttach`（K6 起檢查） | init → 視窗伺服器；文字模式的 shell |
-| 3 | `NETWORK` | `SocketCreate`（K6 起檢查） | init → 所有人（預設繼承，現在的行為） |
+| 2 | `INPUT` | `InputAttach` | init → 視窗伺服器；文字模式的 shell → 它 `run` 的程式（`echo`） |
+| 3 | `NETWORK` | `SocketCreate`；Linux 的 `socket()`（沒有 → `EACCES`；Linux 程式不留 handle，`linux::State::network` 記著） | init → 所有人（預設繼承，現在的行為） |
 | 4 | `INIT` | 不是 kernel 的能力：init 主 port 的 `SEND`，送 `POWER_REQUEST` | init 做的，所有人預設繼承 |
 
 - kernel 物件 `KernelObject::Capability(kind)`，handle 的權限只有 `DUPLICATE|TRANSFER`；`HandleKind` = 12。持有就是許可，kernel 只檢查種類（`object::check_capability`）。
@@ -57,6 +57,8 @@ tools/qemu_test.py           --type：經 QMP 打字
 - libstela：`process::capability(kind)`、`set_capability(kind, h)`（init 登記自己做的 `INIT`）、`pass_capability(kind)`（複製一份給子行程）、`inherited()`（`NETWORK` + `INIT` 的複製）、`spawn_with(file, args, handles, &[(kind, h)])`；`spawn` = `spawn_with(…, &inherited())`。**`POWER` 與 `INPUT` 不會自動往下傳**。
 - `process::shutdown()`／`reboot()`（`power(kind)`）：有 `POWER` 就直接 `SystemPower(kind, power)`；否則有 `INIT` 就送 `POWER_REQUEST`（data = kind，夾帶回覆 port）給 init，等 10 秒的回覆（失敗時 init 回 `Error` 值；成功就沒有回覆，機器已經關了）；兩個都沒有 → `AccessDenied`。所以 shell 的 `shutdown` 不必持有 `POWER`：它請 init 做。
 - init 等子行程時用 WaitSet 同時等主 port（`POWER_REQUEST`）與子行程（`EXITED`）。
+- libstela 的 `ipc::input_attach` 與 `net::Socket::*` 自動帶上自己的能力（沒有就送 0 → `AccessDenied`）。
+- 資料夾 handle 的 `MANAGE` 權限（`docs/ipc.md` §3.3）：`process::pass_dir(h)` 複製一份給子行程，盡量保留 READ／WRITE／MANAGE（拿不到就退一級），取代各處的 `pass(cwd, READ|WRITE|DUPLICATE)`（那樣會拿掉 MANAGE，唯讀的 Initrd 還會因為沒有 WRITE 而複製失敗）。
 
 ### 2.1 程式一律從檔案啟動
 

@@ -126,13 +126,27 @@ pub fn pass(h: Handle, rights: Rights) -> Handle {
     crate::ipc::handle_duplicate(h, rights.union(Rights::TRANSFER)).unwrap_or(Handle::NONE)
 }
 
+/// A copy of the folder handle `h` to pass on, with as many of `READ`,
+/// `WRITE` and `MANAGE` as it has (`Handle::NONE` if it is not valid).
+pub fn pass_dir(h: Handle) -> Handle {
+    [
+        Rights::READ | Rights::WRITE | Rights::MANAGE,
+        Rights::READ | Rights::WRITE,
+        Rights::READ,
+    ]
+    .into_iter()
+    .map(|r| pass(h, r | Rights::DUPLICATE))
+    .find(|&c| c != Handle::NONE)
+    .unwrap_or(Handle::NONE)
+}
+
 /// The standard handles for a child: the console and `cwd` (both
 /// duplicated), and `bootstrap` as `[2]`.
 pub fn standard_handles(bootstrap_handle: Handle, cwd: Handle) -> [Handle; 3] {
     [
         pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
         bootstrap_handle,
-        pass(cwd, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
+        pass_dir(cwd),
     ]
 }
 

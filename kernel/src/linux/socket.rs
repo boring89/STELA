@@ -97,6 +97,9 @@ fn nonblocking_error(e: abi::Error, nonblock: bool) -> i64 {
 
 /// `socket(domain, type, protocol)`.
 pub fn socket(p: &Process, domain: u64, ty: u64, protocol: u64) -> LinuxResult {
+    if !p.linux().is_some_and(|l| l.network) {
+        return Err(errno::EACCES);
+    }
     if domain != AF_INET {
         return Err(EAFNOSUPPORT);
     }

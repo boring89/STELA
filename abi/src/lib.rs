@@ -69,8 +69,9 @@ pub enum Syscall {
     MemoryMap = 13,
     /// `MemoryUnmap(address)`: removes a mapping made by `MemoryMap`.
     MemoryUnmap = 14,
-    /// `InputAttach(port)`: keyboard events go to `port` (a handle with
-    /// `SEND`) as `INPUT_KEY` messages, replacing the previous receiver.
+    /// `InputAttach(port, input)`: keyboard events go to `port` (a handle
+    /// with `SEND`) as `INPUT_KEY` messages, replacing the previous
+    /// receiver. `input` is a `capability::INPUT` handle (P11).
     InputAttach = 15,
     /// `DirOpen(dir, path_ptr, path_len, flags) -> handle`: opens (or with
     /// `open::CREATE` makes) the file or folder at the relative path
@@ -151,8 +152,9 @@ pub enum Syscall {
     /// `FileSetInfo(file or folder, &[u8; 32])`: stores it (needs
     /// `WRITE` on the handle).
     FileSetInfo = 38,
-    /// `SocketCreate(kind) -> handle`: a network socket (`net::UDP`,
-    /// `net::TCP`, `net::ICMP`; `docs/net.md`).
+    /// `SocketCreate(kind, network) -> handle`: a network socket
+    /// (`net::UDP`, `net::TCP`, `net::ICMP`; `docs/net.md`). `network` is
+    /// a `capability::NETWORK` handle (P11).
     SocketCreate = 39,
     /// `SocketBind(socket, port) -> port`: the local port (0: any free
     /// one).
@@ -487,8 +489,10 @@ impl Rights {
     pub const WAIT: Rights = Rights(1 << 7);
     /// End the object (`ProcessKill`).
     pub const KILL: Rights = Rights(1 << 8);
+    /// Change a file's or folder's metadata (`FileSetInfo`; P11).
+    pub const MANAGE: Rights = Rights(1 << 9);
     /// Every right defined so far.
-    pub const ALL: Rights = Rights(0x1FF);
+    pub const ALL: Rights = Rights(0x3FF);
 
     /// Whether every right in `other` is in `self`.
     pub const fn contains(self, other: Rights) -> bool {
@@ -1634,8 +1638,9 @@ mod tests {
         assert!(r.contains(Rights::SEND));
         assert!(!r.contains(Rights::SEND | Rights::MAP));
         assert_eq!(r.without(Rights::SEND), Rights::RECEIVE);
-        assert_eq!(Rights::from_raw(0x200), None);
-        assert_eq!(Rights::from_raw(0x1FF), Some(Rights::ALL));
+        assert_eq!(Rights::from_raw(0x400), None);
+        assert_eq!(Rights::from_raw(0x3FF), Some(Rights::ALL));
+        assert_eq!(Rights::MANAGE.raw(), 0x200);
     }
 
     #[test]

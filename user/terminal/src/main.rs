@@ -125,10 +125,7 @@ impl Terminal {
         let handles = [
             pass(self.slave, Rights::SEND | Rights::DUPLICATE),
             pass(bootstrap::MAIN_PORT, Rights::SEND),
-            pass(
-                bootstrap::CWD,
-                Rights::READ | Rights::WRITE | Rights::DUPLICATE,
-            ),
+            process::pass_dir(bootstrap::CWD),
         ];
         match process::spawn(program, &["shell"], handles) {
             Ok(p) => {

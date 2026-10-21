@@ -367,7 +367,8 @@ fn insert_socket(process: &Process, socket: Arc<Socket>) -> Result<u64, Error> {
 }
 
 /// `SocketCreate(kind) -> handle`.
-pub fn socket_create(process: &Process, kind: u64) -> Result<u64, Error> {
+pub fn socket_create(process: &Process, kind: u64, network: u64) -> Result<u64, Error> {
+    crate::object::check_capability(process, network, abi::capability::NETWORK)?;
     let kind = match kind {
         abi::net::UDP => Kind::Udp,
         abi::net::TCP => Kind::Tcp,

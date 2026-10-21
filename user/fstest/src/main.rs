@@ -89,6 +89,16 @@ fn run() -> Result<(), i64> {
     check(31, fs::set_info(file, &info).is_ok(), "set Finder info")?;
     check(32, fs::get_info(file) == Ok(info), "Finder info back")?;
     check(33, fs::set_info(dir, &info).is_ok(), "folder Finder info")?;
+    // Without MANAGE (P11) the metadata stays.
+    let plain =
+        libstela::ipc::handle_duplicate(file, libstela::Rights::READ | libstela::Rights::WRITE)
+            .map_err(|_| 34i64)?;
+    check(
+        34,
+        fs::set_info(plain, &[0; 32]) == Err(Error::AccessDenied),
+        "Finder info without MANAGE",
+    )?;
+    let _ = libstela::ipc::handle_close(plain);
     let st = fs::stat(file).map_err(|_| 8i64)?;
     check(
         8,

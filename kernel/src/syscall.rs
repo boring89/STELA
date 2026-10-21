@@ -59,7 +59,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::MemoryCreate) => memory_create(a0),
         Some(Syscall::MemoryMap) => memory_map(a0, a1),
         Some(Syscall::MemoryUnmap) => memory_unmap(a0),
-        Some(Syscall::InputAttach) => input_attach(a0),
+        Some(Syscall::InputAttach) => input_attach(a0, a1),
         Some(Syscall::TtyCreate) => tty_create(a0),
         Some(Syscall::TtyRead) => tty_read(a0, a1, a2, args[3]),
         Some(Syscall::TtyWrite) => tty_write(a0, a1, a2),
@@ -353,8 +353,9 @@ fn memory_unmap(addr: u64) -> Result<u64, Error> {
 }
 
 /// `InputAttach(port)`.
-fn input_attach(handle: u64) -> Result<u64, Error> {
+fn input_attach(handle: u64, input: u64) -> Result<u64, Error> {
     let process = caller()?;
+    crate::object::check_capability(&process, input, abi::capability::INPUT)?;
     let target = {
         let handles = process.handles().lock();
         let entry = handles.get(Handle::from_raw(handle))?;
@@ -586,7 +587,7 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::SystemPower => crate::psyscall::system_power(&p, a0, a1),
         Syscall::FileGetInfo => file_get_info(&p, a0, a1),
         Syscall::FileSetInfo => file_set_info(&p, a0, a1),
-        Syscall::SocketCreate => crate::net::socket_create(&p, a0),
+        Syscall::SocketCreate => crate::net::socket_create(&p, a0, a1),
         Syscall::SocketBind => crate::net::socket_bind(&p, a0, a1),
         Syscall::SocketConnect => crate::net::socket_connect(&p, a0, a1, a2),
         Syscall::SocketListen => crate::net::socket_listen(&p, a0, a1),

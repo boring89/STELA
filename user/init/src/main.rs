@@ -99,7 +99,7 @@ fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
     let handles = [
         pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
         to_init,
-        pass(home, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
+        process::pass_dir(home),
     ];
     let mut caps = process::inherited();
     caps.extend(give(capability::INPUT));
@@ -150,7 +150,7 @@ fn run_desktop(home: Handle) {
                 bootstrap::BOOTSTRAP,
                 Rights::MAP | Rights::READ | Rights::WRITE | Rights::DUPLICATE,
             ),
-            pass(home, Rights::READ | Rights::WRITE | Rights::DUPLICATE),
+            process::pass_dir(home),
         ];
         let mut caps = process::inherited();
         caps.extend(give(capability::POWER));

@@ -140,7 +140,7 @@ VIRTIO 1.1 的 **modern** 介面（§4.1.4 PCI capabilities、§2.6 split virtqu
 
 | 號碼 | 呼叫 | 參數 | 回傳 |
 |---|---|---|---|
-| 39 | `SocketCreate` | kind（`net::UDP` 1、`TCP` 2、`ICMP` 3） | handle（READ、WRITE、DUPLICATE、TRANSFER） |
+| 39 | `SocketCreate` | kind（`net::UDP` 1、`TCP` 2、`ICMP` 3）, network（P11：`capability::NETWORK` 的 handle，沒有 → `AccessDenied`） | handle（READ、WRITE、DUPLICATE、TRANSFER） |
 | 40 | `SocketBind` | socket, port（0：任意） | port |
 | 41 | `SocketConnect` | socket, addr（`net::pack`）, timeout ns | 0；TCP 等到連上，UDP 設預設目的地 |
 | 42 | `SocketListen` | socket, backlog（1–64） | 0 |

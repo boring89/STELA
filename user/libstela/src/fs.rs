@@ -187,6 +187,68 @@ pub fn path_of(h: Handle) -> Result<alloc::string::String, Error> {
     }
 }
 
+/// The value of extended attribute `name` of item `h` (`NotFound`
+/// without one; P11).
+pub fn get_attr(h: Handle, name: &str) -> Result<alloc::vec::Vec<u8>, Error> {
+    let mut buf = alloc::vec![0u8; 256];
+    loop {
+        let n = syscall6(
+            Syscall::FileGetAttr,
+            [
+                h.raw(),
+                name.as_ptr() as u64,
+                name.len() as u64,
+                buf.as_mut_ptr() as u64,
+                buf.len() as u64,
+                0,
+            ],
+        )? as usize;
+        if n <= buf.len() {
+            buf.truncate(n);
+            return Ok(buf);
+        }
+        buf.resize(n, 0);
+    }
+}
+
+/// Sets extended attribute `name` of `h` (≤ `ATTR_VALUE_MAX` bytes; an
+/// empty value removes it). Needs `WRITE` and `MANAGE`.
+pub fn set_attr(h: Handle, name: &str, value: &[u8]) -> Result<(), Error> {
+    syscall6(
+        Syscall::FileSetAttr,
+        [
+            h.raw(),
+            name.as_ptr() as u64,
+            name.len() as u64,
+            value.as_ptr() as u64,
+            value.len() as u64,
+            0,
+        ],
+    )
+    .map(|_| ())
+}
+
+/// The names of `h`'s extended attributes.
+pub fn list_attrs(h: Handle) -> Result<alloc::vec::Vec<alloc::string::String>, Error> {
+    let mut buf = alloc::vec![0u8; 256];
+    loop {
+        let n = syscall3(
+            Syscall::FileListAttr,
+            h.raw(),
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        )? as usize;
+        if n <= buf.len() {
+            return Ok(buf[..n]
+                .split(|&b| b == 0)
+                .filter(|s| !s.is_empty())
+                .map(|s| alloc::string::String::from_utf8_lossy(s).into_owned())
+                .collect());
+        }
+        buf.resize(n, 0);
+    }
+}
+
 /// Stores the Finder information of `h` (which needs `WRITE` and
 /// `MANAGE`).
 pub fn set_info(h: Handle, info: &[u8; abi::FINDER_INFO_SIZE]) -> Result<(), Error> {

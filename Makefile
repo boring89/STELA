@@ -558,20 +558,33 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 # starts). The screen shows the volume icons and the new terminal active.
 MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
 	--expect-rect 300,192,100,10,\#c8763c
+# P11: Delete on the selected Classic.app asks, and Enter tries (Initrd is
+# read only, so it stays); a second boot opens the windows open last time
+# by themselves.
 test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-mouseion.img
 	python3 tools/qemu_test.py --timeout 120 --screendump $(BUILD)/mouseion.ppm --log $(BUILD)/test-mouseion.log \
 		--click "mouseion: started Terminal" 2464 204 2 \
 		--click "mouseion: opened Data:/" 256 232 2 \
 		--click "viewer: Data:/welcome.txt" 2464 316 2 \
-		--click "mouseion: opened Initrd:/" 616 272 2 \
+		--click "mouseion: opened Initrd:/" 296 274 1 \
+		--type "mouseion: selected Classic.app" "{delete}" \
+		--type "mouseion: asking" "\n" \
+		--click "mouseion: delete Classic.app" 616 272 2 \
 		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
 		--expect "viewer: Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
+		--expect "mouseion: asking: Delete \"Classic.app\"?" \
+		--expect "mouseion: delete Classic.app: read-only volume" \
 		--expect "mouseion: started Terminal" --expect "STELA shell" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	python3 tools/fb_check.py $(BUILD)/mouseion.ppm $(MOUSEION_CHECKS)
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-mouseion-2.log \
+		--expect "mouseion: opened Data:/" --expect "mouseion: opened Initrd:/" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
+		-device ide-hd,drive=sata1,bus=ide.1
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.
 EHFS_TOOLS  := $(BUILD)/host/ehfs

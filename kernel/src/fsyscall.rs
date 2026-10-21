@@ -344,6 +344,78 @@ pub fn file_path(process: &Process, h: u64, ptr: u64, len: u64) -> Result<u64, E
     Ok(path.len() as u64)
 }
 
+/// The name of an extended attribute in the caller's memory.
+fn attr_name(process: &Process, ptr: u64, len: u64) -> Result<alloc::string::String, Error> {
+    if len == 0 || len as usize > abi::ATTR_NAME_MAX {
+        return Err(Error::InvalidArgument);
+    }
+    let bytes = user_bytes(process, ptr, len, abi::ATTR_NAME_MAX as u64)?;
+    let name = alloc::string::String::from_utf8(bytes).map_err(|_| Error::InvalidArgument)?;
+    if name.contains('\0') {
+        return Err(Error::InvalidArgument);
+    }
+    Ok(name)
+}
+
+/// `FileGetAttr(item, name, name_len, buf, len) -> length`.
+pub fn file_get_attr(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
+    let [h, name_ptr, name_len, buf, len, _] = args;
+    let (node, _, rights) = node_of(process, h)?;
+    if !rights.contains(Rights::READ) {
+        return Err(Error::AccessDenied);
+    }
+    let name = attr_name(process, name_ptr, name_len)?;
+    let value = node.volume.fs.get_attr(node.id, &name)?;
+    let n = value.len().min(len as usize);
+    process
+        .space()
+        .write(buf, &value[..n])
+        .map_err(|_| Error::BadAddress)?;
+    Ok(value.len() as u64)
+}
+
+/// `FileSetAttr(item, name, name_len, value, len)`: `len` 0 removes it.
+pub fn file_set_attr(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
+    let [h, name_ptr, name_len, buf, len, _] = args;
+    let (node, _, rights) = node_of(process, h)?;
+    if !rights.contains(Rights::WRITE | Rights::MANAGE) {
+        return Err(Error::AccessDenied);
+    }
+    if node.volume.fs.read_only() {
+        return Err(Error::ReadOnly);
+    }
+    let name = attr_name(process, name_ptr, name_len)?;
+    if len as usize > abi::ATTR_VALUE_MAX {
+        return Err(Error::InvalidArgument);
+    }
+    if len == 0 {
+        node.volume.fs.set_attr(node.id, &name, None)?;
+    } else {
+        let value = user_bytes(process, buf, len, abi::ATTR_VALUE_MAX as u64)?;
+        node.volume.fs.set_attr(node.id, &name, Some(&value))?;
+    }
+    Ok(0)
+}
+
+/// `FileListAttr(item, buf, len) -> length`: names ending in NUL.
+pub fn file_list_attr(process: &Process, h: u64, buf: u64, len: u64) -> Result<u64, Error> {
+    let (node, _, rights) = node_of(process, h)?;
+    if !rights.contains(Rights::READ) {
+        return Err(Error::AccessDenied);
+    }
+    let mut out = alloc::vec::Vec::new();
+    for name in node.volume.fs.list_attrs(node.id)? {
+        out.extend_from_slice(name.as_bytes());
+        out.push(0);
+    }
+    let n = out.len().min(len as usize);
+    process
+        .space()
+        .write(buf, &out[..n])
+        .map_err(|_| Error::BadAddress)?;
+    Ok(out.len() as u64)
+}
+
 /// `FileSetSize(file, size)`.
 pub fn file_set_size(process: &Process, file: u64, size: u64) -> Result<u64, Error> {
     let node = file_of(process, file, Rights::WRITE)?;

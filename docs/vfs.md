@@ -98,6 +98,16 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 
 回傳卷宗**裡面**的路徑：根是 `/`，其他是 `/a/b`（UTF-8，沒有 NUL）。kernel 從項目往上走：`FileSystem::parent(id)`——eHFS 用目錄記錄裡的父 CNID（`Entry::parent`）；其他後端（FAT、Initrd、Tmp）用預設實作，從根做廣度優先搜尋（最多看 10 萬個資料夾）。`vfs::path_of(volume, id)` 也給 Linux 人格算 cwd（`docs/linux.md` §7）。libstela `fs::path_of(h)`（buf 不夠時放大重試）。注意：有某個資料夾的 handle 就能知道它上面各層的名字（不能打開它們）。
 
+### 4.5 延伸屬性（P11，使用者尚未審核）
+
+| 編號 | 名稱 | 參數 | 回傳 | 權限 |
+|---|---|---|---|---|
+| 58 | `FileGetAttr` | 項目, name, name_len, buf, len | 值的總長度（寫進 buf 最多 len）；沒有 → `NotFound` | READ |
+| 59 | `FileSetAttr` | 項目, name, name_len, value, len | 0；len 0 = 刪除 | WRITE + `MANAGE` |
+| 60 | `FileListAttr` | 項目, buf, len | 名稱的總長度（每個名稱後面一個 NUL） | READ |
+
+名稱 1–255 bytes 的 UTF-8（不含 NUL，`abi::ATTR_NAME_MAX`），值最多 3 KiB（`ATTR_VALUE_MAX`，eHFS 的上限）。後端：eHFS 的 attributes B-tree（`attr_get`／`attr_set`／`attr_remove`／`attr_names`，格式本來就有）；`Tmp` 存在每個節點的 `BTreeMap`；FAT、Initrd → `NotSupported`。libstela `fs::get_attr`、`set_attr`（空值刪除）、`list_attrs`。用途：Mouseion 的視窗狀態與圖示位置（`docs/mouseion.md` §3.1）。fstest 第 38 步：沒有 → `NotFound`、設定、3000 bytes 的、讀回、列出、太大 → `InvalidArgument`、刪除。
+
 ### 4.3 bundle（P9）
 
 `ProcessSpawn` 也接受 `Name.app` 資料夾的 handle：執行裡面的 `exec`（`program::BUNDLE_EXEC`），行程名稱是參數的第一個字（沒有參數時用 bundle 名稱 `Name`）。其他資料夾仍是 `IsDir`。P9 起行程名稱一律取參數的第一個字（≤ 24 bytes），不再是檔名。initrd 裡的 `Terminal.app`、`Echo.app`（之後 `Viewer.app`）由 Makefile 的 `BUNDLES` 產生（`exec` + `info.txt`：名稱、版本）。

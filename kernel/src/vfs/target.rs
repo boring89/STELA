@@ -74,6 +74,18 @@ pub trait FileSystem: Send + Sync {
     fn set_info(&self, _id: u64, _info: &[u8; 32]) -> Result<(), Error> {
         Err(Error::NotSupported)
     }
+    /// The value of the item's extended attribute `name` (P11).
+    fn get_attr(&self, _id: u64, _name: &str) -> Result<Vec<u8>, Error> {
+        Err(Error::NotSupported)
+    }
+    /// Sets (`Some`) or removes (`None`) an extended attribute.
+    fn set_attr(&self, _id: u64, _name: &str, _value: Option<&[u8]>) -> Result<(), Error> {
+        Err(Error::NotSupported)
+    }
+    /// The names of the item's extended attributes.
+    fn list_attrs(&self, _id: u64) -> Result<Vec<String>, Error> {
+        Err(Error::NotSupported)
+    }
     /// The item of folder `dir` after `cookie` (0: the first) and the
     /// cookie for the next call (never 0), or `None` past the last
     /// (`DirRead`, P11). The default counts positions in `list` (each call
@@ -386,6 +398,26 @@ impl FileSystem for EhfsFs {
             let mut e = v.get(id)?;
             e.finder = *info;
             v.set_info(&e)
+        })
+    }
+
+    fn get_attr(&self, id: u64, name: &str) -> Result<Vec<u8>, Error> {
+        self.with(|v| v.attr_get(id, name.as_bytes()))
+    }
+
+    fn set_attr(&self, id: u64, name: &str, value: Option<&[u8]>) -> Result<(), Error> {
+        self.with(|v| match value {
+            Some(value) => v.attr_set(id, name.as_bytes(), value),
+            None => v.attr_remove(id, name.as_bytes()),
+        })
+    }
+
+    fn list_attrs(&self, id: u64) -> Result<Vec<String>, Error> {
+        self.with(|v| v.attr_names(id)).map(|names| {
+            names
+                .into_iter()
+                .map(|n| String::from_utf8_lossy(&n).into_owned())
+                .collect()
         })
     }
 }

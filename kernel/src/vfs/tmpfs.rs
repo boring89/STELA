@@ -57,6 +57,8 @@ pub struct Node {
     pub mtime: u64,
     /// Finder information (`FileSetInfo`).
     pub finder: [u8; 32],
+    /// Extended attributes (`FileSetAttr`; P11).
+    pub attrs: alloc::collections::BTreeMap<String, Vec<u8>>,
 }
 
 impl Node {
@@ -106,6 +108,7 @@ impl TmpTree {
                 ctime: 0,
                 mtime: 0,
                 finder: [0; 32],
+                attrs: alloc::collections::BTreeMap::new(),
             },
         );
         TmpTree {
@@ -177,6 +180,7 @@ impl TmpTree {
                 ctime: now,
                 mtime: now,
                 finder: [0; 32],
+                attrs: alloc::collections::BTreeMap::new(),
             },
         );
         if let Some(parent) = self.nodes.get_mut(&dir) {
@@ -230,6 +234,20 @@ impl TmpTree {
     /// Stores the Finder information of `id`.
     pub fn set_info(&mut self, id: u64, info: &[u8; 32]) -> Result<(), TmpError> {
         self.nodes.get_mut(&id).ok_or(TmpError::NotFound)?.finder = *info;
+        Ok(())
+    }
+
+    /// Sets (`Some`) or removes an extended attribute of `id`.
+    pub fn set_attr(&mut self, id: u64, name: &str, value: Option<&[u8]>) -> Result<(), TmpError> {
+        let attrs = &mut self.nodes.get_mut(&id).ok_or(TmpError::NotFound)?.attrs;
+        match value {
+            Some(v) => {
+                attrs.insert(String::from(name), v.to_vec());
+            }
+            None => {
+                attrs.remove(name).ok_or(TmpError::NotFound)?;
+            }
+        }
         Ok(())
     }
 
@@ -408,6 +426,21 @@ mod target {
 
         fn set_info(&self, id: u64, info: &[u8; 32]) -> Result<(), Error> {
             self.tree.lock().set_info(id, info).map_err(error)
+        }
+
+        fn get_attr(&self, id: u64, name: &str) -> Result<Vec<u8>, Error> {
+            let tree = self.tree.lock();
+            let node = tree.get(id).map_err(error)?;
+            node.attrs.get(name).cloned().ok_or(Error::NotFound)
+        }
+
+        fn set_attr(&self, id: u64, name: &str, value: Option<&[u8]>) -> Result<(), Error> {
+            self.tree.lock().set_attr(id, name, value).map_err(error)
+        }
+
+        fn list_attrs(&self, id: u64) -> Result<Vec<alloc::string::String>, Error> {
+            let tree = self.tree.lock();
+            Ok(tree.get(id).map_err(error)?.attrs.keys().cloned().collect())
         }
     }
 }

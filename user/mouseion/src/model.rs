@@ -18,6 +18,7 @@
 //! ```
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use toolbox::draw::Rect;
 
 /// The first two bytes of Mouseion's Finder information.
@@ -118,8 +119,58 @@ pub fn decode_icon(b: &[u8; 32]) -> Option<(i32, i32)> {
 /// Where a folder keeps its icon position: a folder's Finder information
 /// holds its window state, so its own icon position cannot go there too;
 /// Mouseion keeps folder icons in the grid (`docs/mouseion.md` §3).
-pub fn keeps_icon_position(is_dir: bool) -> bool {
-    !is_dir
+pub fn keeps_icon_position(_is_dir: bool) -> bool {
+    // P11: in the extended attribute `stela.mouseion.icon`, so folders
+    // keep theirs too (their window state is a different attribute).
+    true
+}
+
+/// The extended attribute with a folder's window state (P11).
+pub const STATE_ATTR: &str = "stela.mouseion";
+/// The extended attribute with an item's icon position (P11).
+pub const ICON_ATTR: &str = "stela.mouseion.icon";
+
+/// One window to open again at start: volume, folder id, path.
+pub type OpenWindow = (String, u64, String);
+
+/// The text of `Data:/.mouseion`: one open folder window per line,
+/// `volume<TAB>id<TAB>path`.
+pub fn format_open_list(list: &[OpenWindow]) -> String {
+    let mut s = String::new();
+    for (volume, id, path) in list {
+        s.push_str(&alloc::format!("{volume}\t{id}\t{path}\n"));
+    }
+    s
+}
+
+/// The windows in the text of `Data:/.mouseion` (bad lines are skipped).
+pub fn parse_open_list(text: &str) -> Vec<OpenWindow> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '\t');
+            let volume = parts.next()?;
+            let id = parts.next()?.parse().ok()?;
+            let path = parts.next()?;
+            (!volume.is_empty()).then(|| (String::from(volume), id, String::from(path)))
+        })
+        .collect()
+}
+
+/// The items whose rectangles meet the selection band `band` (P11).
+pub fn band_select(rects: &[Rect], band: Rect) -> Vec<usize> {
+    (0..rects.len())
+        .filter(|&i| rects[i].overlaps(&band))
+        .collect()
+}
+
+/// The rectangle between two corners (any order).
+pub fn band(a: (i32, i32), b: (i32, i32)) -> Rect {
+    Rect::new(
+        a.0.min(b.0),
+        a.1.min(b.1),
+        (a.0 - b.0).abs() + 1,
+        (a.1 - b.1).abs() + 1,
+    )
 }
 
 /// What an item is to Mouseion.
@@ -365,7 +416,7 @@ mod tests {
         assert_eq!(decode_icon(&encode_icon(-40, 300)), Some((-40, 300)));
         assert_eq!(decode_icon(&[0; 32]), None);
         assert!(keeps_icon_position(false));
-        assert!(!keeps_icon_position(true));
+        assert!(keeps_icon_position(true));
     }
 
     #[test]
@@ -446,5 +497,33 @@ mod tests {
             drop_target(5000, 5000, &windows, icons),
             DropTarget::Nowhere
         );
+    }
+
+    #[test]
+    fn open_windows_list() {
+        let list = alloc::vec![
+            (String::from("Data"), 16u64, String::from("Data:/")),
+            (String::from("Data"), 42, String::from("Data:/docs\tx")),
+        ];
+        let text = format_open_list(&list);
+        assert_eq!(parse_open_list(&text), list);
+        assert_eq!(
+            parse_open_list("junk\nData\tnot a number\tx\n\t5\tx\nArchive\t7\tArchive:/\n"),
+            alloc::vec![(String::from("Archive"), 7, String::from("Archive:/"))]
+        );
+    }
+
+    #[test]
+    fn selection_band() {
+        let rects = [
+            Rect::new(0, 0, 10, 10),
+            Rect::new(20, 0, 10, 10),
+            Rect::new(0, 20, 10, 10),
+        ];
+        assert_eq!(band((25, 5), (5, 25)), Rect::new(5, 5, 21, 21));
+        assert_eq!(band_select(&rects, band((25, 5), (5, 25))), [0, 1, 2]);
+        assert_eq!(band_select(&rects, band((15, 0), (40, 3))), [1]);
+        assert!(band_select(&rects, band((12, 12), (18, 18))).is_empty());
+        assert!(keeps_icon_position(true) && keeps_icon_position(false));
     }
 }

@@ -216,11 +216,23 @@ pub enum Syscall {
     /// `TtySetSize(master, columns, rows)`: what the terminal shows, for
     /// Linux's `TIOCGWINSZ` (P11; 80 x 25 until set).
     TtySetSize = 57,
+    /// `FileGetAttr(item, name, name_len, buf, len) -> length`: the value
+    /// of extended attribute `name` (UTF-8, ≤ 255 bytes; P11); the whole
+    /// length is returned even when `len` cut it. `NotFound` without one;
+    /// `NotSupported` on FAT and the initrd.
+    FileGetAttr = 58,
+    /// `FileSetAttr(item, name, name_len, value, len)`: sets it (≤
+    /// `ATTR_VALUE_MAX` bytes); `len` 0 removes it. Needs `WRITE |
+    /// MANAGE`.
+    FileSetAttr = 59,
+    /// `FileListAttr(item, buf, len) -> length`: the names, each ending
+    /// in NUL; the whole length is returned.
+    FileListAttr = 60,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 57] = [
+    pub const ALL: [Syscall; 60] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -278,6 +290,9 @@ impl Syscall {
         Syscall::PipeRead,
         Syscall::PipeWrite,
         Syscall::TtySetSize,
+        Syscall::FileGetAttr,
+        Syscall::FileSetAttr,
+        Syscall::FileListAttr,
     ];
 
     /// The call with number `raw`, if any.
@@ -766,6 +781,12 @@ pub mod spawn {
 /// opaque to the kernel; eHFS keeps it in the catalog record. Mouseion's
 /// layout is in `docs/mouseion.md`.
 pub const FINDER_INFO_SIZE: usize = 32;
+
+/// Longest extended attribute name and value (`FileSetAttr`; eHFS's
+/// limits).
+pub const ATTR_NAME_MAX: usize = 255;
+/// Longest extended attribute value.
+pub const ATTR_VALUE_MAX: usize = 3 * 1024;
 
 /// Bytes a pipe holds (`PipeCreate`).
 pub const PIPE_BUFFER: usize = 64 * 1024;
@@ -1812,6 +1833,15 @@ mod tests {
         assert_eq!(Syscall::PipeCreate.raw(), 54);
         assert_eq!(Syscall::PipeWrite.raw(), 56);
         assert_eq!(Syscall::TtySetSize.raw(), 57);
+        assert_eq!(
+            (
+                Syscall::FileGetAttr.raw(),
+                Syscall::FileSetAttr.raw(),
+                Syscall::FileListAttr.raw()
+            ),
+            (58, 59, 60)
+        );
+        assert_eq!((ATTR_NAME_MAX, ATTR_VALUE_MAX), (255, 3072));
         assert_eq!((object_kind::PIPE_READ, object_kind::PIPE_WRITE), (13, 14));
         assert_eq!(PIPE_BUFFER, 65536);
         assert_eq!(object_kind::WAIT_SET, 11);

@@ -50,6 +50,18 @@ abi、kernel、libstela         FileGetInfo／FileSetInfo（37、38）、Process
 - FAT 與 Initrd 不存（`NotSupported`，Mouseion 不理會）；`Tmp` 存在記憶體（關機就沒了）。
 - 數值超出 i16 會被夾住，不會繞回。
 
+### 3.1 P11：延伸屬性（使用者尚未審核）
+
+Mouseion 的資料不再放在 Finder 資訊（那 32 bytes 照 HFS 的原意留給 Mac 的 type/creator/flags/位置，Classic 環境的 FSM 卷宗用它，`docs/classic.md` §7），改放**延伸屬性**（`FileGetAttr`／`FileSetAttr`，`docs/vfs.md` §4.5）：
+
+| 屬性 | 內容（同上面 32 bytes 的編碼） |
+|---|---|
+| `stela.mouseion` | 資料夾的視窗狀態 |
+| `stela.mouseion.icon` | 項目的圖示位置——**資料夾也有了**（以前 32 bytes 放不下兩份） |
+
+- 讀：先讀屬性；沒有就讀 Finder 資訊，是 Mouseion 的舊格式（`MI`）就寫進屬性、把 Finder 資訊清成 0（**遷移**），之後不再寫 Finder 資訊。
+- 開機重開視窗：開著的資料夾視窗清單存在 `Data:/.mouseion`（一行 `卷宗<TAB>id<TAB>路徑`，`model::format_open_list`／`parse_open_list`），開／關資料夾視窗時寫，Mouseion 啟動時（開了 Terminal 之後）依序打開。
+
 ## 4. 操作
 
 | 動作 | 結果 |
@@ -64,6 +76,11 @@ abi、kernel、libstela         FileGetInfo／FileSetInfo（37、38）、Process
 | 拖到別的資料夾視窗的空白處 | 同上，並把圖示放在放開的地方 |
 | 捲軸 | 點箭頭一行、軌道一頁；只有垂直 |
 
+- **P11 的新操作**：
+  - **多選**：Shift-點一下加入／拿掉；在資料夾視窗的空白處拖出一個框（畫外框），放開時框到的都選起來（`model::band_select`）。拖曳時移動整個選取（同一個視窗內一起位移，到別處一個個搬或複製）。
+  - **拖曳影子**：拖曳中在來源視窗畫出被拖的圖示的外框，跟著指標（半透明不做）；拖到別的視窗時影子只畫在來源視窗內。
+  - **改名**：點一下已經是唯一選取的項目的**名稱** → 名稱處變成文字框（白底黑框、`|` 是游標）；打字、Backspace，Enter 改名（`DirRename`），Escape 取消，點別處也算確定。名稱不能有 `/`、`:`。
+  - **刪除**：Delete 鍵 → 問「Delete "x"?」（多個時「Delete these N items?」，說明沒有垃圾桶）的視窗；Enter 刪除（資料夾連裡面全部），Escape 留著。失敗（例如唯讀卷宗）印 `mouseion: delete x: …`。
 - 拖放的判定（`model::drop_target`）：視窗伺服器把整個按住的過程都送給按下的那個視窗（capture，座標可以在視窗外），Mouseion 把座標換成螢幕座標，依自己知道的前後順序（`FOCUS` 事件；桌面最後）找放在哪個視窗、哪個圖示上。拖曳中沒有畫出圖示的影子（記在限制）。
 - 雙擊判定由視窗伺服器做（500 ms、4 像素）。
 
@@ -97,6 +114,9 @@ abi、kernel、libstela         FileGetInfo／FileSetInfo（37、38）、Process
 
 ## 7. 測試
 
+P11：host `model`——開著的視窗清單的格式往返與壞行、框選（`band`、`band_select`）、資料夾也存圖示位置；`make test-mouseion`——打開 Initrd:/ 後點 Classic.app（`mouseion: selected Classic.app`）、Delete → `mouseion: asking: Delete "Classic.app"?`、Enter → `delete Classic.app: read-only volume`（Initrd 唯讀）；第二次開機上次開的 Data:/ 與 Initrd:/ 自己打開。`tools/qemu_test.py` 的 `--type`、`--click` 等改成依命令列的順序觸發（以前全部 `--type` 在 `--click` 前面）。
+
+
 | 測試 | 內容 |
 |---|---|
 | host `mouseion::model` | 資料夾狀態的編碼往返、壞的 magic／版本、夾住過大的值、圖示位置、種類與 bundle 名稱、縮短名稱、格線（位置、格子、放置、吸附）、拖放目標（圖示、空白、桌面、外面） |
@@ -106,10 +126,10 @@ abi、kernel、libstela         FileGetInfo／FileSetInfo（37、38）、Process
 
 ## 8. 已知限制
 
-- 拖曳中看不到圖示的影子；不能一次選多個；沒有複製／貼上、刪除（沒有垃圾桶）、改名（Get Info 只看）。
-- 資料夾圖示的位置不保存（只有檔案的）；視窗內的捲動只有垂直。
-- 開機時不重新打開上次開著的視窗。
+- P11 起有拖曳影子（只是外框，只在來源視窗內）、多選、刪除（沒有垃圾桶，直接刪）、改名；沒有複製／貼上、復原。
+- 視窗內的捲動只有垂直。
+- 開機重開視窗在 Terminal 之後開，所以 Terminal 的視窗可能蓋在它們上面。
 - bundle 的自訂圖示（`icon-*.ppm`）還沒讀。
 - 跨卷宗複製把整個檔案讀進記憶體；同名檔案已存在時失敗（`Exists`）。
 - 前後順序是 Mouseion 自己記的（`FOCUS` 事件），可能和視窗伺服器的不同（例如別的程式的視窗）。
-- 所有程式都能用 `FileSetInfo` 改 Mouseion 的記錄（沒有分隔各程式的 Finder 資訊）。
+- 有 `MANAGE` 的程式都能用 `FileSetAttr` 改 Mouseion 的屬性（屬性沒有依程式分開）。

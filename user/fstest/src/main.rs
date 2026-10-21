@@ -89,6 +89,45 @@ fn run() -> Result<(), i64> {
     check(31, fs::set_info(file, &info).is_ok(), "set Finder info")?;
     check(32, fs::get_info(file) == Ok(info), "Finder info back")?;
     check(33, fs::set_info(dir, &info).is_ok(), "folder Finder info")?;
+    // Extended attributes (P11).
+    check(
+        38,
+        fs::get_attr(file, "stela.test") == Err(Error::NotFound),
+        "no attribute yet",
+    )?;
+    check(
+        38,
+        fs::set_attr(file, "stela.test", b"value one").is_ok(),
+        "set an attribute",
+    )?;
+    check(
+        38,
+        fs::set_attr(dir, "stela.dir", &[7u8; 3000]).is_ok(),
+        "a big one",
+    )?;
+    let got = fs::get_attr(file, "stela.test").map_err(|_| 38i64)?;
+    check(38, got.as_slice() == b"value one", "attribute back")?;
+    check(
+        38,
+        fs::get_attr(dir, "stela.dir").map(|v| v.len()) == Ok(3000),
+        "big one back",
+    )?;
+    check(
+        38,
+        fs::list_attrs(file).map(|l| l.len() == 1 && l[0] == "stela.test") == Ok(true),
+        "list",
+    )?;
+    check(
+        38,
+        fs::set_attr(file, "x", &[0u8; 4000]) == Err(Error::InvalidArgument),
+        "too big",
+    )?;
+    check(38, fs::set_attr(file, "stela.test", &[]).is_ok(), "remove")?;
+    check(
+        38,
+        fs::get_attr(file, "stela.test") == Err(Error::NotFound),
+        "removed",
+    )?;
     // Paths from the parents (FilePath, P11).
     check(
         35,

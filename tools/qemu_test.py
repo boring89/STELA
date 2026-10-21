@@ -236,15 +236,22 @@ def main():
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--exit-code", type=int)
     ap.add_argument("--screendump")
-    ap.add_argument("--send-keys", nargs=2, action="append", default=[],
+    class Ordered(argparse.Action):
+        """Keeps every action option in one list, in command-line order."""
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            namespace.actions.append((self.dest, values))
+
+    ap.set_defaults(actions=[])
+    ap.add_argument("--send-keys", nargs=2, action=Ordered, dest="send_keys",
                     metavar=("TRIGGER", "KEYS"))
-    ap.add_argument("--type", nargs=2, action="append", default=[],
+    ap.add_argument("--type", nargs=2, action=Ordered, dest="type",
                     metavar=("TRIGGER", "TEXT"))
-    ap.add_argument("--mouse", nargs=4, action="append", default=[],
+    ap.add_argument("--mouse", nargs=4, action=Ordered, dest="mouse",
                     metavar=("TRIGGER", "DX", "DY", "BUTTON"))
-    ap.add_argument("--qmp", nargs=3, action="append", default=[],
+    ap.add_argument("--qmp", nargs=3, action=Ordered, dest="qmp",
                     metavar=("TRIGGER", "COMMAND", "JSON"))
-    ap.add_argument("--click", nargs=4, action="append", default=[],
+    ap.add_argument("--click", nargs=4, action=Ordered, dest="click",
                     metavar=("TRIGGER", "X", "Y", "COUNT"))
     ap.add_argument("--expect", action="append", required=True)
     ap.add_argument("--log", help="also write the serial output to this file")
@@ -263,15 +270,22 @@ def main():
         cmd = cmd + ["-monitor", f"unix:{monitor},server=on,wait=off"]
 
     qmp = None
-    # (trigger, keys) in firing order: --send-keys first, then --type.
-    typing = [(t, k.split()) for t, k in args.send_keys]
-    typing += [(t, text_to_keys(x)) for t, x in args.type]
-    # Mouse actions are typed entries too: ("mouse", dx, dy, button).
-    typing += [(t, ("mouse", int(dx), int(dy), b)) for t, dx, dy, b in args.mouse]
-    # So are raw QMP commands: ("qmp", command, arguments).
-    typing += [(t, ("qmp", c, json.loads(j))) for t, c, j in args.qmp]
-    # And clicks at screen positions: ("click", x, y, count).
-    typing += [(t, ("click", int(x), int(y), int(n))) for t, x, y, n in args.click]
+    # (trigger, action) in the order given on the command line (P11:
+    # before, all --send-keys came first, then --type, --mouse, --qmp,
+    # --click): keys, ("mouse", dx, dy, button), ("qmp", command,
+    # arguments) or ("click", x, y, count).
+    typing = []
+    for kind, v in args.actions:
+        if kind == "send_keys":
+            typing.append((v[0], v[1].split()))
+        elif kind == "type":
+            typing.append((v[0], text_to_keys(v[1])))
+        elif kind == "mouse":
+            typing.append((v[0], ("mouse", int(v[1]), int(v[2]), v[3])))
+        elif kind == "qmp":
+            typing.append((v[0], ("qmp", v[1], json.loads(v[2]))))
+        else:
+            typing.append((v[0], ("click", int(v[1]), int(v[2]), int(v[3]))))
     if typing:
         qmp = os.path.abspath(os.path.join("build", f"qmp-{os.getpid()}.sock"))
         if os.path.exists(qmp):

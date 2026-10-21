@@ -202,7 +202,7 @@ Claude 依照上方工作規則直接實作。
 - 位址空間只有 4 KiB 頁、沒有需求分頁／mmap；kernel 半部不能新增 PML4 項目（行程的 PML4 是建立時複製的）；使用者 FPU 只有 FXSAVE（無 XSAVE/AVX）；沒有 SMAP（kernel 不直接解參考使用者指標）。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。
 - 使用者空間：沒有 Thread 物件；shell 的管線與重新導向只接程式（不接內建指令）、沒有 Tab 補完；heap 不還記憶體（docs/userland.md §9）。
-- Mouseion：拖曳沒有影子、不能多選、沒有刪除與改名、資料夾圖示位置不存、開機不重開上次的視窗；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
+- Mouseion：拖曳影子只是外框；沒有垃圾桶（刪除是直接刪）、複製貼上；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
 - 視窗：拖外框不即時移動；選單一層；terminal 只有 SGR 顏色、沒有其他 ANSI 序列（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。
 - 儲存：一個 port 一次一個請求（但一個請求一次發出多個命令；沒有 NCQ）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；FAT／Initrd／Tmp 的 `DirRead` 仍每次重新列出；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。

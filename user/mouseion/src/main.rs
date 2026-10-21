@@ -33,8 +33,8 @@ use libstela::ipc::{FOREVER, handle_close};
 use libstela::process::{self, pass};
 use libstela::{Error, Handle, Rights, bootstrap, println};
 use mouseion::model::{
-    self, DropTarget, FolderState, Grid, Kind, View, bundle_name, decode_icon, display_name,
-    ellipsize, encode_icon,
+    self, DropTarget, FolderState, Grid, ICON_ATTR, Kind, STATE_ATTR, View, bundle_name,
+    decode_icon, display_name, ellipsize, encode_icon,
 };
 use toolbox::control::ScrollBar;
 use toolbox::draw::{Font, Rect, color, font_for};
@@ -91,7 +91,8 @@ struct Pane {
     items: Vec<Item>,
     view: View,
     scroll: i32,
-    selected: Option<usize>,
+    /// The items selected (P11: several, Shift-click or a band).
+    selected: Vec<usize>,
     /// The content rectangle on the screen.
     rect: Rect,
     /// Lines of text for a Note.
@@ -104,10 +105,89 @@ struct Press {
     window: u32,
     index: usize,
     start: (i32, i32),
+    /// Where the pointer is now (the outlines are drawn there).
+    at: (i32, i32),
     moved: bool,
 }
 
+/// A name being typed (P11).
+#[derive(Clone, Debug)]
+struct Editing {
+    window: u32,
+    index: usize,
+    text: String,
+}
+
+/// A Delete waiting for its answer (P11): the folder, the names, the
+/// question's window.
+struct Confirm {
+    volume: String,
+    folder: u64,
+    names: Vec<(String, bool)>,
+    note: u32,
+}
+
+/// A selection band: its window, where it started, where it is now.
+type Band = (u32, (i32, i32), (i32, i32));
+
+/// The list of windows to open again (`Data:/.mouseion`).
+const OPEN_LIST: &str = ".mouseion";
+
+fn pane_window_id(p: &Pane) -> u32 {
+    p.window.id
+}
+
+/// A folder's window state: the extended attribute, or the old place in
+/// the Finder information (moved to the attribute, the Finder
+/// information cleared for the Mac; P11).
+fn read_state(h: Handle) -> Option<FolderState> {
+    if let Ok(v) = fs::get_attr(h, STATE_ATTR)
+        && let Ok(b) = <[u8; 32]>::try_from(v.as_slice())
+    {
+        return FolderState::decode(&b);
+    }
+    let old = fs::get_info(h).ok().and_then(|b| FolderState::decode(&b))?;
+    if fs::set_attr(h, STATE_ATTR, &old.encode()).is_ok() {
+        let _ = fs::set_info(h, &[0; 32]);
+    }
+    Some(old)
+}
+
+/// An item's icon position, the same way.
+fn read_icon(h: Handle) -> Option<(i32, i32)> {
+    if let Ok(v) = fs::get_attr(h, ICON_ATTR)
+        && let Ok(b) = <[u8; 32]>::try_from(v.as_slice())
+    {
+        return decode_icon(&b);
+    }
+    let info = fs::get_info(h).ok()?;
+    let pos = decode_icon(&info)?;
+    if fs::set_attr(h, ICON_ATTR, &info).is_ok() {
+        let _ = fs::set_info(h, &[0; 32]);
+    }
+    Some(pos)
+}
+
+/// Removes `name` from `dir`, with everything inside when it is a folder.
+fn remove_tree(dir: Handle, name: &str, is_dir: bool) -> Result<(), Error> {
+    if is_dir {
+        let sub = Owned(fs::open(dir, name, open::READ | open::WRITE)?);
+        for e in fs::entries(sub.0)? {
+            remove_tree(sub.0, e.name(), e.kind_is_dir())?;
+        }
+    }
+    fs::remove(dir, name)
+}
+
 struct Mouseion {
+    /// Shift is held (Shift-click adds to the selection).
+    shift: bool,
+    /// A selection band being dragged: window, start, now.
+    band: Option<Band>,
+    /// A rename in progress.
+    editing: Option<Editing>,
+    /// A Delete asked about.
+    confirm: Option<Confirm>,
     conn: Connection,
     font: &'static Font,
     icon_size: i32,
@@ -224,6 +304,23 @@ impl Mouseion {
             .map(|i| icons::find(if i.volume { "volume" } else { i.kind.icon() }, 16))
             .collect();
         let bar = self.scrollbar(&self.panes[index]);
+        let window_id = self.panes[index].window.id;
+        let editing = self.editing.clone().filter(|e| e.window == window_id);
+        let mut outlines = Vec::new();
+        if let Some((w, a, b)) = self.band
+            && w == window_id
+        {
+            outlines.push(model::band(a, b));
+        }
+        if let Some(p) = self.press
+            && p.window == window_id
+            && p.moved
+        {
+            let (dx, dy) = (p.at.0 - p.start.0, p.at.1 - p.start.1);
+            for &i in &self.panes[index].selected {
+                outlines.push(rects[i].offset(dx, dy));
+            }
+        }
         let pane = &mut self.panes[index];
         let bounds = pane.window.bounds();
         let desktop = pane.place == Place::Desktop;
@@ -250,7 +347,7 @@ impl Mouseion {
                 if !r.overlaps(&bounds) {
                     continue;
                 }
-                let selected = pane.selected == Some(i);
+                let selected = pane.selected.contains(&i);
                 let label = display_name(&item.name, item.is_dir);
                 match pane.view {
                     View::Icons => {
@@ -261,6 +358,17 @@ impl Mouseion {
                         let tw = font.text_width(&text);
                         let tx = r.x + (cell.0 - tw) / 2;
                         let ty = r.y + icon_size + 8;
+                        // Renaming: a text box with what was typed (P11).
+                        if let Some(edit) = editing.as_ref().filter(|e| e.index == i) {
+                            let shown = alloc::format!("{}|", edit.text);
+                            let w = font.text_width(&shown).max(cell.0 - 8);
+                            let bx = r.x + (cell.0 - w) / 2;
+                            let b = Rect::new(bx - 2, ty - 1, w + 4, font.height + 2);
+                            c.fill(b, color::WHITE);
+                            c.frame(b, color::BLACK);
+                            c.text(bx, ty, &shown, font, color::BLACK, None);
+                            continue;
+                        }
                         let (fg, bg) = match (selected, desktop) {
                             (true, _) => (color::PARCHMENT, Some(color::HIGHLIGHT)),
                             (false, true) => (color::BLACK, Some(color::PARCHMENT)),
@@ -305,6 +413,10 @@ impl Mouseion {
             if !desktop && pane.place != Place::Note {
                 bar.draw(&mut c);
             }
+            // The selection band, and the outlines of icons being dragged.
+            for r in &outlines {
+                c.frame(*r, color::BLACK);
+            }
         }
         let _ = self.conn.damage_all(&self.panes[index].window);
     }
@@ -320,12 +432,11 @@ impl Mouseion {
         let keeps = matches!(&self.panes[index].place, Place::Folder { .. });
         let mut stored = Vec::new();
         for e in &entries {
-            let pos = if keeps && !e.kind_is_dir() {
+            let pos = if keeps {
                 fs::open_by_id(h, e.id)
                     .ok()
                     .map(Owned)
-                    .and_then(|f| fs::get_info(f.0).ok())
-                    .and_then(|b| decode_icon(&b))
+                    .and_then(|f| read_icon(f.0))
             } else {
                 None
             };
@@ -333,9 +444,11 @@ impl Mouseion {
         }
         let grid = self.grid(&self.panes[index]);
         let places = grid.place(&stored);
-        let previous = self.panes[index]
+        let previous: Vec<u64> = self.panes[index]
             .selected
-            .and_then(|s| self.panes[index].items.get(s).map(|i| i.id));
+            .iter()
+            .filter_map(|&s| self.panes[index].items.get(s).map(|i| i.id))
+            .collect();
         let items: Vec<Item> = entries
             .iter()
             .zip(places)
@@ -350,7 +463,10 @@ impl Mouseion {
             })
             .collect();
         let pane = &mut self.panes[index];
-        pane.selected = previous.and_then(|id| items.iter().position(|i| i.id == id));
+        pane.selected = previous
+            .iter()
+            .filter_map(|id| items.iter().position(|i| i.id == *id))
+            .collect();
         pane.items = items;
         self.draw(index);
     }
@@ -399,9 +515,7 @@ impl Mouseion {
             println!("mouseion: cannot open {path}");
             return;
         };
-        let state = fs::get_info(handle.0)
-            .ok()
-            .and_then(|b| FolderState::decode(&b));
+        let state = read_state(handle.0);
         let n = self.panes.len() as i32;
         let (rect, view, scroll) = match state {
             Some(s) => (s.rect, s.view, i32::from(s.scroll.1)),
@@ -444,7 +558,7 @@ impl Mouseion {
             items: Vec::new(),
             view,
             scroll,
-            selected: None,
+            selected: Vec::new(),
             rect: Rect::new(rect.x, rect.y, w, h),
             note: Vec::new(),
         });
@@ -452,6 +566,7 @@ impl Mouseion {
         let index = self.panes.len() - 1;
         self.reload(index);
         self.save_state(index);
+        self.save_open_list();
         println!(
             "mouseion: opened {}",
             match &self.panes[index].place {
@@ -476,14 +591,64 @@ impl Mouseion {
             scroll: (0, pane.scroll.clamp(0, i32::from(i16::MAX)) as i16),
             view: pane.view,
         };
-        let _ = fs::set_info(h.0, &state.encode());
+        let _ = fs::set_attr(h.0, STATE_ATTR, &state.encode());
+    }
+
+    /// Writes `Data:/.mouseion`: the folder windows open now, opened
+    /// again at the next start (P11).
+    fn save_open_list(&self) {
+        let list: Vec<model::OpenWindow> = self
+            .panes
+            .iter()
+            .filter_map(|p| match &p.place {
+                Place::Folder { volume, id, path } => Some((volume.clone(), *id, path.clone())),
+                _ => None,
+            })
+            .collect();
+        let Ok(data) = fs::volume_open("Data").map(Owned) else {
+            return;
+        };
+        let flags = open::READ | open::WRITE | open::CREATE | open::TRUNCATE;
+        if let Ok(f) = fs::open(data.0, OPEN_LIST, flags).map(Owned) {
+            let _ = fs::write(f.0, model::format_open_list(&list).as_bytes(), 0);
+        }
+    }
+
+    /// Opens the windows `Data:/.mouseion` lists.
+    fn reopen(&mut self) {
+        let Ok(data) = fs::volume_open("Data").map(Owned) else {
+            return;
+        };
+        let Ok(f) = fs::open(data.0, OPEN_LIST, open::READ).map(Owned) else {
+            return;
+        };
+        let mut buf = vec![0u8; 16 * 1024];
+        let n = fs::read(f.0, &mut buf, 0).unwrap_or(0);
+        let list = model::parse_open_list(&String::from_utf8_lossy(&buf[..n]));
+        for (volume, id, path) in list {
+            let title = path
+                .trim_end_matches('/')
+                .rsplit(['/', ':'])
+                .next()
+                .filter(|t| !t.is_empty())
+                .map_or_else(|| volume.clone(), String::from);
+            self.open_folder(&volume, id, path.clone(), &title);
+        }
     }
 
     fn close_pane(&mut self, index: usize) {
         self.save_state(index);
         let pane = self.panes.remove(index);
-        self.order.retain(|&w| w != pane.window.id);
+        let window_id = pane_window_id(&pane);
+        self.order.retain(|&w| w != window_id);
+        let folder = matches!(pane.place, Place::Folder { .. });
         let _ = self.conn.close(pane.window);
+        if self.confirm.as_ref().is_some_and(|c| c.note == window_id) {
+            self.confirm = None;
+        }
+        if folder {
+            self.save_open_list();
+        }
     }
 
     // ---- opening and running ----
@@ -587,6 +752,8 @@ impl Mouseion {
 
     /// Moves (same volume) or copies item `i` of pane `from` into the
     /// folder `to` (a handle), at icon position `pos` if given.
+    /// Moves (or copies) the dragged items: the selection when the
+    /// pressed item is in it (P11), else that item.
     fn transfer(
         &mut self,
         from: usize,
@@ -595,9 +762,44 @@ impl Mouseion {
         to_volume: &str,
         pos: Option<(i32, i32)>,
     ) {
-        let Some(item) = self.panes[from].items.get(i).cloned() else {
+        let sel = &self.panes[from].selected;
+        let indices: Vec<usize> = if sel.contains(&i) {
+            sel.clone()
+        } else {
+            alloc::vec![i]
+        };
+        let items: Vec<Item> = indices
+            .iter()
+            .filter_map(|&n| self.panes[from].items.get(n).cloned())
+            .collect();
+        let Place::Folder {
+            id: from_id,
+            volume: from_volume,
+            ..
+        } = self.panes[from].place.clone()
+        else {
             return;
         };
+        for (n, item) in items.into_iter().enumerate() {
+            // Indices change as windows reload: find the source again.
+            let Some(f) = self.panes.iter().position(|p| {
+                matches!(&p.place, Place::Folder { id, volume, .. } if *id == from_id && *volume == from_volume)
+            }) else {
+                return;
+            };
+            let at = pos.map(|(x, y)| (x + n as i32 * 8, y + n as i32 * 8));
+            self.transfer_one(f, item, to, to_volume, at);
+        }
+    }
+
+    fn transfer_one(
+        &mut self,
+        from: usize,
+        item: Item,
+        to: Handle,
+        to_volume: &str,
+        pos: Option<(i32, i32)>,
+    ) {
         let (Some(src), Place::Folder { volume, .. }) = (
             self.panes[from].handle.as_ref().map(|h| h.0),
             self.panes[from].place.clone(),
@@ -617,7 +819,7 @@ impl Mouseion {
             && !item.is_dir
             && let Ok(h) = fs::open(to, &item.name, open::READ | open::WRITE)
         {
-            let _ = fs::set_info(h, &encode_icon(x, y));
+            let _ = fs::set_attr(h, ICON_ATTR, &encode_icon(x, y));
             let _ = handle_close(h);
         }
         let all: Vec<usize> = (0..self.panes.len()).collect();
@@ -682,21 +884,34 @@ impl Mouseion {
                     y + self.panes[to].scroll - self.cell.1 / 2,
                 );
                 if to == from {
-                    // Moved within its window: a new icon position.
+                    // Moved within its window: new icon positions for the
+                    // dragged items (all of the selection, by the same
+                    // distance).
                     let pane = &mut self.panes[from];
                     if pane.view != View::Icons || pane.place == Place::Desktop {
                         return;
                     }
-                    let Some(item) = pane.items.get_mut(press.index) else {
+                    let Some(pressed) = pane.items.get(press.index).map(|i| i.pos) else {
                         return;
                     };
-                    item.pos = pos;
-                    if model::keeps_icon_position(item.is_dir)
-                        && let Some(h) = pane.handle.as_ref()
-                        && let Ok(f) = fs::open_by_id(h.0, item.id)
-                    {
-                        let _ = fs::set_info(f, &encode_icon(pos.0, pos.1));
-                        let _ = handle_close(f);
+                    let (dx, dy) = (pos.0 - pressed.0, pos.1 - pressed.1);
+                    let moving: Vec<usize> = if pane.selected.contains(&press.index) {
+                        pane.selected.clone()
+                    } else {
+                        alloc::vec![press.index]
+                    };
+                    for i in moving {
+                        let Some(item) = pane.items.get_mut(i) else {
+                            continue;
+                        };
+                        let new = grid.snap(item.pos.0 + dx, item.pos.1 + dy);
+                        item.pos = new;
+                        if let Some(h) = pane.handle.as_ref()
+                            && let Ok(f) = fs::open_by_id(h.0, item.id)
+                        {
+                            let _ = fs::set_attr(f, ICON_ATTR, &encode_icon(new.0, new.1));
+                            let _ = handle_close(f);
+                        }
                     }
                     self.draw(from);
                     return;
@@ -736,10 +951,116 @@ impl Mouseion {
         })
     }
 
+    /// Whether (x, y) is on item `i`'s name (icon view).
+    fn on_label(&self, index: usize, i: usize, x: i32, y: i32) -> bool {
+        let pane = &self.panes[index];
+        if pane.view != View::Icons {
+            return false;
+        }
+        let r = self.item_rect(pane, i);
+        Rect::new(r.x, r.y + self.icon_size + 8, self.cell.0, self.font.height).contains(x, y)
+    }
+
+    fn redraw_editing(&mut self) {
+        if let Some(p) = self.editing.as_ref().and_then(|e| self.pane(e.window)) {
+            self.draw(p);
+        }
+    }
+
+    /// Ends a rename: `keep` renames to what was typed.
+    fn finish_rename(&mut self, keep: bool) {
+        let Some(edit) = self.editing.take() else {
+            return;
+        };
+        let Some(p) = self.pane(edit.window) else {
+            return;
+        };
+        let old = self.panes[p].items.get(edit.index).map(|i| i.name.clone());
+        if keep
+            && let Some(old) = old
+            && !edit.text.is_empty()
+            && edit.text != old
+            && let Some(h) = self.panes[p].handle.as_ref().map(|h| h.0)
+        {
+            match fs::rename(h, &old, h, &edit.text) {
+                Ok(()) => println!("mouseion: renamed {old} to {}", edit.text),
+                Err(e) => println!("mouseion: rename {old}: {}", describe(e)),
+            }
+        }
+        self.reload(p);
+    }
+
+    /// Delete: asks about the selection of the front folder window.
+    fn ask_delete(&mut self) {
+        let Some(p) = self.order.first().and_then(|&w| self.pane(w)) else {
+            return;
+        };
+        let Place::Folder { volume, id, .. } = self.panes[p].place.clone() else {
+            return;
+        };
+        let names: Vec<(String, bool)> = self.panes[p]
+            .selected
+            .iter()
+            .filter_map(|&i| self.panes[p].items.get(i))
+            .map(|i| (i.name.clone(), i.is_dir))
+            .collect();
+        let Some((first, _)) = names.first() else {
+            return;
+        };
+        let question = if names.len() == 1 {
+            format!("Delete \"{first}\"?")
+        } else {
+            format!("Delete these {} items?", names.len())
+        };
+        println!("mouseion: asking: {question}");
+        self.note(
+            "Delete",
+            vec![
+                question,
+                String::from("There is no Trash: it is gone for good."),
+                String::from("Enter: delete    Escape: keep"),
+            ],
+        );
+        if let Some(&note) = self.order.first() {
+            self.confirm = Some(Confirm {
+                volume,
+                folder: id,
+                names,
+                note,
+            });
+        }
+    }
+
+    /// The answer was yes.
+    fn delete_confirmed(&mut self) {
+        let Some(c) = self.confirm.take() else {
+            return;
+        };
+        if let Some(p) = self.pane(c.note) {
+            self.close_pane(p);
+        }
+        let Some(p) = self.panes.iter().position(
+            |p| matches!(&p.place, Place::Folder { volume, id, .. } if *volume == c.volume && *id == c.folder),
+        ) else {
+            return;
+        };
+        if let Some(h) = self.panes[p].handle.as_ref().map(|h| h.0) {
+            for (name, is_dir) in &c.names {
+                match remove_tree(h, name, *is_dir) {
+                    Ok(()) => println!("mouseion: deleted {name}"),
+                    Err(e) => println!("mouseion: delete {name}: {}", describe(e)),
+                }
+            }
+        }
+        self.panes[p].selected.clear();
+        self.reload(p);
+    }
+
     fn mouse(&mut self, window: u32, x: i32, y: i32, kind: MouseKind, clicks: u32) {
         let Some(index) = self.pane(window) else {
             return;
         };
+
         match kind {
             MouseKind::Down => {
                 if self.panes[index].place != Place::Desktop
@@ -756,19 +1077,61 @@ impl Mouseion {
                     }
                 }
                 let hit = self.hit(index, x, y);
-                if self.panes[index].selected != hit {
-                    self.panes[index].selected = hit;
-                    self.draw(index);
+                // A click ends a rename in progress (it is kept).
+                if self.editing.is_some() {
+                    self.finish_rename(true);
+                }
+                let folder = matches!(self.panes[index].place, Place::Folder { .. });
+                let was_only = hit.is_some()
+                    && self.panes[index].selected == hit.into_iter().collect::<Vec<_>>();
+                match hit {
+                    // Shift-click adds to (or takes from) the selection.
+                    Some(i) if self.shift && folder => {
+                        let sel = &mut self.panes[index].selected;
+                        match sel.iter().position(|&s| s == i) {
+                            Some(at) => {
+                                sel.remove(at);
+                            }
+                            None => sel.push(i),
+                        }
+                        self.draw(index);
+                        return;
+                    }
+                    Some(i) if !self.panes[index].selected.contains(&i) => {
+                        self.panes[index].selected = alloc::vec![i];
+                        println!("mouseion: selected {}", self.panes[index].items[i].name);
+                        self.draw(index);
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.panes[index].selected.clear();
+                        // A band on the empty space of a folder window.
+                        if folder {
+                            self.band = Some((window, (x, y), (x, y)));
+                        }
+                        self.draw(index);
+                    }
                 }
                 if let Some(i) = hit {
                     if clicks >= 2 {
                         self.press = None;
                         self.open_item(index, i);
+                    } else if was_only && folder && self.on_label(index, i, x, y) {
+                        // A click on the name of the one selected item:
+                        // rename it (P11).
+                        self.press = None;
+                        self.editing = Some(Editing {
+                            window,
+                            index: i,
+                            text: self.panes[index].items[i].name.clone(),
+                        });
+                        self.draw(index);
                     } else {
                         self.press = Some(Press {
                             window,
                             index: i,
                             start: (x, y),
+                            at: (x, y),
                             moved: false,
                         });
                     }
@@ -777,9 +1140,21 @@ impl Mouseion {
             MouseKind::Move => {
                 if let Some(p) = self.press.as_mut()
                     && p.window == window
-                    && ((x - p.start.0).abs() > 4 || (y - p.start.1).abs() > 4)
                 {
-                    p.moved = true;
+                    if (x - p.start.0).abs() > 4 || (y - p.start.1).abs() > 4 {
+                        p.moved = true;
+                    }
+                    p.at = (x, y);
+                    if p.moved {
+                        // The outlines follow the pointer.
+                        self.draw(index);
+                    }
+                }
+                if let Some((w, a, _)) = self.band
+                    && w == window
+                {
+                    self.band = Some((w, a, (x, y)));
+                    self.draw(index);
                 }
             }
             MouseKind::Up => {
@@ -787,7 +1162,17 @@ impl Mouseion {
                     && p.window == window
                     && p.moved
                 {
+                    self.draw(index);
                     self.drop_at(p, x, y);
+                }
+                if let Some((w, a, _)) = self.band.take()
+                    && w == window
+                {
+                    let rects: Vec<Rect> = (0..self.panes[index].items.len())
+                        .map(|i| self.item_rect(&self.panes[index], i))
+                        .collect();
+                    self.panes[index].selected = model::band_select(&rects, model::band(a, (x, y)));
+                    self.draw(index);
                 }
             }
         }
@@ -828,7 +1213,7 @@ impl Mouseion {
             items: Vec::new(),
             view: View::Icons,
             scroll: 0,
-            selected: None,
+            selected: Vec::new(),
             rect: Rect::new(0, 0, w, h),
             note: lines,
         });
@@ -876,14 +1261,14 @@ impl Mouseion {
             }
             Some("Open") => {
                 if let Some(p) = self.order.first().and_then(|&w| self.pane(w))
-                    && let Some(i) = self.panes[p].selected
+                    && let Some(&i) = self.panes[p].selected.first()
                 {
                     self.open_item(p, i);
                 }
             }
             Some("Get Info") => {
                 if let Some(p) = self.order.first().and_then(|&w| self.pane(w))
-                    && let Some(i) = self.panes[p].selected
+                    && let Some(&i) = self.panes[p].selected.first()
                 {
                     let item = self.panes[p].items[i].clone();
                     let where_ = match &self.panes[p].place {
@@ -956,6 +1341,10 @@ impl Mouseion {
             Event::Focus(w) => {
                 self.order.retain(|&o| o != w);
                 self.order.insert(0, w);
+                if let Some(Place::Folder { path, .. }) = self.pane(w).map(|p| &self.panes[p].place)
+                {
+                    println!("mouseion: front {path}");
+                }
             }
             Event::Moved(w, x, y) => {
                 if let Some(p) = self.pane(w) {
@@ -984,8 +1373,59 @@ impl Mouseion {
             }
             Event::Menu(menu, item) => self.menu(menu, item),
             Event::Key { key, .. } => {
+                use abi::key::KeyCode;
+                if matches!(key.code, KeyCode::LeftShift | KeyCode::RightShift) {
+                    self.shift = key.pressed;
+                    return;
+                }
+                if !key.pressed {
+                    return;
+                }
+                let c = abi::key::key_to_char(&key);
+                // Typing a new name (P11).
+                if self.editing.is_some() {
+                    match c {
+                        Some('\n') => self.finish_rename(true),
+                        Some('\u{1b}') => self.finish_rename(false),
+                        Some('\u{8}' | '\u{7f}') => {
+                            if let Some(e) = self.editing.as_mut() {
+                                e.text.pop();
+                            }
+                            self.redraw_editing();
+                        }
+                        Some(c) if !c.is_control() && c != '/' && c != ':' => {
+                            if let Some(e) = self.editing.as_mut()
+                                && e.text.len() < 255
+                            {
+                                e.text.push(c);
+                            }
+                            self.redraw_editing();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                // The question of a Delete (P11).
+                if let Some(confirm) = &self.confirm
+                    && self.order.first() == Some(&confirm.note)
+                {
+                    match c {
+                        Some('\n') => self.delete_confirmed(),
+                        Some('\u{1b}') => {
+                            if let Some(p) = self.pane(confirm.note) {
+                                self.close_pane(p);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                if key.code == KeyCode::Delete {
+                    self.ask_delete();
+                    return;
+                }
                 // Enter opens the selection; Ctrl-W closes the window.
-                match abi::key::key_to_char(&key) {
+                match c {
                     Some('\n') => self.menu(1, 1),
                     Some('\u{17}') => self.menu(1, 4),
                     _ => {}
@@ -1084,6 +1524,10 @@ fn main() -> i64 {
         order: Vec::new(),
         press: None,
         menus,
+        shift: false,
+        band: None,
+        editing: None,
+        confirm: None,
     };
     let id = desktop.id;
     m.panes.push(Pane {
@@ -1093,7 +1537,7 @@ fn main() -> i64 {
         items: Vec::new(),
         view: View::Icons,
         scroll: 0,
-        selected: None,
+        selected: Vec::new(),
         rect,
         note: Vec::new(),
     });
@@ -1101,6 +1545,8 @@ fn main() -> i64 {
     m.load_desktop(0);
     println!("mouseion: ready, {} volume(s)", m.panes[0].items.len());
     m.terminal();
+    // The folder windows that were open last time (P11).
+    m.reopen();
     loop {
         if let Some(e) = m.conn.next_event(FOREVER) {
             m.event(e);

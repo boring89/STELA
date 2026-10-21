@@ -52,6 +52,8 @@ pub mod verb {
 
 /// Parameters (spec 7.3.4).
 pub mod param {
+    /// Vendor id (bits 31:16) and device id (15:0), of the root node.
+    pub const VENDOR_ID: u32 = 0x00;
     /// Subordinate node count: start in bits 23:16, count in 7:0.
     pub const NODE_COUNT: u32 = 0x04;
     /// Function group type (1 = audio).
@@ -254,6 +256,9 @@ mod system {
 
     /// The controller with its output stream.
     pub struct Hda {
+        /// What was found, for the hardware report (P11): the PCI address,
+        /// the codec, its ids and the output path.
+        pub description: alloc::string::String,
         regs: MmioRegion,
         codec: u32,
         stream: usize,
@@ -364,16 +369,32 @@ mod system {
         if outputs == 0 {
             return Err("no output stream");
         }
-        let path = {
+        let (path, ids) = {
             let mut c = Immediate { regs: &regs, codec };
+            let ids = c.send(0, verb::GET_PARAMETER, param::VENDOR_ID);
             let path = find_output(&mut c).ok_or("no output path in the codec")?;
             prepare(&mut c, &path);
-            path
+            (path, ids)
         };
         let bdl = DmaBuffer::new(1).ok_or("no DMA memory")?;
         let ring = DmaBuffer::new(RING_BYTES / 4096).ok_or("no DMA memory")?;
         let stream = STREAMS + inputs * 0x20;
+        let description = alloc::format!(
+            "pci {}, codec {} ({:04x}:{:04x}), output pin {} from converter {}{}",
+            f.address,
+            codec,
+            ids >> 16,
+            ids & 0xFFFF,
+            path.pin,
+            path.dac,
+            if path.middle != 0 {
+                " through a mixer"
+            } else {
+                ""
+            },
+        );
         let h = Hda {
+            description,
             regs,
             codec,
             stream,

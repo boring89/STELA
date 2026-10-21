@@ -135,9 +135,9 @@ impl Shell {
             ("mkdir", [p]) => self.mkdir(p),
             ("rm", [p]) => self.rm(p),
             ("run", [program, rest @ ..]) => self.run(program, rest),
-            // The network and sound tools are programs in the initrd (docs/net.md,
-            // docs/sound.md).
-            ("ifconfig" | "ping" | "fetch" | "tone", rest) => self.run(command, rest),
+            // The network, sound and hardware tools are programs in the
+            // initrd (docs/net.md, docs/sound.md, docs/hwinfo.md).
+            ("ifconfig" | "ping" | "fetch" | "tone" | "hwinfo", rest) => self.run(command, rest),
             ("ps", []) => ps(),
             ("jobs", []) => {
                 self.list_jobs();
@@ -726,6 +726,7 @@ fn help() {
     println!("  ping host [n]    send ICMP echo requests");
     println!("  fetch url [file] get http://host[:port]/path (print it or save it)");
     println!("  tone [Hz [ms]]   play a square wave (default 440 Hz, 1000 ms)");
+    println!("  hwinfo           what hardware STELA found");
     println!("  shutdown, reboot turn the computer off, restart it");
     println!("  exit             leave the shell (init starts a new one)");
     println!("paths: Volume:/a/b, /a/b (this volume) or a/b, with . and ..");

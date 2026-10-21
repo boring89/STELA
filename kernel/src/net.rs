@@ -33,6 +33,16 @@ struct Net {
     stack: Stack,
     card: Arc<dyn NetDevice>,
     waiters: WaitQueue,
+    /// Frames and bytes received and sent (P11, `NetInfo`).
+    counts: Counts,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Counts {
+    rx_packets: u64,
+    rx_bytes: u64,
+    tx_packets: u64,
+    tx_bytes: u64,
 }
 
 static NET: SpinLock<Option<Net>> = SpinLock::new(None);
@@ -62,7 +72,10 @@ fn now_ms() -> u64 {
 /// happened.
 fn flush(net: &mut Net) {
     for f in net.stack.take_output() {
-        let _ = net.card.send(&f);
+        if net.card.send(&f).is_ok() {
+            net.counts.tx_packets += 1;
+            net.counts.tx_bytes += f.len() as u64;
+        }
     }
     if net.stack.take_events() {
         while let Some(id) = net.waiters.pop() {
@@ -88,6 +101,7 @@ pub fn start() {
         stack: Stack::new(mac, seed),
         card,
         waiters: WaitQueue::new(),
+        counts: Counts::default(),
     });
     if let Err(e) = task::spawn("net", run) {
         frame::kprintln!("net: cannot start the thread: {e:?}");
@@ -117,6 +131,8 @@ fn run() {
                 net.stack.close(id, now);
             }
             while let Some(n) = net.card.receive(&mut buf) {
+                net.counts.rx_packets += 1;
+                net.counts.rx_bytes += n as u64;
                 net.stack.receive(&buf[..n], now);
             }
             net.stack.poll(now);
@@ -458,31 +474,38 @@ pub fn socket_recv(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
 
 /// `NetInfo(&mut [u8; 48]) -> 0 or 1`.
 pub fn net_info(process: &Process, buf: u64) -> Result<u64, Error> {
-    let info = {
-        let guard = NET.lock();
-        let Some(net) = guard.as_ref() else {
-            return Ok(0);
-        };
-        let c = net.stack.config();
-        let mut driver = [0u8; 16];
-        let name = net.card.name().as_bytes();
-        driver[..name.len().min(16)].copy_from_slice(&name[..name.len().min(16)]);
-        abi::net::NetInfo {
-            driver,
-            mac: net.stack.mac(),
-            link: net.card.link_up(),
-            configured: net.stack.configured(),
-            ip: c.ip,
-            mask: c.mask,
-            gateway: c.gateway,
-            dns: c.dns,
-        }
+    let Some(info) = info() else {
+        return Ok(0);
     };
     process
         .space()
         .write(buf, &info.to_bytes())
         .map_err(|_| Error::BadAddress)?;
     Ok(1)
+}
+
+/// The card, the address and the counters; `None` without a card.
+pub fn info() -> Option<abi::net::NetInfo> {
+    let guard = NET.lock();
+    let net = guard.as_ref()?;
+    let c = net.stack.config();
+    let mut driver = [0u8; 16];
+    let name = net.card.name().as_bytes();
+    driver[..name.len().min(16)].copy_from_slice(&name[..name.len().min(16)]);
+    Some(abi::net::NetInfo {
+        driver,
+        mac: net.stack.mac(),
+        link: net.card.link_up(),
+        configured: net.stack.configured(),
+        ip: c.ip,
+        mask: c.mask,
+        gateway: c.gateway,
+        dns: c.dns,
+        rx_packets: net.counts.rx_packets,
+        rx_bytes: net.counts.rx_bytes,
+        tx_packets: net.counts.tx_packets,
+        tx_bytes: net.counts.tx_bytes,
+    })
 }
 
 /// Waits up to `timeout_ns` for the interface to get an address (for the

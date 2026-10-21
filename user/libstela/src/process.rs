@@ -237,6 +237,26 @@ pub fn cmdline() -> Vec<u8> {
     b
 }
 
+/// The hardware report (`SysInfo(HARDWARE)`, P11, `docs/hwinfo.md`):
+/// text, one item a line.
+pub fn hardware() -> Result<alloc::string::String, Error> {
+    let mut size = 16 * 1024;
+    loop {
+        let mut b = vec![0u8; size];
+        let n = syscall3(
+            Syscall::SysInfo,
+            sysinfo::HARDWARE,
+            b.as_mut_ptr() as u64,
+            b.len() as u64,
+        )? as usize;
+        if n <= size {
+            b.truncate(n);
+            return Ok(alloc::string::String::from_utf8_lossy(&b).into_owned());
+        }
+        size = n;
+    }
+}
+
 /// The processors: each one's timer ticks (`SysInfo(CPUS)`).
 pub fn cpus() -> Vec<u64> {
     let mut b = vec![0u8; 8 * 64];

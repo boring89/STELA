@@ -179,6 +179,8 @@ struct Device {
     buffer: DmaBuffer,
     max_packet0: u16,
     role: Role,
+    /// Vendor and product ids from the device descriptor.
+    ids: (u16, u16),
 }
 
 /// A device as the rest of the kernel sees it.
@@ -190,6 +192,10 @@ pub struct DeviceInfo {
     pub kind: &'static str,
     /// Its xHCI slot.
     pub slot: u8,
+    /// Vendor and product ids (P11, for the hardware report).
+    pub ids: (u16, u16),
+    /// `low`, `full`, `high` or `super`.
+    pub speed: &'static str,
 }
 
 static DEVICES: SpinLock<Vec<DeviceInfo>> = SpinLock::new(Vec::new());
@@ -425,6 +431,8 @@ impl Controller {
             .map(|(&slot, d)| DeviceInfo {
                 path: d.path.clone(),
                 slot,
+                ids: d.ids,
+                speed: d.speed.name(),
                 kind: match d.role {
                     Role::Hid { mouse: true, .. } => "mouse",
                     Role::Hid { mouse: false, .. } => "keyboard",
@@ -463,6 +471,7 @@ impl Controller {
             buffer: alloc()?,
             max_packet0: speed.default_max_packet0(),
             role: Role::Other,
+            ids: (0, 0),
         };
         // A low/full-speed device behind a high-speed hub talks through
         // that hub's transaction translator (slot context dword 2).
@@ -531,6 +540,9 @@ impl Controller {
             &mut d,
         )?;
         let device = parse_device(&d).ok_or(UsbError::BadDescriptor)?;
+        if let Some(d) = self.devices.get_mut(&slot) {
+            d.ids = (device.vendor, device.product);
+        }
         let mut c9 = [0u8; 9];
         self.control(
             slot,

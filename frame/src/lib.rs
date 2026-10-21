@@ -19,6 +19,7 @@ pub mod arch;
 pub mod console;
 #[cfg(target_os = "none")]
 pub mod cpu;
+pub mod cpuid;
 pub mod input;
 #[cfg(target_os = "none")]
 pub mod irq;
@@ -76,6 +77,22 @@ static BOOT_INFO: sync::Once<&'static bootinfo::BootInfo> = sync::Once::new();
 #[cfg(target_os = "none")]
 pub fn cmdline() -> &'static [u8] {
     BOOT_INFO.get().map_or(&[], |info| info.cmdline())
+}
+
+/// The loader's memory map (merged regions; `docs/boot.md`); empty
+/// before [`init`].
+#[cfg(target_os = "none")]
+pub fn memory_regions() -> &'static [bootinfo::MemoryRegion] {
+    BOOT_INFO.get().map_or(&[], |info| info.regions())
+}
+
+/// The framebuffer the loader set up (`Framebuffer::NONE` when there is
+/// none, or before [`init`]).
+#[cfg(target_os = "none")]
+pub fn boot_framebuffer() -> bootinfo::Framebuffer {
+    BOOT_INFO
+        .get()
+        .map_or(bootinfo::Framebuffer::NONE, |info| info.framebuffer)
 }
 
 /// Whether the boot options set `key` ([`abi::sysinfo::cmdline_flag`]).

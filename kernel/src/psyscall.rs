@@ -319,6 +319,11 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
             out.extend_from_slice(&frame::time::wall_clock_ns().to_le_bytes());
             1
         }
+        abi::sysinfo::HARDWARE => {
+            let text = crate::hwinfo::report();
+            out.extend_from_slice(text.as_bytes());
+            text.len() as u64
+        }
         abi::sysinfo::CMDLINE => {
             let cmdline = frame::cmdline();
             let n = cmdline.len().min(abi::sysinfo::CMDLINE_SIZE);

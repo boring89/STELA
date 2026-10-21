@@ -21,6 +21,7 @@ pub mod console;
 pub mod fs;
 #[cfg(target_os = "none")]
 pub mod fsyscall;
+pub mod hwinfo;
 pub mod initrd;
 #[cfg(target_os = "none")]
 pub mod input;

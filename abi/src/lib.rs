@@ -181,8 +181,9 @@ pub enum Syscall {
     /// reads (0 at the end of the stream); UDP and ICMP take one datagram
     /// and write its source (`net::pack`, 8 bytes) if `addr` is not 0.
     SocketRecv = 45,
-    /// `NetInfo(&mut [u8; 48]) -> 0 or 1`: the network card and address
-    /// (`net::NetInfo`); 0 when there is no card.
+    /// `NetInfo(&mut [u8; 80]) -> 0 or 1`: the network card, address and
+    /// counters (`net::NetInfo`; 48 bytes before P11); 0 when there is no
+    /// card.
     NetInfo = 46,
     /// `AudioOpen(rate, channels, &mut [u64; 2])`: the sound output, for
     /// one program at a time (`Busy` otherwise); writes the Audio handle
@@ -925,8 +926,8 @@ pub mod net {
         (((v >> 16) as u32).to_be_bytes(), v as u16)
     }
 
-    /// Size of the `NetInfo` record.
-    pub const NET_INFO_SIZE: usize = 48;
+    /// Size of the `NetInfo` record (P11: 80, with the counters).
+    pub const NET_INFO_SIZE: usize = 80;
 
     /// The network card and the interface's address.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -947,6 +948,14 @@ pub mod net {
         pub gateway: [u8; 4],
         /// DNS server.
         pub dns: [u8; 4],
+        /// Frames received (P11; at byte 48).
+        pub rx_packets: u64,
+        /// Bytes received in them.
+        pub rx_bytes: u64,
+        /// Frames sent.
+        pub tx_packets: u64,
+        /// Bytes sent in them.
+        pub tx_bytes: u64,
     }
 
     impl NetInfo {
@@ -961,6 +970,10 @@ pub mod net {
             b[28..32].copy_from_slice(&self.mask);
             b[32..36].copy_from_slice(&self.gateway);
             b[36..40].copy_from_slice(&self.dns);
+            b[48..56].copy_from_slice(&self.rx_packets.to_le_bytes());
+            b[56..64].copy_from_slice(&self.rx_bytes.to_le_bytes());
+            b[64..72].copy_from_slice(&self.tx_packets.to_le_bytes());
+            b[72..80].copy_from_slice(&self.tx_bytes.to_le_bytes());
             b
         }
 
@@ -970,6 +983,11 @@ pub mod net {
                 return None;
             }
             let ip = |at: usize| [b[at], b[at + 1], b[at + 2], b[at + 3]];
+            let u64_at = |at: usize| {
+                let mut w = [0u8; 8];
+                w.copy_from_slice(&b[at..at + 8]);
+                u64::from_le_bytes(w)
+            };
             let mut driver = [0u8; 16];
             driver.copy_from_slice(&b[0..16]);
             let mut mac = [0u8; 6];
@@ -983,6 +1001,10 @@ pub mod net {
                 mask: ip(28),
                 gateway: ip(32),
                 dns: ip(36),
+                rx_packets: u64_at(48),
+                rx_bytes: u64_at(56),
+                tx_packets: u64_at(64),
+                tx_bytes: u64_at(72),
             })
         }
 
@@ -1066,6 +1088,11 @@ pub mod sysinfo {
     /// The running processes' processors: pairs of u64 (process id,
     /// processor number); returns how many pairs there are.
     pub const PROCESS_CPUS: u64 = 8;
+
+    /// The hardware report (P11, `docs/hwinfo.md`): UTF-8 text, one line
+    /// per item; returns its whole length in bytes (call again with a
+    /// larger buffer when it is more than fit).
+    pub const HARDWARE: u64 = 9;
 
     /// Most bytes `SysInfo(CMDLINE)` returns.
     pub const CMDLINE_SIZE: usize = 256;
@@ -1829,8 +1856,15 @@ mod tests {
             mask: [255, 255, 255, 0],
             gateway: [10, 0, 2, 2],
             dns: [10, 0, 2, 3],
+            rx_packets: 7,
+            rx_bytes: 1 << 40,
+            tx_packets: 9,
+            tx_bytes: 4242,
         };
-        assert_eq!(net::NetInfo::from_bytes(&info.to_bytes()), Some(info));
+        let b = info.to_bytes();
+        assert_eq!(net::NET_INFO_SIZE, 80);
+        assert_eq!(&b[64..72], &9u64.to_le_bytes());
+        assert_eq!(net::NetInfo::from_bytes(&b), Some(info));
         assert_eq!(info.driver_name(), "e1000");
     }
 

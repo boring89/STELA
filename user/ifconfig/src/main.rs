@@ -64,5 +64,9 @@ fn main() -> i64 {
         ip_text(i.gateway),
         ip_text(i.dns)
     );
+    println!(
+        "  received {} frames ({} bytes), sent {} frames ({} bytes)",
+        i.rx_packets, i.rx_bytes, i.tx_packets, i.tx_bytes
+    );
     0
 }

@@ -23,7 +23,7 @@ pub mod fadt;
 pub mod tables;
 
 #[cfg(target_os = "none")]
-pub use target::{dsdt, fadt, init, madt, mcfg, s5};
+pub use target::{dsdt, fadt, init, madt, mcfg, s5, table_list};
 
 #[cfg(target_os = "none")]
 mod target {
@@ -43,6 +43,8 @@ mod target {
     static FADT: SpinLock<Option<&'static Fadt>> = SpinLock::new(None);
     static DSDT: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
     static S5: SpinLock<Option<(u8, u8)>> = SpinLock::new(None);
+    /// Every table the XSDT lists: (signature, length, physical address).
+    static LIST: SpinLock<Vec<([u8; 4], u32, u64)>> = SpinLock::new(Vec::new());
 
     /// `len` bytes of physical memory at `phys`, read through the HHDM.
     /// Refuses ranges outside the HHDM and memory that Rust code may own
@@ -169,6 +171,14 @@ mod target {
     /// fatal. Called by `frame::init`.
     pub fn init(info: &'static BootInfo) {
         let madt = match root_tables(info).and_then(|roots| {
+            *LIST.lock() = roots
+                .iter()
+                .filter_map(|&phys| {
+                    let header = phys_bytes(info, phys, tables::HEADER_LEN).ok()?;
+                    let (signature, length) = tables::header_info(header).ok()?;
+                    Some((signature, u32::try_from(length).ok()?, phys))
+                })
+                .collect();
             let madt = find_madt(info, &roots)?;
             if let Some(mcfg) = find(info, &roots, b"MCFG") {
                 match tables::parse_mcfg(mcfg) {
@@ -190,6 +200,13 @@ mod target {
             madt.overrides.len()
         );
         *MADT.lock() = Some(Box::leak(Box::new(madt)));
+    }
+
+    /// The tables the XSDT (or RSDT) lists, in its order: (signature,
+    /// length, physical address); empty before `frame::init` (P11, for
+    /// the hardware report).
+    pub fn table_list() -> Vec<([u8; 4], u32, u64)> {
+        LIST.lock().clone()
     }
 
     /// The MCFG's ECAM windows, if the firmware has an MCFG (empty before

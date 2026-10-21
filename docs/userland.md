@@ -38,7 +38,7 @@ tools/qemu_test.py           --type：經 QMP 打字
 - Process handle 只記**行程 id**，不讓行程的記憶體活著：行程結束就回收；結束碼留在行程表裡，所以 `ProcessWait` 可以重複呼叫。
 - `ProcessWait` 等在行程表的 waiter 清單上（`block_until`，可逾時）；等待者自己被 kill 時放棄。
 - `ProcessKill` 自己 → 等於 `ProcessExit(137)`。
-- `SysInfo`：`PROCESSES`（每筆 48 bytes：pid、執行緒數、狀態 1 執行中／2 已結束、exit code、名稱 24 bytes；回傳總筆數，可能多於放得下的）、`MEMORY`（PMM 總數／空閒頁框、kernel heap 大小／已用）、`UPTIME`（奈秒、tick）、`FRAMEBUFFER`（`docs/display.md`）、`TIME`（6，P10：牆上時鐘，1970 年起的奈秒，libstela `process::wall_clock_ns`）、`CMDLINE`（5，P10：開機選項的位元組，回傳長度；`abi::sysinfo::cmdline_flag` 查選項，libstela 的 `process::boot_flag`；`docs/p520.md` §3）。
+- `SysInfo`：`PROCESSES`（每筆 48 bytes：pid、執行緒數、狀態 1 執行中／2 已結束、exit code、名稱 24 bytes；回傳總筆數，可能多於放得下的）、`MEMORY`（PMM 總數／空閒頁框、kernel heap 大小／已用）、`UPTIME`（奈秒、tick）、`FRAMEBUFFER`（`docs/display.md`）、`TIME`（6，P10：牆上時鐘，1970 年起的奈秒，libstela `process::wall_clock_ns`）、`CMDLINE`（5，P10：開機選項的位元組，回傳長度；`abi::sysinfo::cmdline_flag` 查選項，libstela 的 `process::boot_flag`；`docs/p520.md` §3）、`CPUS`（7）與 `PROCESS_CPUS`（8）（`docs/smp.md`）、`HARDWARE`（9，P11：硬體報告的文字，回傳整份長度；libstela `process::hardware`，`hwinfo` 程式與 Mouseion 的 About STELA；`docs/hwinfo.md`）。
 
 ### 2.3 能力（capability，P11，使用者尚未審核）
 
@@ -150,6 +150,7 @@ kernel 的 `init` 執行緒只做兩件事：啟動 input-router、跑 `Initrd:/
 | `cd [path]`、`pwd` | 沒有 path 回到卷宗的根；確認是資料夾才換 |
 | `run prog [args]` | 先找目前資料夾（或給的路徑），再找 `Initrd:/`（P7 起相對路徑如 `linux/hello` 也找）；handles = tty（P7：自己的 `[1]` 是 tty 就沿用，否則 `TtyCreate` 一個印到主控台的）、無、目前資料夾；前景等待，每 20 ms 看一次鍵盤：Ctrl-C → `ProcessKill`，其他鍵送給 tty（`docs/linux.md` §5.2）；結束後 `InputAttach` 拿回鍵盤、印 `prog exited with code N` |
 | `ps`、`mem`、`uptime`、`vols` | `SysInfo` 與 `VolumeList` |
+| `hwinfo`（程式，P11） | `SysInfo(HARDWARE)` 的整份報告（`docs/hwinfo.md`）；`hwinfo > 檔案` 存下來 |
 | `shutdown`、`reboot` | `SystemPower`（P6.5，`docs/acpi.md`）：卸載卷宗後關機／重新開機 |
 
 P9：`run Name.app` 執行 bundle（`docs/vfs.md` §4.3）。

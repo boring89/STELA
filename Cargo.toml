@@ -33,6 +33,7 @@ members = [
     "user/fetch",
     "user/tone",
     "user/wc",
+    "user/hwinfo",
     "classic",
     "tools/ehfs",
 ]

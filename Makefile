@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone wc
+USER_PROGRAMS := hello spin fault ipc_server ipc_client echo fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone wc hwinfo
 USER_DIR    := $(BUILD)/user
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
@@ -394,6 +394,7 @@ test-net-cards:
 			--type "$(NET_FETCH_AFTER)" "fetch http://10.0.2.2:$(NET_PORT)/hello.txt\n" \
 			--type "fetch exited" "run linux/net $(NET_PORT) host$(NET_LINUX_NAME)\n" \
 			--expect "net: DHCP: 10.0.2.15" --expect "inet 10.0.2.15 mask 255.255.255.0 gateway 10.0.2.2" \
+			--expect "  received " \
 			--expect "bytes from 10.0.2.2: seq=1" $(NET_DNS_EXPECT) --expect "hello from the host over TCP" \
 			--expect "net: connected from 10.0.2.15" $(NET_LINUX_EXPECT) --expect "net: OK" \
 			-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio -nic none \
@@ -454,7 +455,7 @@ test-window: esp $(BUILD)/OVMF_VARS.fd
 # previous one's line appears.
 test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-shell.img
-	python3 tools/qemu_test.py --timeout 120 \
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-shell.log \
 		--type "STELA shell" "vols\n" \
 		--type "Initrd" "ls Data:/\n" \
 		--type "item(s)" "mkdir t\n" \
@@ -467,12 +468,17 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "memory: " "uptime\n" \
 		--type "uptime: " "{up}{up}\n" \
 		--type "memory: " "vls{left}{left}o{end}\n" \
+		--type "Initrd     initrd" "hwinfo\n" \
 		--expect "smp: 2 processor(s) online" --expect "STELA shell" --expect "Data       eHFS" --expect "Initrd     initrd" \
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
 		--expect "hello from user mode" --expect "hello exited with code 0" \
 		--expect "shell" --expect "ended)" --expect "memory: " --expect "uptime: " \
 		--expect "memory: " --expect "Initrd     initrd" \
+		--expect "cpu: " --expect "processors: 2 online" --expect "[acpi]" --expect "FACP" \
+		--expect "8086:29c0 class 06.00.00 host bridge" --expect "[disks] 2" --expect "2 \"Data\" " \
+		--expect "[network]" \
+		--expect "hwinfo exited with code 0" \
 		-- $(QEMU) $(QEMU_FLAGS) -smp 2 -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-shell.img \
 		-device ide-hd,drive=sata1,bus=ide.1

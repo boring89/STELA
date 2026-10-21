@@ -123,6 +123,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hwinfo"
+version = "0.1.0"
+dependencies = [
+ "libstela",
+]
+
+[[package]]
 name = "ifconfig"
 version = "0.1.0"
 dependencies = [

@@ -1234,6 +1234,10 @@ impl Mouseion {
                     String::from("(icons: drafts)"),
                 ],
             ),
+            Some("About STELA") => {
+                let lines = about_stela();
+                self.note("About STELA", lines);
+            }
             Some("New Folder") => {
                 if let Some(p) = self.front_folder()
                     && let Some(h) = self.panes[p].handle.as_ref().map(|h| h.0)
@@ -1491,7 +1495,7 @@ fn main() -> i64 {
     let font = font_for(conn.screen.0);
     let icon_size = icons::size_for(conn.screen.0) as i32;
     let mut menus = MenuBar::new();
-    menus.add("Mouseion", &["About Mouseion"]);
+    menus.add("Mouseion", &["About Mouseion", "About STELA"]);
     menus.add("File", &["New Folder", "Open", "Get Info", "-", "Close"]);
     menus.add("Edit", &[]);
     menus.add("View", &["Icons", "List"]);
@@ -1552,4 +1556,38 @@ fn main() -> i64 {
             m.event(e);
         }
     }
+}
+
+/// The About STELA window's lines: the summary at the top of the
+/// hardware report (`docs/hwinfo.md`) and the uptime.
+fn about_stela() -> Vec<String> {
+    let mut lines = Vec::new();
+    match process::hardware() {
+        Ok(report) => {
+            for line in report.lines().take_while(|l| !l.is_empty()) {
+                if let Some((key, value)) = line.split_once(": ")
+                    && matches!(key, "cpu" | "processors" | "memory" | "display")
+                {
+                    let mut value = String::from(value);
+                    // The window is 40 characters wide.
+                    let room = 40 - key.len() - 2;
+                    if value.chars().count() > room {
+                        value = value.chars().take(room - 3).collect::<String>() + "...";
+                    }
+                    lines.push(format!("{key}: {value}"));
+                } else if line.starts_with("STELA ") {
+                    lines.insert(0, String::from(line));
+                }
+            }
+        }
+        Err(e) => lines.push(format!("no hardware report: {}", e.name())),
+    }
+    let up = libstela::now_ns() / 1_000_000_000;
+    lines.push(format!(
+        "up {}:{:02}:{:02}",
+        up / 3600,
+        up / 60 % 60,
+        up % 60
+    ));
+    lines
 }

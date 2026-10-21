@@ -161,7 +161,7 @@ VIRTIO 1.1 的 **modern** 介面（§4.1.4 PCI capabilities、§2.6 split virtqu
 | 43 | `SocketAccept` | socket, timeout | 新 handle |
 | 44 | `SocketSend` | socket, buf, len, addr | bytes；TCP 等到有空間（回傳放進去的量）；UDP 一個 datagram；ICMP 送 echo 請求（addr 的 port 是序號） |
 | 45 | `SocketRecv` | socket, buf, len, timeout, &mut addr | bytes（TCP 0 = 結束）；UDP/ICMP 一個 datagram，來源寫進 addr（8 bytes） |
-| 46 | `NetInfo` | &mut [u8; 48] | 1（0 = 沒有網卡）：driver 名稱、MAC、link、configured、IP、遮罩、閘道、DNS |
+| 46 | `NetInfo` | &mut [u8; 80] | 1（0 = 沒有網卡）：driver 名稱、MAC、link、configured、IP、遮罩、閘道、DNS；P11 K28 起 48–79 是收／送的 frame 數與 bytes（u64，net 執行緒在 `card.receive`／`card.send` 成功時累加；`ifconfig` 印出來，`docs/hwinfo.md`）。之前是 48 bytes |
 
 `net::pack(ip, port)` = IP 的 4 bytes（大端）在 bit 47..16、port 在 bit 15..0。新錯誤：`ConnectionRefused` 22、`ConnectionReset` 23、`NetworkDown` 24（沒有網卡或還沒有位址）、`AddressInUse` 25。
 

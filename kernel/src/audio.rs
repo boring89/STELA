@@ -48,6 +48,12 @@ impl Drop for AudioSession {
     }
 }
 
+/// The sound card, for the hardware report (P11): the HDA controller's
+/// description, if there is one.
+pub fn description() -> Option<alloc::string::String> {
+    AUDIO.lock().as_ref().map(|a| a.hda.description.clone())
+}
+
 /// Probes the HDA controller and starts the audio thread. Call once at
 /// boot, after `block::probe`.
 pub fn start() {

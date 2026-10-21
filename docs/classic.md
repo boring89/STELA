@@ -84,7 +84,7 @@ Classic.app 的流程：
    - 聲音：每個影格把 ASC 的樣本（`take_audio`）經 `sound::Resampler` 轉成 48 kHz 雙聲道寫進 `Audio`（P10 的 S；開不到——沒有音效卡或別的程式在用——就丟掉）；環放不下的丟掉（模擬比真實時間慢，寧可斷音也不要越積越久的延遲）。
    - 每 300 影格，PRAM 若被改過（`xpram_dirty`）就寫回 `Data:/Classic/pram`。
    - 比真實時間快就 `sleep`，慢就 `yield`（QEMU TCG 下大約只有 22 fps，所以一直在 yield）。
-5. 結束：關閉框或 File > Quit → 寫 PRAM、關視窗、exit 0。Mac 的 Special > Shut Down → 同上；Restart → 重新讀檔、重新開機。
+5. 結束：關閉框或 File > Quit → 寫 PRAM、關視窗、exit 0。Mac 的 Special > Shut Down → 同上；Restart → 重新讀檔、重新開機（P11 K26 確認並加了測試，§12）。
 
 C 端的狀態都是全域變數（Musashi 一顆 CPU、`vm.c` 一條 bus、`host.c` 一台 `mac_t`），所以一個行程一次只能有一台機器：`Vm::new`／`Mac::start` 在另一台存在時失敗（`VM_IN_USE`）。
 
@@ -212,3 +212,18 @@ depth=8
 - `classic_volumes`（C shim，新寫的）：走 File Manager 的 VCB 佇列（low memory `VCBQHdr` 的 qHead `$358`；VCB 的 `vcbVN` 在 44、`vcbDrvNum` 在 72，Inside Macintosh: Files），回傳每個已掛載卷宗的 drive 與名稱；`Mac::volumes()`。Finder 的桌面出現時 Classic.app 印 `classic: volume "名稱" (drive N)`。
 - 映像要是**整顆 HFS 卷宗**（沒有分割表，和 `System.img` 一樣；第 1024 byte 是 `BD`）。host 上可以用 hfsutils 做：`truncate -s 100M Applications.img; hformat -l Applications Applications.img`，再 `ehfs-cp` 進 `Data:/Classic/`。
 - 測試：本機 `make test-classic` 的第三次開機（800x600 卡）加 `disk2=Applications.img,ro`：host 用 `hformat` 在 `build/images/` 造 4 MiB 的空白 HFS（`HOME` 指到 `build/images`，hfsutils 的「目前卷宗」紀錄不碰真的家目錄），要看到 `classic: disk2 Applications.img (4096 KiB, read only)` 與 `classic: volume "Applications" (drive 9)`。需要 hfsutils（只有 `test-classic`）。
+
+## 12. Shut Down、Restart 與「拔插頭」（P11 K26，使用者尚未審核）
+
+**比喻**：Mac 的 Special > Shut Down 是「正常關機」——Mac 自己把快取寫回磁碟、在卷宗上蓋「已正常卸載」的章，才切電源。Classic.app 的關閉框是「拔插頭」——Mac 來不及做這些事。
+
+| 怎麼結束 | Mac 端 | Classic.app |
+|---|---|---|
+| Special > Shut Down | 結束程式、卸載卷宗（寫回 Mac 自己的快取、HFS 的 MDB 設 `kHFSVolumeUnmountedBit`）、經 RBV（VIA2 port B bit 2）切電源 → `mac_run` 回 `MAC_POWER_OFF` | 寫 PRAM、印 `classic: the Mac was shut down`、關視窗、exit 0（**STELA 不關機**） |
+| Special > Restart | 同上，然後跳回 ROM 的起點：`emul_reset` 第二次 → `MAC_POWER_RESTART` | 寫 PRAM、印 `classic: restarting`、丟掉整台機器、重新讀 ROM／`System.img`／`disk2`／pram 與 `classic.cfg`、重新開機（新視窗大小照新的設定） |
+| 關閉框、File > Quit | 什麼都沒做（拔插頭） | 寫 PRAM、關視窗、exit 0 |
+
+- **flush**：Classic.app 這一側沒有自己的緩衝——`FileDisk` 的每次寫都直接 `fs::write`（kernel 的 eHFS 快取是 write-through，`docs/storage.md`），FSM 卷宗的每個操作也是直接的 `fs` 呼叫；PRAM 在每種結束方式、重新開機前、以及每 300 影格（有變動時）寫回。所以「flush」只剩 PRAM，三種結束都做了；磁碟映像的 handle 在 `Mac` drop 時關掉。
+- **拔插頭的後果**：Mac 自己的快取（System 的 disk cache）沒寫回，`System.img` 的 HFS 卷宗留著「使用中」的標記；下次開機 System 7.5 會先跳「上次沒有正常關機」的警告（要按 OK），並可能檢查磁碟。所以**用 Special > Shut Down 結束比較好**；關閉框沒有改成「請 Mac 關機」（要模擬 Mac 的電源鍵或選單，留給之後）。
+- 測試：`Classic.app --test-power`（本機 `make test-classic` 的第五次開機）：Finder 桌面出現三秒後用滑鼠拉下 Special 選單（`SPECIAL_TITLE` (232, 10)；項目 16 列一格：Clean Up Desktop、Empty Trash…、—、Eject Disk、Erase Disk…、—、Restart、Shut Down）放在 Restart 上 → `classic: restarting` → 第二個桌面 → Shut Down → `classic: the Mac was shut down` → shell `shutdown`；host 把 `System.img` 用 `ehfs-cp out` 拿出來，`tools/hfs_check.py` 檢查 MDB 的 `drAtrb` bit 8（已正常卸載）、`fsck.ehfs` 檢查 STELA 的 Data。這次開機用的是**第一次開機前**複製的映像（`classic-power.img`）：前幾次開機都是拔插頭結束，System 7.5 的警告會擋住測試的點擊。Mac 掛上卷宗時就會清掉 bit 8 並寫回 MDB（前幾次開機後是 0x0000），所以檢查通過代表 Mac 的卸載確實寫到了 STELA 的檔案。
+- 滑鼠腳本的步驟（`Step::Mouse`）與鍵盤腳本（`Step::Key`，`--test-fs`）共用一個清單，時間以「桌面出現後的影格數」計；Restart 之後清單清空，第二個桌面出現時再排 Shut Down。超過 600 影格還沒有結果就印 `classic: power test: still running`（除錯時用來截圖）。

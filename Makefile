@@ -275,6 +275,10 @@ MAC_ROM     ?= $(HOME)/mac/mac_rom_archive_-_as_of_8-19-2011/368CADFE - Mac IIci
 MAC_DISK    ?= $(HOME)/mac/System7_5_3.img
 CLASSIC_IMAGE = $(IMAGES)/classic-data.img
 CLASSIC_FS_IMAGE = $(IMAGES)/classic-fs.img
+# The power test (P11 K26) starts from a System disk that was shut down
+# properly: after an improper shut down, System 7.5 greets the user with
+# an alert that would catch the test's clicks.
+CLASSIC_POWER_IMAGE = $(IMAGES)/classic-power.img
 # A blank HFS volume for disk2 (P11 K25), made by hfsutils' hformat
 # (HOME points into build/: hfsutils keeps its current volume there).
 CLASSIC_APPS = $(IMAGES)/classic-apps.img
@@ -303,6 +307,7 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_ROM)" /Classic/ROM
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_DISK)" /Classic/System.img
 	cp $(CLASSIC_IMAGE) $(CLASSIC_FS_IMAGE)
+	cp $(CLASSIC_IMAGE) $(CLASSIC_POWER_IMAGE)
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic.ppm --log $(BUILD)/test-classic.log \
 		--type "STELA shell" "run Classic.app\n" \
 		--expect "STELA shell" --expect "classic: started" --expect "classic: screen 640x480 (scale 2)" \
@@ -348,6 +353,19 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
 	$(EHFS_TOOLS)/ehfs-ls --offset 133120 $(CLASSIC_FS_IMAGE) / | grep -q "untitled folder"
 	$(EHFS_TOOLS)/fsck.ehfs --offset 133120 $(CLASSIC_FS_IMAGE) | grep -q "unmounted cleanly"
+	python3 tools/qemu_test.py --exit-code 0 --timeout 600 --log $(BUILD)/test-classic-power.log \
+		--type "STELA shell" "run Classic.app --test-power\n" --type "Classic exited" "shutdown\n" \
+		--expect "classic: finder desktop shown" --expect "classic: restarting" \
+		--expect "classic: finder desktop shown" --expect "classic: the Mac was shut down" \
+		--expect "power: turning off" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_POWER_IMAGE) \
+		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
+	rm -f $(BUILD)/classic-system.img
+	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_POWER_IMAGE) out /Classic/System.img $(BUILD)/classic-system.img
+	python3 tools/hfs_check.py $(BUILD)/classic-system.img
+	rm -f $(BUILD)/classic-system.img
+	$(EHFS_TOOLS)/fsck.ehfs --offset 133120 $(CLASSIC_POWER_IMAGE) | grep -q "unmounted cleanly"
 
 # Networking (docs/net.md): QEMU user networking (slirp: gateway and host
 # 10.0.2.2, DNS 10.0.2.3, us 10.0.2.15) with each of the three cards; an
@@ -461,7 +479,9 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 
 # Pipes and jobs (P11, docs/userland.md §6): hello into wc, into a file
 # and appended, wc from the file, a Linux program into wc, a job killed
-# in the background and one brought to the foreground.
+# in the background and one brought to the foreground. Each command is
+# typed once the one before has exited: keys typed during a foreground
+# job go to that job's terminal.
 test-pipe: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-pipe.img
 	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-pipe.log \
@@ -470,7 +490,7 @@ test-pipe: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "hello exited with code" "cat out.txt\n" \
 		--type "hello from a second thread" "hello >> out.txt\n" \
 		--type "hello exited with code" "wc < out.txt\n" \
-		--type "wc: 6 lines" "run linux/hello x | wc\n" \
+		--type "wc exited with code" "run linux/hello x | wc\n" \
 		--type "wc exited with code" "proctest wait &\n" \
 		--type "[1] proctest wait" "jobs\n" \
 		--type "[1] running" "kill 1\n" \

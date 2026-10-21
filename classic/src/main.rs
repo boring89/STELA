@@ -466,22 +466,26 @@ fn main() -> i64 {
     let _ = conn.set_menubar(&menus.to_text());
     let test_beep = process::args().iter().any(|a| a == "--test-beep");
     let test_fs = process::args().iter().any(|a| a == "--test-fs");
-    // --test-fs: (frames after the desktop is shown, key, down).
-    let mut script: Vec<(u64, KeyCode, bool)> = Vec::new();
+    let test_power = process::args().iter().any(|a| a == "--test-power");
+    // The test scripts: (frames after the desktop is shown, step).
+    let mut script: Vec<(u64, Step)> = Vec::new();
     if test_fs {
         let mut at = 30;
         for key in [KeyCode::D, KeyCode::A, KeyCode::T, KeyCode::A] {
-            script.push((at, key, true));
-            script.push((at + 4, key, false));
+            script.push((at, Step::Key(key, true)));
+            script.push((at + 4, Step::Key(key, false)));
             at += 10;
         }
         for (at, key) in [(at + 20, KeyCode::O), (400, KeyCode::N)] {
-            script.push((at, KeyCode::LeftAlt, true));
-            script.push((at + 2, key, true));
-            script.push((at + 6, key, false));
-            script.push((at + 8, KeyCode::LeftAlt, false));
+            script.push((at, Step::Key(KeyCode::LeftAlt, true)));
+            script.push((at + 2, Step::Key(key, true)));
+            script.push((at + 6, Step::Key(key, false)));
+            script.push((at + 8, Step::Key(KeyCode::LeftAlt, false)));
         }
     }
+    // --test-power: Special > Restart on the first desktop, Special > Shut
+    // Down on the second.
+    let mut restarts = 0;
     // The sound output is optional: without it (no card, or another
     // program has it) the Mac's sound is dropped.
     let audio = match Audio::open() {
@@ -574,17 +578,35 @@ fn main() -> i64 {
                 );
             }
         }
+        if test_power && finder && finder_frame + 180 == frame {
+            let item = if restarts == 0 {
+                SPECIAL_RESTART
+            } else {
+                SPECIAL_SHUT_DOWN
+            };
+            script = choose_special(item);
+        }
         while finder
-            && let Some(&(at, key, down)) = script.first()
+            && let Some(&(at, step)) = script.first()
             && finder_frame + 180 + at <= frame
         {
             script.remove(0);
-            if let Some(code) = adb_code(key) {
-                mac.key(code, down);
+            match step {
+                Step::Key(key, down) => {
+                    if let Some(code) = adb_code(key) {
+                        mac.key(code, down);
+                    }
+                }
+                Step::Mouse(x, y, down) => mac.mouse(x, y, down),
             }
             if script.is_empty() {
-                println!("classic: fs test keys sent");
+                println!("classic: test steps sent");
             }
+        }
+        if test_power && finder && finder_frame + 180 + 600 == frame {
+            // Neither a restart nor a shut down came (a failure; make
+            // test-classic saves the screen here when debugging).
+            println!("classic: power test: still running");
         }
         if test_fs && finder && finder_frame + 180 + 650 == frame {
             println!("classic: fs test checking");
@@ -631,6 +653,8 @@ fn main() -> i64 {
                 let (xpram, _) = mac.xpram();
                 save_pram(&xpram);
                 println!("classic: restarting");
+                restarts += 1;
+                script.clear();
                 drop(mac);
                 let Some(m) = start(&config) else {
                     return 1;
@@ -650,6 +674,35 @@ fn main() -> i64 {
             libstela::yield_now();
         }
     }
+}
+
+/// A step of a test script: an ADB key, or the mouse at a Mac position
+/// with the button up or down.
+#[derive(Clone, Copy)]
+enum Step {
+    Key(KeyCode, bool),
+    Mouse(i32, i32, bool),
+}
+
+/// The Finder's Special menu (System 7.5, built-in 640x480 or larger):
+/// its title in the menu bar, and where its Restart and Shut Down items
+/// are (16 rows each, dividers too: Clean Up Desktop, Empty Trash, -,
+/// Eject Disk, Erase Disk, -, Restart, Shut Down).
+const SPECIAL_TITLE: (i32, i32) = (232, 10);
+const SPECIAL_RESTART: i32 = 20 + 6 * 16 + 8;
+const SPECIAL_SHUT_DOWN: i32 = 20 + 7 * 16 + 8;
+
+/// Steps that pull down the Special menu and release on the item at row
+/// `y`, as a hand on the mouse would.
+fn choose_special(y: i32) -> Vec<(u64, Step)> {
+    let (x, title) = SPECIAL_TITLE;
+    vec![
+        (10, Step::Mouse(x, title, false)),
+        (20, Step::Mouse(x, title, true)),
+        (40, Step::Mouse(x, 40, true)),
+        (60, Step::Mouse(x, y, true)),
+        (80, Step::Mouse(x, y, false)),
+    ]
 }
 
 /// Whether the boot options say `classic=off` (`docs/p520.md` §3).

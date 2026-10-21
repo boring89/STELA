@@ -10,7 +10,7 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 
 ## 2. 測試目標
 
-`make test` 依序跑下表「進 make test」的目標（約 8 分鐘）；其他的只在本機。每個 QEMU 測試用 `tools/qemu_test.py`：等 serial 出現某一行就經 QMP 打字（`--type`，`{up}`、`{tab}` 等鍵）、點滑鼠（`--click`）、下 QMP 指令（`--qmp`），檢查預期的行**依序**出現（`--expect`）、截圖（`--screendump`）後用 `tools/fb_check.py` 檢查畫面；`--log` 把 serial 存到 `build/test-*.log`。
+`make test` 依序跑下表「進 make test」的目標（P12 起約 15 分鐘）；其他的只在本機。每個 QEMU 測試用 `tools/qemu_test.py`：等 serial 出現某一行就經 QMP 打字（`--type`，`{up}`、`{tab}` 等鍵）、點滑鼠（`--click`）、下 QMP 指令（`--qmp`），檢查預期的行**依序**出現（`--expect`）、截圖（`--screendump`）後用 `tools/fb_check.py` 檢查畫面；`--log` 把 serial 存到 `build/test-*.log`。
 
 | 目標 | 進 make test | 內容 |
 |---|---|---|
@@ -18,26 +18,30 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 | `test-fuzz` | ✓ | §3：11 個解析器的 fuzz，最多 60 秒 |
 | `test-qemu` | ✓ | selftest kernel：鍵盤（QMP 打 `stela`）、滑鼠、使用者程式、IPC、行程、`selftest: OK`、exit code 33 |
 | `test-qemu-smp` | ✓ | 同一個 kernel、`-smp 4`：每顆 CPU 的 tick、跨 CPU 喚醒與 kill |
-| `test-qemu-min` | ✓ | 最低硬體：`-cpu Conroe,-nx -m 256M`、單核，加 AHCI 測試磁碟跑 fstest |
+| `test-qemu-min` | ✓ | 最低硬體：`-cpu Conroe,-nx -m 128M`（P12 起；之前 256M）、單核，加 AHCI 測試磁碟跑 fstest |
 | `test-textmode` | ✓ | `boot.cfg` = `textmode`、`nousb`、`verbose`、`waitkey`：init 直接開 shell |
 | `test-disk-image` | ✓ | `make_disk_image.py` 的映像當唯一磁碟：桌面、`mkdir`、`shutdown`、host fsck、第二次開機讀回 |
 | `test-net` | ✓ | host 的 HTTP 伺服器；e1000、e1000e、virtio-net 各一次：`ifconfig`、`ping`、DNS、`fetch`、Linux 的 socket |
+| `test-tls` | ✓ | P12：host 的 HTTPS（TLS 1.3）伺服器、測試根憑證；`fetch https://` 拿到檔案，名字不對／過期／自簽／不信任的根都被拒（`docs/tls.md` §5） |
+| `test-pkg` | ✓ | P12：簽過章的 index 與兩個測試套件經 HTTPS；`pkg update/search/install/list/remove`、shell 跑裝好的程式（`docs/pkg.md` §5） |
+| `test-setup` | ✓ | P12：`boot.cfg` = `setup`、一顆從沒格式化的磁碟；Setup.app 走完每一頁（繁體中文、格式化成 Data），之後 Mouseion 啟動；host 檢查（`docs/setup.md` §5） |
 | `test-sound` | ✓ | intel-hda 錄成 wav：`tone` 1 秒約 440 Hz |
-| `test-window` | ✓ | 桌面、terminal、`run echo_win`；截圖檢查選單列、標題列與文字 |
+| `test-window` | ✓ | 桌面、terminal、`run echo_win`；截圖檢查選單列、標題列與文字；P12：同樣的桌面在 `-m 128M` 再開一次 |
 | `test-storage` | ✓ | AHCI（GPT：FAT ESP + eHFS）與 NVMe（4Kn）兩次開機的持久性、fstest、host fsck |
 | `test-shell` | ✓ | shell 指令一個接一個（`-smp 2`）：檔案、程式、歷史與游標、管線、`cp -r`、`find`、`date`、萬用字元、Tab 補全、背景工作 |
 | `test-pipe` | ✓ | 管線、`>`／`>>`／`<`、Linux 程式進管線、背景工作的 `kill` 與 `fg` |
 | `test-shutdown` | ✓ | `shutdown`（QEMU 自己結束、fsck 乾淨）與 `reboot` |
-| `test-linux` | ✓ | Linux 人格：`hello`、`files`、`memory`、`time`、`nosys`、`tty` |
+| `test-linux` | ✓ | Linux 人格：`hello`、`files`、`memory`、`time`、`nosys`、`tty`、`poll`、`pipe`；P12：`threads`、`procs`、`misc`、Rust std 的 `hello-std`、`signals`（含 Ctrl-C）（`docs/linux.md` §13–§14） |
 | `test-usb` | ✓ | xHCI：USB 鍵盤、滑鼠、hub、熱插拔、USB 隨身碟（FAT 讀寫、拔掉時卸載） |
 | `test-panic` | ✓ | 故意 panic：截圖檢查裂開的石碑與最後幾行 log |
-| `test-mouseion` | ✓ | 雙擊卷宗、文字檔（Viewer）、Initrd、Terminal.app；截圖檢查 |
+| `test-mouseion` | ✓ | 雙擊卷宗、文字檔（Kalamos）、Initrd、Terminal.app（P12 起是第二列第一個：Setup.app 排在前面）；截圖檢查 |
 | `test-editor` | ✓ | Kalamos：打中英文、Alt-S 存檔、重開讀回 |
 | `test-browser` | ✓ | Periplus：host 的頁面、連結、重新導向、chunked |
 | `test-classic` | 本機 | 使用者的 Mac ROM 與 System（`~/mac/`，只讀，複製進 `build/`）：開到 Finder、截圖、電源與第二顆磁碟 |
 | `test-ehfs-compat` | 本機 | 與 68k_HAL 的 eHFS 工具交叉檢查 |
 | `bench` | 本機 | 量測（記憶體、syscall、執行緒切換、eHFS、TCP），`build/bench.md`（`docs/bench.md`） |
 | `test-stress` | 本機 | §4：壓力測試與資源洩漏檢查（`-smp 4`） |
+| `test-ports` | 本機 | P12：`~/stela-ports` 的每個 port 建置、打包、在 QEMU 跑它的 `test.sh`，最後 `index`（`docs/ports.md`） |
 
 ## 3. fuzz（`make test-fuzz`，P11 K45，使用者尚未審核）
 

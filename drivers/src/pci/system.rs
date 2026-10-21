@@ -76,6 +76,16 @@ impl ConfigSpace for Access {
             Access::Legacy => {}
         }
     }
+
+    /// Through the legacy ports (CF8h/CFCh, present on x86 next to ECAM)
+    /// for segment 0: an empty bus gets no ECAM window mapped.
+    fn present(&self, at: Address) -> bool {
+        if at.segment == 0 {
+            frame::pci::legacy_read32(at.bus, at.device, at.function, 0) & 0xFFFF != 0xFFFF
+        } else {
+            self.read32(at, 0) & 0xFFFF != 0xFFFF
+        }
+    }
 }
 
 static ACCESS: Once<Access> = Once::new();

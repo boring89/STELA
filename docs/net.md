@@ -174,7 +174,7 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 | `ifconfig` | 網卡、MAC、link、IP／遮罩／閘道／DNS（還沒 DHCP 就等 5 秒） |
 | `ifconfig resolve 名字` | DNS 查詢 |
 | `ping host [次數]` | ICMP echo，每秒一次，印往返時間 |
-| `fetch http://host[:port]/path [檔案]` | HTTP GET，印出內容或存到檔案（相對於目前資料夾） |
+| `fetch [--ca 根.der] http(s)://host[:port]/path [檔案]` | HTTP GET（P12 起也有 HTTPS，`docs/tls.md`；`--ca` 另外信任的根憑證），印出內容或存到檔案（相對於目前資料夾） |
 
 ## 7. Linux 人格的 socket（`kernel/src/linux/socket.rs`）
 

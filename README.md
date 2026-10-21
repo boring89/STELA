@@ -12,7 +12,7 @@ is a reduced 68k_HAL by definition (see [classic/README.md](classic/README.md)).
 
 ## Status
 
-Early (phase P11 of [the plan](docs/architecture.md); P11 is not reviewed yet): STELA's own UEFI boot loader loads the
+Early (phase P12 of [the plan](docs/architecture.md); P11 and P12 are not reviewed yet): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -67,7 +67,17 @@ Fusion Pixel 12px font, Chinese characters taking two cells), a local time zone,
 and disks (Bulk-Only mass storage, MBR, FAT writing; volumes appear and disappear while
 running), a trash, zoom box, list sorting and menu shortcuts on the desktop, Tab completion and
 `*`/`?` wildcards in the shell, a fuzzer for the parsers (`make test-fuzz`) and a stress test
-(`make test-stress`). See
+(`make test-stress`). P12 adds: a full process model for Linux programs (threads on
+`clone` with a real `futex`, `fork`, `execve` with `#!` scripts, `wait4`, signals with
+handlers, masks, `SA_RESTART` and Ctrl-C as SIGINT, pseudo-terminals, `/proc`, file `mmap`),
+so that musl programs such as dash, GNU make, tcc, BusyBox, Lua and SQLite and Rust programs
+with `std` run (built by a separate ports repository with its own tests); TLS 1.3 for
+`https://` in `fetch` and Periplus (embedded-tls, Mozilla's root certificates, random numbers
+from RDSEED/RDRAND or timing jitter through ChaCha20); `pkg`, which installs packages from an
+ed25519-signed index over HTTPS into `Data:/Programs/`; Setup.app on the first start (English
+or Traditional Chinese, time zone, formatting an empty partition as the Data volume, network,
+packages); a kernel heap that grows on demand and a desktop without a full-screen canvas
+(booting to the desktop in 128 MiB); and a PCI scan of every bus. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
@@ -78,13 +88,16 @@ running), a trash, zoom box, list sorting and menu shortcuts on the desktop, Tab
 [docs/mouseion.md](docs/mouseion.md), [docs/identity.md](docs/identity.md),
 [docs/p520.md](docs/p520.md), [docs/classic.md](docs/classic.md), [docs/net.md](docs/net.md),
 [docs/sound.md](docs/sound.md), [docs/smp.md](docs/smp.md), [docs/hwinfo.md](docs/hwinfo.md),
-[docs/bench.md](docs/bench.md), [docs/apps.md](docs/apps.md) and
+[docs/bench.md](docs/bench.md), [docs/apps.md](docs/apps.md), [docs/ports.md](docs/ports.md),
+[docs/tls.md](docs/tls.md), [docs/pkg.md](docs/pkg.md), [docs/setup.md](docs/setup.md) and
 [docs/testing.md](docs/testing.md).
 
 ## Building
 
 Requirements: `rustup` (the pinned toolchain and targets are installed automatically from
-`rust-toolchain.toml`), `qemu-system-x86`, `ovmf`, `python3`, `make`, GNU `tar`, `mtools`,
+`rust-toolchain.toml`, including `x86_64-unknown-linux-musl` for the Rust Linux test
+program), `qemu-system-x86`, `ovmf`, `python3` (with `cryptography` for `tools/pkgsign.py`),
+`openssl` (test certificates), `make`, GNU `tar`, `mtools`,
 `gdisk` (the last two make test disk images), `gcc` (builds musl, MIT, for the Linux test
 programs, and the Classic environment's C code; the musl tarball is copied, not downloaded: see
 [third_party/README.md](third_party/README.md)), `binutils-m68k-linux-gnu` (the Classic
@@ -101,6 +114,7 @@ make test-classic  # local only: boots your own Mac IIci ROM and System to the F
 make bench  # measurements without KVM (docs/bench.md)
 make test-fuzz    # the parsers fuzzed on the host (part of make test, about a minute)
 make test-stress  # local only: many processes, files, pipes, connections and windows; leaks checked
+make test-ports   # local only: build, package and test every port of ~/stela-ports (docs/ports.md)
 ```
 
 ## License

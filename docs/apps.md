@@ -7,7 +7,7 @@ P11 的 H 部分讓 STELA 有日常用得到的程式。名稱都是**暫名**�
 | 命令列工具（§1） | `Initrd:/bin/` | shell 直接打名字 | `grep`、`sort`、`find`、`tar`… 可以用 `\|` 串 |
 | `Kalamos.app`（§2） | `Initrd:/` | Mouseion 雙擊 `.txt`、`run Kalamos.app 檔案` | 純文字編輯器 |
 | `Monitor.app`（§3） | `Initrd:/` | Mouseion 的 Special > Monitor、`Monitor.app &` | 行程、記憶體、網路；結束行程 |
-| `Periplus.app`（§4） | `Initrd:/` | `run Periplus.app [網址]` | 只有 HTTP 的小瀏覽器 |
+| `Periplus.app`（§4） | `Initrd:/` | `run Periplus.app [網址]` | HTTP 與（P12 起）HTTPS 的小瀏覽器 |
 
 它們都用 toolbox 的新元件（`docs/toolbox.md` §6.1–6.2：`TextView`、對話框）與系統剪貼簿（`docs/window.md` §3）。
 
@@ -138,7 +138,7 @@ Mouseion 的 **Mouseion > About STELA**（K28）：版本、CPU、處理器數�
  http://host/path: 12 KiB, status 200                ← 狀態列
 ```
 
-- **只有 HTTP**：HTTPS 需要 TLS（加密、憑證），這一輪沒有做；打 `https://` 會說明。位址：`http://host[:port]/path`、`stela:home`（內建首頁：說明與幾個連結）、`Volume:/path` 或 `file:Volume:/path`（本機檔案；`.html`/`.htm` 當 HTML，其他當純文字）。
+- **HTTP 與 HTTPS**：P11 只有 HTTP；P12 起 `https://` 經 libstela 的 TLS 1.3（Mozilla 的根憑證，`docs/tls.md`）。位址：`https://host[:port]/path`、`http://host[:port]/path`、`stela:home`（內建首頁：說明與幾個連結）、`Volume:/path` 或 `file:Volume:/path`（本機檔案；`.html`/`.htm` 當 HTML，其他當純文字）。
 - **libstela `http`**（新，純邏輯 host 測試）：`get(url)`：HTTP/1.0 GET、`Host` 標頭、讀到連線結束；`parse_head`（狀態、標頭）、301/302/303/307/308 跟著 `Location` 走（最多 5 次）、`Transfer-Encoding: chunked` 解開（`dechunk`）、`Response::is_html`（`Content-Type`，沒有時看內容開頭）、`join(base, link)`（相對連結、`/` 開頭、`.`／`..`、丟掉 `#`；也適用 `Volume:/`）。`net::http_get_raw` 給它原始回應。
 - **HTML 子集**（`user/periplus/src/lib.rs`，純邏輯 host 測試）：容錯的 tokenizer（標籤名稱轉小寫、屬性有沒有引號都行、註解與 `<!…>` 略過、`script`／`style` 的內容略過、實體 `&amp; &lt; &gt; &quot; &apos; &nbsp; &#N; &#xN;`）→ `Page { title, blocks, links }`：`h1`–`h6`（粗體）、`p`／`div` 等區塊、`br`、`hr`、`pre`（保留換行與空白）、`blockquote`（縮排）、`ul`／`ol`／`li`（`*` 或 `1.`，巢狀縮排）、`table`／`tr`／`td`／`th`（一列一行，儲存格用 16 欄的定位點）、`b`／`strong`、`i`／`em`（照常顯示）、`a href`、`img`（顯示 `[alt]`）。其他標籤略過但保留文字。
 - **排版**（`layout(page, cols)`）：等寬字型的欄；區塊之間空一行（相鄰的清單項目不空）、單字換行（太長的字切開）、`pre` 不換行（超出就切）。粗體是同一行字往右一像素再畫一次。

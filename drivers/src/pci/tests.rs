@@ -99,6 +99,31 @@ fn scan_finds_functions_and_buses_behind_bridges() {
 }
 
 #[test]
+fn scan_finds_buses_no_bridge_leads_to() {
+    // The P520's layout (P12): devices on root buses 0x17 and 0x65 that
+    // no bridge on bus 0 points to; a bridge's bus is still scanned once.
+    let mut bus = FakeBus::default();
+    bus.add(addr(0, 0, 0), 0x8086, 0x2020, [6, 0, 0], 0);
+    bus.add(addr(0, 3, 0), 0x8086, 0x2030, [6, 4, 0], 1);
+    bus.set(addr(0, 3, 0), 0x18, 0x0002_0200); // secondary 2
+    bus.add(addr(2, 0, 0), 0x8086, 0x15B7, [2, 0, 0], 0);
+    bus.add(addr(0x17, 0, 0), 0x2646, 0x5013, [1, 8, 2], 0); // NVMe
+    bus.add(addr(0x65, 0, 0), 0x10DE, 0x1B81, [3, 0, 0], 0); // GPU
+    let found = scan(&bus, 0);
+    let addresses: Vec<_> = found.iter().map(|f| f.address).collect();
+    assert_eq!(
+        addresses,
+        [
+            addr(0, 0, 0),
+            addr(0, 3, 0),
+            addr(2, 0, 0),
+            addr(0x17, 0, 0),
+            addr(0x65, 0, 0)
+        ]
+    );
+}
+
+#[test]
 fn bars_are_sized() {
     let mut bus = FakeBus::default();
     let at = addr(0, 4, 0);

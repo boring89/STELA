@@ -53,6 +53,13 @@ pub trait ConfigSpace {
     fn read32(&self, at: Address, offset: u16) -> u32;
     /// Writes the register at `offset` (a multiple of 4).
     fn write32(&self, at: Address, offset: u16, value: u32);
+    /// Whether some function answers at `at` (its vendor is not 0xFFFF),
+    /// as cheaply as the access method allows (P12: the scan of every
+    /// bus asks this first, so that ECAM windows are not mapped for empty
+    /// buses).
+    fn present(&self, at: Address) -> bool {
+        self.read32(at, 0) & 0xFFFF != 0xFFFF
+    }
 }
 
 /// Reads the 16-bit field at `offset` (a multiple of 2).
@@ -165,7 +172,10 @@ pub fn probe(cfg: &dyn ConfigSpace, at: Address) -> Option<Function> {
 /// Every function on the segment, by walking bus `root` and every bus
 /// behind a PCI-to-PCI bridge (OSDev Wiki "PCI", "Recursive Scan"). A
 /// multi-function host bridge at 00.0 means several root buses: function
-/// `f` of it is the controller of bus `f`.
+/// `f` of it is the controller of bus `f`. P12: then every bus 0-255 not
+/// seen yet is scanned too ("Brute Force Scan"): a machine with several
+/// root complexes (the P520: NVMe on bus 0x17, the GPU on bus 0x65) has
+/// buses no bridge on bus 0 leads to.
 pub fn scan(cfg: &dyn ConfigSpace, segment: u16) -> Vec<Function> {
     let mut found = Vec::new();
     let mut visited = [false; 256];
@@ -183,6 +193,19 @@ pub fn scan(cfg: &dyn ConfigSpace, segment: u16) -> Vec<Function> {
         }
     } else {
         scan_bus(cfg, segment, 0, &mut visited, &mut found);
+    }
+    for bus in 0..=255u8 {
+        let occupied = (0..32).any(|device| {
+            cfg.present(Address {
+                segment,
+                bus,
+                device,
+                function: 0,
+            })
+        });
+        if occupied {
+            scan_bus(cfg, segment, bus, &mut visited, &mut found);
+        }
     }
     found.sort_by_key(|f| f.address);
     found

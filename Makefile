@@ -275,6 +275,9 @@ MAC_ROM     ?= $(HOME)/mac/mac_rom_archive_-_as_of_8-19-2011/368CADFE - Mac IIci
 MAC_DISK    ?= $(HOME)/mac/System7_5_3.img
 CLASSIC_IMAGE = $(IMAGES)/classic-data.img
 CLASSIC_FS_IMAGE = $(IMAGES)/classic-fs.img
+# A blank HFS volume for disk2 (P11 K25), made by hfsutils' hformat
+# (HOME points into build/: hfsutils keeps its current volume there).
+CLASSIC_APPS = $(IMAGES)/classic-apps.img
 CLASSIC_WAV := $(BUILD)/classic.wav
 # The Classic window lands at 70,138 (content, 640x480): the Mac's menu
 # bar (white, 20 rows) on top, the desktop pattern below it.
@@ -290,6 +293,7 @@ classic: user
 
 test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	test -f "$(MAC_ROM)" && test -f "$(MAC_DISK)"
+	command -v hformat >/dev/null || { echo "make test-classic needs hfsutils (hformat)"; exit 1; }
 	rm -rf $(DISK_ESP)
 	cp -r $(ESP) $(DISK_ESP)
 	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
@@ -317,12 +321,18 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0 \
 		-audiodev wav,id=a0,path=$(CLASSIC_WAV) -device intel-hda -device hda-duplex,audiodev=a0
 	python3 tools/check_wav.py $(CLASSIC_WAV) 0.05 0
-	printf '# make test-classic\nram=32\nresolution=800x600\ndepth=1\nscale=1\n' > $(BUILD)/classic.cfg
+	printf '# make test-classic\nram=32\nresolution=800x600\ndepth=1\nscale=1\ndisk2=Applications.img,ro\n' > $(BUILD)/classic.cfg
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in $(BUILD)/classic.cfg /Classic/classic.cfg
+	rm -f $(CLASSIC_APPS)
+	truncate -s 4M $(CLASSIC_APPS)
+	HOME=$(abspath $(IMAGES)) hformat -l Applications $(CLASSIC_APPS)
+	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in $(CLASSIC_APPS) /Classic/Applications.img
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic-card.ppm --log $(BUILD)/test-classic-card.log \
 		--type "STELA shell" "run Classic.app\n" \
+		--expect "classic: disk2 Applications.img (4096 KiB, read only)" \
 		--expect "classic: started (ROM 368CADFE, 32 MiB" \
-		--expect "classic: screen 800x600 (scale 1)" --expect "classic: finder desktop shown" \
+		--expect "classic: screen 800x600 (scale 1)" \
+		--expect "classic: volume \"Applications\" (drive 9)" --expect "classic: finder desktop shown" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0

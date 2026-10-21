@@ -17,6 +17,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Disks besides the System disk (drives 9..; mac/mac.h MAC_MAX_DISKS - 1). */
+#define CLASSIC_MORE_DISKS 3
+
 typedef struct
 {
     /* The System disk: byte offsets and lengths (multiples of 512);
@@ -42,6 +45,14 @@ typedef struct
     uint8_t *card_vram;
     uint32_t card_res;
     uint32_t card_depth;
+    /* More disks (P11): drives 9, 10 and 11, through disk_read and
+     * disk_write with their own ctx; blocks 0 = none. */
+    struct
+    {
+        void *ctx;
+        uint32_t blocks;
+        bool read_only;
+    } more_disks[CLASSIC_MORE_DISKS];
 } classic_host_ops;
 
 /* Size of the card's video RAM. */
@@ -94,6 +105,11 @@ uint32_t classic_milestones(void);
 /* Makes the running system beep (SysBeep), as an application would; for
  * tests, on an idle desktop. Returns 0, or -1 if a call is under way. */
 int classic_sysbeep(void);
+
+/* The mounted volumes (the File Manager's VCB queue, Inside Macintosh:
+ * Files): for each, up to 'max', the drive number and the name (Mac Roman,
+ * NUL-terminated, at most 27 bytes). Returns how many there are. */
+int classic_volumes(uint16_t *drives, char (*names)[28], int max);
 
 /* Instructions executed so far. */
 uint32_t classic_instructions(void);

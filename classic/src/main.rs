@@ -9,6 +9,7 @@
 //!  Data:/Classic/pram        the parameter RAM (256 bytes; made when the
 //!                            Mac OS changes it)
 //!  Data:/Classic/classic.cfg the settings (classic::config; optional)
+//!  Data:/Classic/<disk2>     a second disk (HFS image; classic.cfg's disk2)
 //! ```
 //!
 //! The main loop runs the Mac one 60 Hz frame at a time (416,000 cycles
@@ -66,10 +67,33 @@ const FRAME_NS: u64 = 1_000_000_000 / 60;
 /// The parameter RAM is saved at most this often.
 const PRAM_EVERY_FRAMES: u32 = 300;
 
-/// The System disk: an image file on a STELA volume.
+/// A disk of the Mac: an image file on a STELA volume.
 struct FileDisk {
     file: Handle,
     blocks: u32,
+    read_only: bool,
+}
+
+impl FileDisk {
+    /// `Data:/Classic/<name>`, writable unless `read_only`.
+    fn open(name: &str, read_only: bool) -> Result<FileDisk, Error> {
+        let flags = if read_only {
+            open::READ
+        } else {
+            open::READ | open::WRITE
+        };
+        let file = open_classic(name, flags)?;
+        let size = fs::stat(file).map(|s| s.size).unwrap_or(0);
+        Ok(FileDisk {
+            file,
+            blocks: (size / 512).min(u64::from(u32::MAX)) as u32,
+            read_only,
+        })
+    }
+
+    fn kib(&self) -> u32 {
+        self.blocks / 2
+    }
 }
 
 impl MacDisk for FileDisk {
@@ -78,7 +102,7 @@ impl MacDisk for FileDisk {
     }
 
     fn read_only(&self) -> bool {
-        false
+        self.read_only
     }
 
     fn read(&mut self, offset: u32, buf: &mut [u8]) -> bool {
@@ -197,8 +221,8 @@ fn start(config: &Config) -> Option<Mac> {
             return None;
         }
     };
-    let file = match open_classic("System.img", open::READ | open::WRITE) {
-        Ok(h) => h,
+    let disk = match FileDisk::open("System.img", false) {
+        Ok(d) => d,
         Err(e) => {
             println!(
                 "classic: no System disk: put an HFS disk image at Data:/Classic/System.img ({})",
@@ -207,9 +231,24 @@ fn start(config: &Config) -> Option<Mac> {
             return None;
         }
     };
-    let size = fs::stat(file).map(|s| s.size).unwrap_or(0);
-    let blocks = (size / 512).min(u64::from(u32::MAX)) as u32;
-    let disk = FileDisk { file, blocks };
+    let size_kib = disk.kib();
+    let mut disks: Vec<Box<dyn MacDisk>> = vec![Box::new(disk)];
+    if let Some((name, read_only)) = &config.disk2 {
+        match FileDisk::open(name, *read_only) {
+            Ok(d) => {
+                println!(
+                    "classic: disk2 {name} ({} KiB{})",
+                    d.kib(),
+                    if *read_only { ", read only" } else { "" }
+                );
+                disks.push(Box::new(d));
+            }
+            Err(e) => println!(
+                "classic: no second disk: Data:/Classic/{name} ({}); going on without it",
+                e.name()
+            ),
+        }
+    }
     let mut xpram = [0u8; 256];
     match read_all("pram", 256) {
         Ok(p) if p.len() == 256 => xpram.copy_from_slice(&p),
@@ -226,20 +265,11 @@ fn start(config: &Config) -> Option<Mac> {
         None
     };
     let ram = config.ram_mib << 20;
-    match Mac::start(
-        rom.into_boxed_slice(),
-        ram,
-        Box::new(disk),
-        fs,
-        card,
-        &xpram,
-        clock,
-    ) {
+    match Mac::start(rom.into_boxed_slice(), ram, disks, fs, card, &xpram, clock) {
         Ok(mac) => {
             println!(
-                "classic: started (ROM 368CADFE, {} MiB, disk {} KiB)",
+                "classic: started (ROM 368CADFE, {} MiB, disk {size_kib} KiB)",
                 config.ram_mib,
-                size / 1024
             );
             Some(mac)
         }
@@ -533,6 +563,9 @@ fn main() -> i64 {
                 "classic: fs: install {:?}, mounted {}, {} requests",
                 fs.install, fs.mounted, fs.requests
             );
+            for (drive, name) in mac.volumes() {
+                println!("classic: volume \"{name}\" (drive {drive})");
+            }
             println!("classic: finder desktop shown");
             if test_beep {
                 println!(

@@ -76,7 +76,20 @@ struct HostOps {
     card_vram: *mut u8,
     card_res: u32,
     card_depth: u32,
+    more_disks: [RawDisk; MORE_DISKS],
 }
+
+/// One of `classic_host_ops.more_disks`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawDisk {
+    ctx: *mut c_void,
+    blocks: u32,
+    read_only: bool,
+}
+
+/// Disks besides the System disk (`CLASSIC_MORE_DISKS`): drives 9 to 11.
+pub const MORE_DISKS: usize = 3;
 
 /// `mac_fs_item_t` (`c/mac/fsm.h`).
 #[repr(C)]
@@ -145,6 +158,7 @@ unsafe extern "C" {
     fn classic_milestones() -> u32;
     fn classic_sysbeep() -> c_int;
     fn classic_fs_status(install: *mut i32, mounted: *mut bool, requests: *mut u32);
+    fn classic_volumes(drives: *mut u16, names: *mut [u8; 28], max: c_int) -> c_int;
     fn classic_card_resolution(width: u32, height: u32) -> c_int;
     fn mac_roman_to_unicode(c: u8) -> u32;
     fn mac_roman_from_unicode(u: u32) -> c_int;
@@ -312,7 +326,8 @@ impl Drop for Vm {
     }
 }
 
-/// The Mac's System disk, as the Rust side provides it.
+/// A disk of the Mac (the System disk, or another), as the Rust side
+/// provides it.
 pub trait MacDisk {
     /// Size in 512-byte blocks.
     fn blocks(&self) -> u32;
@@ -733,7 +748,10 @@ pub struct Mac {
     _rom: Box<[u8]>,
     _ram: Box<[u8]>,
     _vram: Box<[u8]>,
-    _disk: Box<Box<dyn MacDisk>>,
+    // Each disk boxed again: the C side's ctx is a thin pointer to the
+    // `Box<dyn MacDisk>` (the trampolines' type), which must not move.
+    #[allow(clippy::vec_box)]
+    _disks: alloc::vec::Vec<Box<Box<dyn MacDisk>>>,
     audio: Box<AudioSink>,
     _fs: Option<FsParts>,
     _card_vram: Option<Box<[u8]>>,
@@ -741,12 +759,13 @@ pub struct Mac {
 
 impl Mac {
     /// Patches and attaches the ROM, gives the Mac `ram_size` bytes of
-    /// RAM, the disk, the parameter RAM and the clock (seconds since
-    /// 1 January 1904), and resets it.
+    /// RAM, the disks (the System disk first, drive 8; then up to
+    /// [`MORE_DISKS`] more, drives 9..), the parameter RAM and the clock
+    /// (seconds since 1 January 1904), and resets it.
     pub fn start(
         rom: Box<[u8]>,
         ram_size: u32,
-        disk: Box<dyn MacDisk>,
+        disks: alloc::vec::Vec<Box<dyn MacDisk>>,
         fs: Option<(Box<dyn MacFs>, &str)>,
         card: Option<Card>,
         xpram: &[u8; 256],
@@ -755,10 +774,28 @@ impl Mac {
         if VM_IN_USE.swap(true, Ordering::Acquire) {
             return Err(StartError::Busy);
         }
+        if disks.is_empty() || disks.len() > 1 + MORE_DISKS {
+            VM_IN_USE.store(false, Ordering::Release);
+            return Err(StartError::BadArguments);
+        }
         let mut rom = rom;
         let mut ram = vec![0u8; ram_size as usize].into_boxed_slice();
         let mut vram = vec![0u8; VRAM_SIZE].into_boxed_slice();
-        let mut disk = Box::new(disk);
+        let mut disks: alloc::vec::Vec<Box<Box<dyn MacDisk>>> =
+            disks.into_iter().map(Box::new).collect();
+        let mut more_disks = [RawDisk {
+            ctx: core::ptr::null_mut(),
+            blocks: 0,
+            read_only: true,
+        }; MORE_DISKS];
+        for (raw, disk) in more_disks.iter_mut().zip(disks.iter_mut().skip(1)) {
+            *raw = RawDisk {
+                blocks: disk.blocks(),
+                read_only: disk.read_only(),
+                ctx: &mut **disk as *mut Box<dyn MacDisk> as *mut c_void,
+            };
+        }
+        let disk = &mut disks[0];
         let mut audio = Box::new(AudioSink::default());
         // The external volume: its callbacks, its name (Mac Roman, NUL).
         let fs = fs.map(|(fs, name)| {
@@ -803,7 +840,8 @@ impl Mac {
             disk_write: disk_write_trampoline,
             disk_blocks: disk.blocks(),
             disk_read_only: disk.read_only(),
-            ctx: &mut *disk as *mut Box<dyn MacDisk> as *mut c_void,
+            ctx: &mut **disk as *mut Box<dyn MacDisk> as *mut c_void,
+            more_disks,
         };
         let Ok(rom_size) = u32::try_from(rom.len()) else {
             VM_IN_USE.store(false, Ordering::Release);
@@ -811,8 +849,8 @@ impl Mac {
         };
         // SAFETY: the ROM, RAM and video RAM buffers have the sizes
         // passed (the video RAM CLASSIC_VRAM_SIZE) and are kept by the Mac
-        // until it is dropped; `ops` is copied by the callee and its `ctx`
-        // points at the boxed disk the Mac also keeps; `xpram` is 256
+        // until it is dropped; `ops` is copied by the callee and its `ctx`s
+        // point at the boxed disks the Mac also keeps; `xpram` is 256
         // bytes; the file system's ops (kept, with their ctx and name, by
         // the Mac) stay valid while it lives, and so does the card's video
         // RAM (CLASSIC_CARD_VRAM_SIZE bytes); no other machine uses the C
@@ -834,7 +872,7 @@ impl Mac {
                 _rom: rom,
                 _ram: ram,
                 _vram: vram,
-                _disk: disk,
+                _disks: disks,
                 audio,
                 _fs: fs,
                 _card_vram: card_vram,
@@ -927,6 +965,27 @@ impl Mac {
             mounted,
             requests,
         }
+    }
+
+    /// The mounted volumes: (drive number, name), in the File Manager's
+    /// order (the startup volume first).
+    pub fn volumes(&self) -> alloc::vec::Vec<(u16, alloc::string::String)> {
+        const MAX: usize = 8;
+        let mut drives = [0u16; MAX];
+        let mut names = [[0u8; 28]; MAX];
+        // SAFETY: both arrays hold MAX entries; reads guest RAM through the
+        // model's bus.
+        let n = unsafe { classic_volumes(drives.as_mut_ptr(), names.as_mut_ptr(), MAX as c_int) };
+        (0..(n.max(0) as usize).min(MAX))
+            .map(|i| {
+                let name = names[i]
+                    .iter()
+                    .take_while(|&&b| b != 0)
+                    .map(|&b| mac_roman_char(b))
+                    .collect();
+                (drives[i], name)
+            })
+            .collect()
     }
 
     /// Whether the Finder runs (low memory CurApName).

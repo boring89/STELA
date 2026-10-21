@@ -15,6 +15,15 @@
 #define FRAME_CYCLES 416000
 /* Low memory CurApName (Str31), Inside Macintosh: Processes. */
 #define LM_CURAPNAME 0x910u
+/* Low memory VCBQHdr's qHead (the header is at $356: qFlags, qHead,
+ * qTail) and the fields of a volume control block, Inside Macintosh:
+ * Files, "Volume Control Blocks". */
+#define LM_VCBQ_HEAD 0x358u
+#define VCB_QLINK 0
+#define VCB_VN 44
+#define VCB_DRV_NUM 72
+/* Most VCBs walked (a broken queue must not loop for ever). */
+#define MAX_VCBS 64
 
 static mac_t machine;
 
@@ -40,6 +49,14 @@ int classic_start(uint8_t *rom, uint32_t rom_size, uint8_t *ram, uint32_t ram_si
     machine.disk.ctx = ops->ctx;
     machine.disk.blocks = ops->disk_blocks;
     machine.disk.read_only = ops->disk_read_only;
+    for (int i = 0; i < CLASSIC_MORE_DISKS && i < MAC_MAX_DISKS - 1; i++)
+    {
+        machine.more_disks[i].read = ops->disk_read;
+        machine.more_disks[i].write = ops->disk_write;
+        machine.more_disks[i].ctx = ops->more_disks[i].ctx;
+        machine.more_disks[i].blocks = ops->more_disks[i].blocks;
+        machine.more_disks[i].read_only = ops->more_disks[i].read_only;
+    }
     machine.audio = ops->audio;
     machine.audio_ctx = ops->audio_ctx;
     machine.rtc_seconds = rtc_seconds;
@@ -142,3 +159,31 @@ void classic_fs_status(int32_t *install, bool *mounted, uint32_t *requests)
     *requests = fs->requests;
 }
 
+
+int classic_volumes(uint16_t *drives, char (*names)[28], int max)
+{
+    int n = 0;
+    uint32_t vcb = mac_bus_read(&machine, LM_VCBQ_HEAD, 4);
+
+    for (int walked = 0; vcb != 0 && walked < MAX_VCBS; walked++)
+    {
+        if (n < max)
+        {
+            uint32_t len = mac_bus_read(&machine, vcb + VCB_VN, 1);
+
+            if (len > 27)
+            {
+                len = 27;
+            }
+            for (uint32_t i = 0; i < len; i++)
+            {
+                names[n][i] = (char)mac_bus_read(&machine, vcb + VCB_VN + 1 + i, 1);
+            }
+            names[n][len] = 0;
+            drives[n] = (uint16_t)mac_bus_read(&machine, vcb + VCB_DRV_NUM, 2);
+        }
+        n++;
+        vcb = mac_bus_read(&machine, vcb + VCB_QLINK, 4);
+    }
+    return n;
+}

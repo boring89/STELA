@@ -116,7 +116,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 
 - 內建視訊 640x480、1 位元（System 的預設；Monitors 控制台可以改 2/4/8 位元，renderer 支援）；P11 起可以改用 NuBus 顯示卡（§8，大解析度、16/32 位元）。P11 K24 起視窗可以整數放大（§10）。
 - P11：視窗設 `WANT_MOTION` 與 `HIDE_CURSOR_INSIDE`（`docs/window.md` §3）：沒按按鈕的移動也送進來，Mac 的游標一直跟著；指標在視窗內時 STELA 的箭頭不畫，只看到 Mac 的游標。座標直接對應（沒有 Mac 的滑鼠加速）。
-- 一顆磁碟（`System.img`）；`.Disk` 的多磁碟、Applications 卷宗下一輪（程式碼已複製，沒接上）。P11 起 Data 卷宗經 FSM 給 Mac（§7）；只有 Data 一顆，沒有 Desktop Manager（Finder 自己在 Data 的根建 `Desktop` 檔）。
+- 磁碟：`System.img`，P11 K25 起加一顆 `disk2`（§11；`.Disk` 支援到 drive 11，但設定只有一個 `disk2`）。P11 起 Data 卷宗經 FSM 給 Mac（§7）；只有 Data 一顆，沒有 Desktop Manager（Finder 自己在 Data 的根建 `Desktop` 檔）。不能在 Mac 執行中換磁碟（沒有退出／插入）。
 - 聲音（ASC）已接到 `Audio`（S 完成後補上，`--test-beep` 驗證 SysBeep）；最近鄰的重新取樣、沒有音量控制；Classic.app 開著時別的程式（`tone`）拿不到音效（`Busy`）。
 - 序列埠、網路、SCSI 裝置都沒有。
 - 時鐘當成 UTC（STELA 的 RTC 也當成 UTC，`docs/time.md` §5.5），所以 Mac 的時間比台灣時間慢 8 小時。
@@ -182,7 +182,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 | `depth=8` | 8 | 卡的色深：1、2、4、8、16、32 |
 | `scale=2` | （沒有：螢幕寬 ≥ 1920 且放大後放得下時 2，否則 1） | 視窗像素／Mac 像素（§10） |
 | `fs=off` | on | 不把 Data 卷宗給 Mac（§7） |
-| `disk2=Applications.img` | （沒有） | `Data:/Classic/` 裡的第二顆磁碟（F 部分的 K25）；`,ro` 唯讀、`,rw` 讀寫 |
+| `disk2=Applications.img` | （沒有） | `Data:/Classic/` 裡的第二顆磁碟（§11）；`,ro` 唯讀、`,rw` 讀寫（預設） |
 
 ```
 # Data:/Classic/classic.cfg
@@ -200,3 +200,15 @@ depth=8
 - 滑鼠：視窗座標除以 scale 再給 Mac。
 - Monitors 換解析度時重新算 scale（自動時可能從 2 變 1），視窗改成 Mac 解析度 × scale；印 `classic: screen WxH (scale N)`。
 - 測試：host 的 `rows_are_enlarged`（2x2 → 4x4、3 倍、1 倍不變、超出畫面的列略過）、`defaults`（2560x1600 → 2、1920x1080 上 1024x768 → 1、2560x1600 上 1280x800 → 1）。本機 `make test-classic` 的第一次開機沒有 cfg：QEMU 的 2560x1600 → `classic: screen 640x480 (scale 2)`，截圖檢查放大的選單列與 2x2 方格的桌面（`fb_check.py --expect-pattern …,2`）；第三次開機的 cfg 加 `scale=1`（800x600 的卡、原來的檢查）。
+
+## 11. 第二顆磁碟（P11 K25，使用者尚未審核）
+
+**比喻**：IIci 的機殼裡可以多裝一顆硬碟。`disk2=Applications.img` 就是把 `Data:/Classic/Applications.img` 當成第二顆硬碟接上，Mac 開機後桌面上多一個卷宗。
+
+- `.Disk` 驅動（`c/mac/disk.c`，68k_HAL 複製來的）本來就有 drive 8–11（`MAC_MAX_DISKS` = 4）：Open 時把 `blocks > 0` 的每一顆 `_AddDrive` 進 drive queue，Mac 開機時 File Manager 掛上每一顆的 HFS 卷宗。這次只是把 host 端接上：
+  - `classic_host_ops.more_disks[3]`（`ctx`、`blocks`、`read_only`；讀寫用同一組 `disk_read`／`disk_write`，靠 `ctx` 分辨），`classic_start` 抄進 `mac.more_disks`。
+  - Rust：`Mac::start(rom, ram, disks: Vec<Box<dyn MacDisk>>, …)`，`disks[0]` 是 System（drive 8），之後最多 3 顆（drive 9–11）；空的或太多 → `BadArguments`。
+  - Classic.app：`FileDisk::open(name, read_only)`（唯讀時只用 READ 開檔，Mac 寫入會被 `.Disk` 拒絕）；打不開就印 `classic: no second disk: …` 照樣開機。
+- `classic_volumes`（C shim，新寫的）：走 File Manager 的 VCB 佇列（low memory `VCBQHdr` 的 qHead `$358`；VCB 的 `vcbVN` 在 44、`vcbDrvNum` 在 72，Inside Macintosh: Files），回傳每個已掛載卷宗的 drive 與名稱；`Mac::volumes()`。Finder 的桌面出現時 Classic.app 印 `classic: volume "名稱" (drive N)`。
+- 映像要是**整顆 HFS 卷宗**（沒有分割表，和 `System.img` 一樣；第 1024 byte 是 `BD`）。host 上可以用 hfsutils 做：`truncate -s 100M Applications.img; hformat -l Applications Applications.img`，再 `ehfs-cp` 進 `Data:/Classic/`。
+- 測試：本機 `make test-classic` 的第三次開機（800x600 卡）加 `disk2=Applications.img,ro`：host 用 `hformat` 在 `build/images/` 造 4 MiB 的空白 HFS（`HOME` 指到 `build/images`，hfsutils 的「目前卷宗」紀錄不碰真的家目錄），要看到 `classic: disk2 Applications.img (4096 KiB, read only)` 與 `classic: volume "Applications" (drive 9)`。需要 hfsutils（只有 `test-classic`）。

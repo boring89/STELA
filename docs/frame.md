@@ -201,7 +201,7 @@ loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。k
 虛擬位址                       內容
 0xFFFF_8000_0000_0000 ...      HHDM
 0x0000_0000_0000_0000 ...      使用者半部：每個行程自己的（P3）
-0xFFFF_FF00_0000_0000 ...      動態區：heap（16 MiB，P5 前是 4 MiB），之後是其他映射
+0xFFFF_FF00_0000_0000 ...      動態區：heap（32 MiB，P11；P5 前是 4 MiB、P5–P10 是 16 MiB），之後是其他映射
 0xFFFF_FF10_0000_0000 ...      動態區 + 64 GiB：kernel 堆疊的 slot（每個 64 KiB = 32 KiB guard + 32 KiB 堆疊，P3）
 0xFFFF_FF40_0000_0000 ...      動態區上半：MMIO 視窗（不快取）
 0xFFFF_FFFF_8000_0000 ...      kernel 映像
@@ -209,7 +209,7 @@ loader 建好的分頁表由 kernel 接手（格式見 `docs/boot.md` §7）。k
 
 ## 8. Kernel heap
 
-`HEAP_BASE = 0xFFFF_FF00_0000_0000`，固定 16 MiB（P5 為了區塊快取與 B-tree 節點從 4 MiB 加大）：從 PMM 拿 4096 個頁框（不需要連續）一頁一頁映射上去，交給 `linked_list_allocator::Heap`（MIT/Apache-2.0，關掉預設 feature 所以不帶 `spinning_top`），外面包 frame 自己的 `SpinLock`，註冊成 `#[global_allocator]`。之後 kernel 就能用 `Vec`、`String`、`Box`。`heap::stats()` 回報大小、已用、可用。
+`HEAP_BASE = 0xFFFF_FF00_0000_0000`，固定 32 MiB（P5 為了區塊快取與 B-tree 節點從 4 MiB 加大到 16 MiB，P11 快取加大後到 32 MiB）：從 PMM 拿 8192 個頁框（不需要連續）一頁一頁映射上去，交給 `linked_list_allocator::Heap`（MIT/Apache-2.0，關掉預設 feature 所以不帶 `spinning_top`），外面包 frame 自己的 `SpinLock`，註冊成 `#[global_allocator]`。之後 kernel 就能用 `Vec`、`String`、`Box`。`heap::stats()` 回報大小、已用、可用。
 
 ## 9. 鎖
 
@@ -269,7 +269,7 @@ selftest 結束時寫 `0x10` 到 `isa-debug-exit`（port `0xF4`），QEMU 以 `(
 - 沒有設定 PAT，framebuffer 是 write-back 快取而不是 write-combining；捲動要讀 framebuffer，在實機上會慢。之後可以加 PAT／影子緩衝區。
 - 畫字逐像素、沒有最佳化（`fill` 已改成逐列連續寫入）。
 - 分頁：空掉的中間表不回收；只支援 4 KiB 映射。MMIO 映射（`mm::mmio`）的虛擬位址只增不減、不回收。
-- heap 固定 16 MiB、不會成長。
+- heap 固定 32 MiB、不會成長。
 - `alloc_contiguous` 是線性 first-fit。
 - ring 0 的例外一律 panic（除了 breakpoint）；ring 3 的例外殺行程；沒有 page fault 的需求分頁。
 - P3 的限制（排程、位址空間、NMI 與 `swapgs`）見 `docs/process.md` §14、`docs/syscall.md` §7。

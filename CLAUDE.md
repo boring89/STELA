@@ -76,7 +76,7 @@ frame/         框架 crate：所有 unsafe 的家，對外只提供 safe API（
   src/syscall.rs    SyscallFrame、set_handler（docs/syscall.md）
   src/time/         APIC timer 1000 Hz、now_ns、sleep_ms、RTC 解碼（rtc.rs）與 wall_clock_ns（docs/time.md）
   src/input/        鍵盤解碼、PS/2 滑鼠封包（mouse.rs）、輸入事件佇列、notify hook（docs/keyboard.md、docs/window.md）
-  src/mm/           頁框配置（bitmap）、kernel 分頁、MMIO 映射、heap（16 MiB）、行程位址空間（user.rs；含 map_device）、共享記憶體（shared.rs）、DMA（dma.rs）、可給使用者映射的裝置記憶體（device.rs）、initrd()
+  src/mm/           頁框配置（bitmap）、kernel 分頁、MMIO 映射、heap（32 MiB）、行程位址空間（user.rs；含 map_device）、共享記憶體（shared.rs）、DMA（dma.rs）、可給使用者映射的裝置記憶體（device.rs）、initrd()
   src/console/      字型、文字主控台、framebuffer（交給視窗伺服器：FramebufferDevice、hand_over）、panic 畫面（docs/display.md）
 kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）；lib（host 測試純邏輯）+ bin（入口與 selftest）
   src/task/         Thread、排程器、run queue／睡眠清單／WaitQueue（queue.rs，host 測試）、block_until、Process、wait_process（docs/process.md）
@@ -197,7 +197,7 @@ Claude 依照上方工作規則直接實作。
 - PAT entry 4 = WC：視窗伺服器的 framebuffer 映射是 write-combining；kernel 自己的文字主控台仍經 HHDM（write-back，捲動要讀 framebuffer），同一塊記憶體有兩種別名（docs/display.md §8）。
 - loader 選面積最大的橫向 GOP 模式（OVMF：2560×1600）；不支援 Bitmask 像素格式；HiDPI scale 固定 1。
 - 記憶體表合併後最多 256 個區段（`regions_truncated`）；`KernelAndBoot`（含 loader 自己）與 identity map 用過的分頁表不回收。
-- kernel heap 固定 16 MiB（P5 從 4 MiB 加大）；空掉的中間分頁表不回收；`alloc_contiguous` 是線性 first-fit。
+- kernel heap 固定 32 MiB（P5 從 4 MiB 加大到 16 MiB，P11 到 32 MiB）；空掉的中間分頁表不回收；`alloc_contiguous` 是線性 first-fit。
 - 排程：每顆 CPU 單一等級 round-robin（10 ms 時間片），`priority` 只存不用；沒有 tickless；睡眠解析度 1 ms。
 - 位址空間只有 4 KiB 頁、沒有需求分頁／mmap；kernel 半部不能新增 PML4 項目（行程的 PML4 是建立時複製的）；使用者 FPU 只有 FXSAVE（無 XSAVE/AVX）；沒有 SMAP（kernel 不直接解參考使用者指標）。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。

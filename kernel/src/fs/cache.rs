@@ -11,6 +11,9 @@
 //!                misses → consecutive ones become one run; all runs go to
 //!                   the device in one read_many (no lock held), then are
 //!                   inserted, evicting the least recently used when full
+//!                a run that ends a request goes READ_AHEAD blocks
+//!                further (not cached ones only, inside the device): the
+//!                extra blocks are only cached
 //!  write(b): write the device, then update the cached copy if present
 //! ```
 //!
@@ -26,8 +29,11 @@ use alloc::vec::Vec;
 use block::{BLOCK_SIZE, BlockDevice, BlockError, check_request};
 use frame::sync::SpinLock;
 
-/// Default capacity: 256 blocks (1 MiB).
-pub const DEFAULT_BLOCKS: usize = 256;
+/// Default capacity: 1024 blocks (4 MiB; P11, was 256).
+pub const DEFAULT_BLOCKS: usize = 1024;
+/// Blocks read ahead after a run of misses that ends a request (a
+/// sequential reader asks for them next; P11).
+pub const READ_AHEAD: usize = 4;
 
 struct Lru {
     /// Block -> (data, last use).
@@ -150,9 +156,35 @@ impl<D: BlockDevice> CachedDevice<D> {
         if runs.is_empty() {
             return Ok(());
         }
+        // Read-ahead: a run that ends its request goes a little further.
+        let ahead: Vec<usize> = {
+            let lru = self.lru.lock();
+            runs.iter()
+                .map(|&(r, first, count)| {
+                    if first + count != requests[r].1.len() / BLOCK_SIZE {
+                        return 0;
+                    }
+                    let end = requests[r].0 + (first + count) as u64;
+                    // Never so much that it pushes out what was asked for.
+                    let most = READ_AHEAD.min(lru.capacity / 4) as u64;
+                    (0..most)
+                        .take_while(|i| {
+                            end + i < self.device.block_count()
+                                && !lru.blocks.contains_key(&(end + i))
+                        })
+                        .count()
+                })
+                .collect()
+        };
         let mut temp: Vec<(u64, Vec<u8>)> = runs
             .iter()
-            .map(|&(r, first, count)| (requests[r].0 + first as u64, vec![0u8; count * BLOCK_SIZE]))
+            .zip(&ahead)
+            .map(|(&(r, first, count), &extra)| {
+                (
+                    requests[r].0 + first as u64,
+                    vec![0u8; (count + extra) * BLOCK_SIZE],
+                )
+            })
             .collect();
         {
             let mut io: Vec<(u64, &mut [u8])> = temp
@@ -163,14 +195,18 @@ impl<D: BlockDevice> CachedDevice<D> {
         }
         let mut lru = self.lru.lock();
         for (&(r, first, count), (block, data)) in runs.iter().zip(&temp) {
-            for i in 0..count {
+            // The blocks read ahead first: what was asked for is the most
+            // recent.
+            let all = data.len() / BLOCK_SIZE;
+            for i in (count..all).chain(0..count) {
                 lru.insert(
                     block + i as u64,
                     &data[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE],
                 );
             }
             let at = first * BLOCK_SIZE;
-            requests[r].1[at..at + data.len()].copy_from_slice(data);
+            let n = count * BLOCK_SIZE;
+            requests[r].1[at..at + n].copy_from_slice(&data[..n]);
         }
         Ok(())
     }
@@ -271,20 +307,30 @@ mod tests {
         let cache = CachedDevice::new(&counting, 64);
         let mut one = blocks(1);
         cache.read(3, &mut one).unwrap();
-        // 0..8 with 3 cached: two runs (0..3, 4..8), one device call.
+        // Reading block 3 read 4..8 ahead too. Then 0..8: only 0..3 is
+        // missing (one call), and 8..12 comes ahead with it? No: that run
+        // does not end the request, so nothing more.
         let mut eight = blocks(8);
         cache.read(0, &mut eight).unwrap();
         assert_eq!(counting.calls.get(), 2);
-        assert_eq!(counting.blocks.get(), 1 + 7);
+        assert_eq!(counting.blocks.get(), (1 + READ_AHEAD as u64) + 3);
         for i in 0..8 {
             assert_eq!(eight[i * BLOCK_SIZE], i as u8);
         }
+        // 8..12 was not read ahead: one call, and 12..16 comes with it.
+        let mut four = blocks(4);
+        cache.read(8, &mut four).unwrap();
+        assert_eq!(counting.calls.get(), 3);
+        assert_eq!(four[3 * BLOCK_SIZE], 11);
+        cache.read(12, &mut four).unwrap();
+        assert_eq!(counting.calls.get(), 3);
+        assert_eq!(four[0], 12);
         // Two requests, all cached: no device call.
         let (mut a, mut b) = (blocks(2), blocks(1));
         cache
             .read_many(&mut [(1, &mut a[..]), (7, &mut b[..])])
             .unwrap();
-        assert_eq!(counting.calls.get(), 2);
+        assert_eq!(counting.calls.get(), 3);
         assert_eq!((a[BLOCK_SIZE], b[0]), (2, 7));
     }
 

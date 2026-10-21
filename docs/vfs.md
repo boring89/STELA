@@ -123,7 +123,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Archive (eHFS, rw, 62 MiB)
 ```
 
-- 每個卷宗的裝置是 `CachedDevice<Partition<Disk>>`（eHFS 256 塊、FAT 64 塊的快取，`docs/storage.md` §8）。
+- 每個卷宗的裝置是 `CachedDevice<Partition<Disk>>`（eHFS 1024 塊（P11）、FAT 64 塊的快取，`docs/storage.md` §8）。
 - QEMU 的 `fat:rw:` ESP 沒有 GPT（vvfat 是 MBR）→ 不掛載；`make run` 與一般的 `make test-qemu` 沒有卷宗（`vfs: no volumes`），程式照常從 initrd 啟動。
 - 關機：selftest 結束前 `vfs::unmount_all()`（eHFS 標成 clean 並 flush）。P6.5 起一般 kernel 的 `SystemPower`（shell 的 `shutdown`／`reboot`）也先 `unmount_all()`（`docs/acpi.md`）；直接關掉 QEMU 不會壞（有日誌），只是 fsck 會說「沒有正常卸載」。
 

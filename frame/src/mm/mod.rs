@@ -43,7 +43,7 @@ pub const MMIO_SIZE: u64 = DYNAMIC_SIZE / 2;
 /// The kernel heap occupies the start of the dynamic region.
 pub const HEAP_BASE: u64 = DYNAMIC_BASE;
 /// Initial (and for now fixed) heap size.
-pub const HEAP_SIZE: u64 = 16 << 20;
+pub const HEAP_SIZE: u64 = 32 << 20;
 /// End of the user half of every address space (PML4 slots 0-255): the
 /// lowest non-canonical address.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;

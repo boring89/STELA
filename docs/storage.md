@@ -113,10 +113,11 @@ drivers::sync::set_hooks(Hooks { current, block_until, wake, now_ns })
 
 ## 8. 區塊快取（`kernel::fs::cache`）
 
-- `CachedDevice<D>`：固定容量（eHFS 卷宗 256 塊 = 1 MiB、FAT 64 塊），LRU（`BTreeMap` 的使用時間）。
+- `CachedDevice<D>`：固定容量（eHFS 卷宗 1024 塊 = 4 MiB（P11，之前 256 塊）、FAT 64 塊），LRU（`BTreeMap` 的使用時間）。
+- **read-ahead**（P11）：一段未命中如果是請求的最後一段（循序讀的人下一次就要後面），多讀 `READ_AHEAD` = 4 塊（不超過容量的 1/4、只讀還沒快取的、不超過裝置結尾），多讀的只放進快取；放進去時先放多讀的，請求的最後放（最新，不會被自己的 read-ahead 擠掉）。
 - **write-through**：寫入先到裝置，成功再更新已快取的那份（失敗就丟掉那份，因為裝置上可能是新的也可能是舊的）。eHFS 的一致性靠日誌，快取永遠不比磁碟新。
 - 鎖是 `SpinLock`，**I/O 時不持有**：miss 時放鎖、讀裝置、再拿鎖放進去（兩個執行緒同時 miss 會各讀一次，結果相同）。
-- 為了快取與 B-tree 的 16 KiB 節點，kernel heap 從 4 MiB 加到 16 MiB（計畫外的調整）。
+- 為了快取與 B-tree 的 16 KiB 節點，kernel heap 從 4 MiB 加到 16 MiB（計畫外的調整）；P11 快取加大後再加到 32 MiB（三個 eHFS 卷宗的快取最多 12 MiB）。
 
 ### 8.1 P11：一次多個命令（K13，使用者尚未審核）
 
@@ -162,6 +163,6 @@ drivers::sync::set_hooks(Hooks { current, block_until, wake, now_ns })
 
 - 一個 port（或 NVMe 控制器）一次一個請求，但一個請求一次發出很多命令（§8.1）；沒有 NCQ（FPDMA）、沒有排程；NVMe 每個命令仍只有一個 4 KiB 頁（沒有 PRP list）。
 - 沒有 TRIM、沒有熱插拔、沒有錯誤後的 port 重設；逾時就回錯誤。
-- 快取是 write-through、沒有 read-ahead；容量固定。
+- 快取是 write-through；容量固定；read-ahead 只有固定的 4 塊（沒有依存取模式調整）。
 - FAT 唯讀、沒有 FAT12、不讀 MBR 分割表（QEMU 的 vvfat ESP 不會被掛載）。
 - 沒有 USB 儲存（P8）。

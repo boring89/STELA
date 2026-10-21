@@ -304,7 +304,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 - §4.3 的兩個競爭邊界會放掉夾帶的 handle。
 - console 服務任何持有 `[1]` 的程式都能印；輸出是非同步的。
 - P7：`PortSend` 與 `InputAttach` 的目標也可以是 `Tty`（`docs/linux.md` §5）。
-- `InputAttach` 沒有權限控管以外的政策（任何有某個 port SEND 的程式都能搶走鍵盤）；P8 的視窗伺服器接手後要改成只有它能 attach。
+- P11：`InputAttach` 要 `INPUT` 能力（`docs/userland.md` §2.3），只有 init、視窗伺服器、文字模式的 shell 與它 run 的程式有。
 - 共享記憶體是 eager（建立時配好全部頁框），沒有需求分頁；映射區不回收空的中間分頁表。
 - 行程表的 `Exited` 狀態仍然永遠不清（P6 的 Process handle 再處理）。
 

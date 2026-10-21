@@ -203,12 +203,13 @@ Claude 依照上方工作規則直接實作。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 狀態永遠不清。
 - 使用者空間：沒有 Thread 物件；shell 沒有管線、重新導向、背景工作、歷史；heap 不還記憶體（docs/userland.md §9）。
 - Mouseion：拖曳沒有影子、不能多選、沒有刪除與改名、資料夾圖示位置不存、開機不重開上次的視窗；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
-- 視窗：client 以 id 辨識（可冒用）、沒有 port set；拖外框不即時移動；選單一層；client 結束最多 1 秒後才被發現；terminal 沒有 ANSI 顏色與捲回（docs/window.md §10）。
+- 視窗：拖外框不即時移動；選單一層；terminal 沒有 ANSI 顏色與捲回（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；沒有儲存、音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。
 - 儲存：一次一個請求（AHCI 一個 slot、NVMe 每次一個 4 KiB 區塊）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 唯讀、沒有 FAT12、不讀 MBR；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；`DirRead` 每次重新列出（O(n²)）；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。
 - 實機：kernel 會把看到的任何 GPT 磁碟上的 eHFS 分割區掛成可寫，包括 P520 上 68k_HAL 磁碟（sda）的 Data 分割區（格式相容，不會損壞，但 Mouseion 會寫入 Finder 資訊）；實機測試時留意或先拔掉（docs/p520.md §1）。
-- 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；`SystemPower` 任何程式都能呼叫；關機前不通知程式（docs/acpi.md §9）。
-- Linux 人格：只有靜態非 PIE 的 musl 程式；單執行緒（沒有 clone、fork、execve、pipe、訊號遞送、poll/select）；Linux 程式不受能力限制（看得到所有卷宗）；cwd 只從 `[3]` 的卷宗根開始；`getrandom` 不安全；`PROT_NONE` 可讀（docs/linux.md §13）。
-- 網路：一次一張網卡；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 沒有 poll（Linux 的 getaddrinfo 不能用）；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
+- 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；有 `INIT` 能力的程式（預設所有人）都能請 init 關機；關機前不通知程式（docs/acpi.md §9）。
+- Linux 人格：只有靜態非 PIE 的 musl 程式；單執行緒（沒有 clone、fork、execve、pipe、訊號遞送、epoll）；Linux 程式看得到 `[3]`、`[4]` 的整個卷宗（不只那個資料夾以下）；`getrandom` 不安全；`PROT_NONE` 可讀（docs/linux.md §13）。
+- 網路：一次一張網卡；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 的等待者被任何事件全部叫醒；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
 - 音效：只有輸出、48 kHz 16 位元雙聲道、一次一個程式、沒有混音與音量、輪詢 LPIB；實機 codec 未驗證（docs/sound.md §7）。
-- IPC：沒有 port set；訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；任何有 port SEND 的程式都能 `InputAttach` 搶鍵盤；共享記憶體是 eager（`docs/ipc.md` §12）。
+- IPC：訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；共享記憶體是 eager；WaitSet 的行程成員以 id 記，要自己移除（`docs/ipc.md` §12、§13）。
+- 能力（P11）：`NETWORK` 與 `INIT` 預設往下傳給所有程式（沙箱還沒有拿掉它們的地方）；`FilePath` 讓持有資料夾 handle 的程式知道上面各層的名字（docs/userland.md §2.3、docs/vfs.md §4.4）。

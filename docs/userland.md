@@ -221,3 +221,4 @@ fn main() -> i64 {
 - 行程表的已結束紀錄永遠不清（`ps` 只顯示數量）。
 - heap 不把記憶體還給 kernel；沒有 `realloc` 的就地成長（GlobalAlloc 的預設：配新的再複製）。
 - P6.5 加了 `shutdown`／`reboot`（`docs/acpi.md`）；關機前不通知其他程式。
+- 能力（P11，§2.3）：`NETWORK` 與 `INIT` 預設傳給所有子行程（還沒有拿掉的沙箱）；能力不能撤回（持有的 handle 一直有效）；init 不問使用者就執行 `POWER_REQUEST`。

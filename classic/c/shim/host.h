@@ -30,6 +30,10 @@ typedef struct
      * a few hundred at a time; NULL = discard. */
     void (*audio)(void *ctx, const uint8_t *samples, uint32_t count, uint32_t rate);
     void *audio_ctx;
+    /* An external file system volume for the File System Manager
+     * (mac/fsm.h; P11): a STELA folder as a Mac volume. NULL = none. It
+     * must stay valid until the next classic_start. */
+    const void *fs;
 } classic_host_ops;
 
 /* Results of classic_start. */
@@ -79,5 +83,10 @@ int classic_sysbeep(void);
 
 /* Instructions executed so far. */
 uint32_t classic_instructions(void);
+
+/* The external file system's state: the install's result (0, an OSErr,
+ * -1/-2 no FSM 1.2, -3 no memory; 1 not yet), whether volume 0 is
+ * mounted, and the File Manager requests served. */
+void classic_fs_status(int32_t *install, bool *mounted, uint32_t *requests);
 
 #endif

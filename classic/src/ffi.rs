@@ -72,6 +72,54 @@ struct HostOps {
     disk_read_only: bool,
     audio: extern "C" fn(ctx: *mut c_void, samples: *const u8, count: u32, rate: u32),
     audio_ctx: *mut c_void,
+    fs: *const FsOps,
+}
+
+/// `mac_fs_item_t` (`c/mac/fsm.h`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawItem {
+    id: u32,
+    parent: u32,
+    is_dir: bool,
+    name: [u8; 32],
+    data_length: u32,
+    rsrc_length: u32,
+    valence: u32,
+    finfo: [u8; 16],
+    fxinfo: [u8; 16],
+    created: u32,
+    modified: u32,
+    backed_up: u32,
+    locked: bool,
+}
+
+/// `mac_fs_volume_t`.
+#[repr(C)]
+struct RawVolume {
+    total_bytes: u64,
+    free_bytes: u64,
+    files: u32,
+    folders: u32,
+    read_only: bool,
+}
+
+/// `mac_fs_ops_t`: every callback reaches the boxed [`MacFs`] in `ctx`.
+#[repr(C)]
+struct FsOps {
+    ctx: *mut c_void,
+    volume_name: *const c_char,
+    get: extern "C" fn(*mut c_void, u32, *mut RawItem) -> c_int,
+    lookup: extern "C" fn(*mut c_void, u32, *const u8, u32, *mut RawItem) -> c_int,
+    child: extern "C" fn(*mut c_void, u32, u32, *mut RawItem) -> c_int,
+    read: extern "C" fn(*mut c_void, u32, bool, u32, *mut c_void, u32) -> i32,
+    volume: extern "C" fn(*mut c_void, *mut RawVolume) -> c_int,
+    create: Option<extern "C" fn(*mut c_void, u32, *const u8, u32, bool, *mut RawItem) -> c_int>,
+    remove: Option<extern "C" fn(*mut c_void, u32) -> c_int>,
+    move_to: Option<extern "C" fn(*mut c_void, u32, u32, *const u8, u32) -> c_int>,
+    set_info: Option<extern "C" fn(*mut c_void, *const RawItem) -> c_int>,
+    write: Option<extern "C" fn(*mut c_void, u32, bool, u32, *const c_void, u32) -> i32>,
+    set_length: Option<extern "C" fn(*mut c_void, u32, bool, u32) -> c_int>,
 }
 
 unsafe extern "C" {
@@ -93,6 +141,9 @@ unsafe extern "C" {
     fn classic_xpram(out: *mut u8) -> bool;
     fn classic_milestones() -> u32;
     fn classic_sysbeep() -> c_int;
+    fn classic_fs_status(install: *mut i32, mounted: *mut bool, requests: *mut u32);
+    fn mac_roman_to_unicode(c: u8) -> u32;
+    fn mac_roman_from_unicode(u: u32) -> c_int;
     fn m68k_vm_init(ram: *mut u8, size: u32, cpu: u32) -> c_int;
     fn m68k_vm_load(addr: u32, data: *const u8, len: u32) -> c_int;
     fn m68k_vm_reset(entry: u32, sp: u32) -> c_int;
@@ -269,6 +320,291 @@ pub trait MacDisk {
     fn write(&mut self, offset: u32, data: &[u8]) -> bool;
 }
 
+/// The Unicode character of Mac Roman byte `c`.
+pub fn mac_roman_char(c: u8) -> char {
+    // SAFETY: a pure function over a table.
+    let u = unsafe { mac_roman_to_unicode(c) };
+    char::from_u32(u).unwrap_or('\u{FFFD}')
+}
+
+/// The Mac Roman byte of `c`, if Mac Roman has it.
+pub fn mac_roman_byte(c: char) -> Option<u8> {
+    // SAFETY: a pure function over a table.
+    let b = unsafe { mac_roman_from_unicode(u32::from(c)) };
+    u8::try_from(b).ok()
+}
+
+/// One file or folder as the Mac's File Manager sees it (`mac_fs_item_t`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FsItem {
+    /// The Mac's ID (the root folder is 2, its parent 1).
+    pub id: u32,
+    /// The folder it is in.
+    pub parent: u32,
+    /// A folder.
+    pub is_dir: bool,
+    /// The name, Mac Roman, at most 31 bytes.
+    pub name: alloc::vec::Vec<u8>,
+    /// Files: the forks' lengths.
+    pub data_length: u32,
+    /// The resource fork's length.
+    pub rsrc_length: u32,
+    /// Folders: items inside.
+    pub valence: u32,
+    /// FInfo + FXInfo (files) or DInfo + DXInfo (folders).
+    pub finder: [u8; 32],
+    /// Seconds since 1904.
+    pub created: u32,
+    /// Seconds since 1904.
+    pub modified: u32,
+}
+
+impl FsItem {
+    fn to_raw(&self) -> RawItem {
+        let mut name = [0u8; 32];
+        let n = self.name.len().min(31);
+        name[0] = n as u8;
+        name[1..=n].copy_from_slice(&self.name[..n]);
+        let mut finfo = [0u8; 16];
+        let mut fxinfo = [0u8; 16];
+        finfo.copy_from_slice(&self.finder[..16]);
+        fxinfo.copy_from_slice(&self.finder[16..]);
+        RawItem {
+            id: self.id,
+            parent: self.parent,
+            is_dir: self.is_dir,
+            name,
+            data_length: self.data_length,
+            rsrc_length: self.rsrc_length,
+            valence: self.valence,
+            finfo,
+            fxinfo,
+            created: self.created,
+            modified: self.modified,
+            backed_up: 0,
+            locked: false,
+        }
+    }
+
+    fn from_raw(raw: &RawItem) -> FsItem {
+        let n = usize::from(raw.name[0]).min(31);
+        let mut finder = [0u8; 32];
+        finder[..16].copy_from_slice(&raw.finfo);
+        finder[16..].copy_from_slice(&raw.fxinfo);
+        FsItem {
+            id: raw.id,
+            parent: raw.parent,
+            is_dir: raw.is_dir,
+            name: raw.name[1..=n].to_vec(),
+            data_length: raw.data_length,
+            rsrc_length: raw.rsrc_length,
+            valence: raw.valence,
+            finder,
+            created: raw.created,
+            modified: raw.modified,
+        }
+    }
+}
+
+/// A volume's size (`mac_fs_volume_t`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FsSpace {
+    /// Bytes in all.
+    pub total: u64,
+    /// Bytes free.
+    pub free: u64,
+}
+
+/// A Mac OS error a writing call returns (`MAC_FS_..._ERR`).
+pub type MacErr = i32;
+
+/// A volume the Mac sees through the File System Manager (`c/mac/fsm.c`,
+/// `docs/classic.md` §7): every call is by the Mac's IDs; names are Mac
+/// Roman. Errors are Mac OS result codes (`crate::hostfs::err`).
+pub trait MacFs {
+    /// The item `id`.
+    fn get(&mut self, id: u32) -> Option<FsItem>;
+    /// The item called `name` in folder `parent` (letters without case).
+    fn lookup(&mut self, parent: u32, name: &[u8]) -> Option<FsItem>;
+    /// Item `index` (from 1) of folder `parent`.
+    fn child(&mut self, parent: u32, index: u32) -> Option<FsItem>;
+    /// Reads at `offset` of a fork; the bytes read, `None` on failure.
+    fn read(&mut self, id: u32, rsrc: bool, offset: u32, buf: &mut [u8]) -> Option<usize>;
+    /// The volume's size.
+    fn space(&mut self) -> FsSpace;
+    /// Makes a file or folder.
+    fn create(&mut self, parent: u32, name: &[u8], is_dir: bool) -> Result<FsItem, MacErr>;
+    /// Removes a file or an empty folder.
+    fn remove(&mut self, id: u32) -> Result<(), MacErr>;
+    /// Moves (and renames, with `name`) an item.
+    fn move_to(&mut self, id: u32, parent: u32, name: Option<&[u8]>) -> Result<(), MacErr>;
+    /// Stores the Finder information (and dates) of `item.id`.
+    fn set_info(&mut self, item: &FsItem) -> Result<(), MacErr>;
+    /// Writes at `offset` of a fork; the bytes written.
+    fn write(&mut self, id: u32, rsrc: bool, offset: u32, data: &[u8]) -> Result<usize, MacErr>;
+    /// Sets a fork's length.
+    fn set_length(&mut self, id: u32, rsrc: bool, length: u32) -> Result<(), MacErr>;
+}
+
+/// The boxed file system behind `ctx`.
+///
+/// # Safety
+///
+/// `ctx` must be the `Box<Box<dyn MacFs>>` pointer `Mac::start` put in the
+/// ops, while the Mac lives (the model only calls back from inside
+/// `Mac::frame`, which borrows the Mac mutably).
+unsafe fn fs_of<'a>(ctx: *mut c_void) -> &'a mut alloc::boxed::Box<dyn MacFs> {
+    // SAFETY: the caller's contract.
+    unsafe { &mut *(ctx as *mut alloc::boxed::Box<dyn MacFs>) }
+}
+
+/// Writes `item` to the model's `out`.
+///
+/// # Safety
+///
+/// `out` must be a writable `mac_fs_item_t` (the model's).
+unsafe fn put_item(out: *mut RawItem, item: Option<FsItem>) -> c_int {
+    match item {
+        Some(i) => {
+            // SAFETY: the caller's contract.
+            unsafe { *out = i.to_raw() };
+            0
+        }
+        None => -1,
+    }
+}
+
+extern "C" fn fs_get(ctx: *mut c_void, id: u32, out: *mut RawItem) -> c_int {
+    // SAFETY: `ctx` and `out` come from the model as documented at fs_of
+    // and put_item.
+    unsafe { put_item(out, fs_of(ctx).get(id)) }
+}
+
+extern "C" fn fs_lookup(
+    ctx: *mut c_void,
+    parent: u32,
+    name: *const u8,
+    len: u32,
+    out: *mut RawItem,
+) -> c_int {
+    // SAFETY: as in fs_get; `name` is valid for `len` bytes.
+    unsafe {
+        let name = core::slice::from_raw_parts(name, len as usize);
+        put_item(out, fs_of(ctx).lookup(parent, name))
+    }
+}
+
+extern "C" fn fs_child(ctx: *mut c_void, parent: u32, index: u32, out: *mut RawItem) -> c_int {
+    // SAFETY: as in fs_get.
+    unsafe { put_item(out, fs_of(ctx).child(parent, index)) }
+}
+
+extern "C" fn fs_read(
+    ctx: *mut c_void,
+    id: u32,
+    rsrc: bool,
+    offset: u32,
+    buf: *mut c_void,
+    len: u32,
+) -> i32 {
+    // SAFETY: as in fs_get; `buf` is writable for `len` bytes.
+    unsafe {
+        let buf = core::slice::from_raw_parts_mut(buf as *mut u8, len as usize);
+        match fs_of(ctx).read(id, rsrc, offset, buf) {
+            Some(n) => n as i32,
+            None => -1,
+        }
+    }
+}
+
+extern "C" fn fs_volume(ctx: *mut c_void, out: *mut RawVolume) -> c_int {
+    // SAFETY: as in fs_get; `out` is a writable mac_fs_volume_t.
+    unsafe {
+        let s = fs_of(ctx).space();
+        *out = RawVolume {
+            total_bytes: s.total,
+            free_bytes: s.free,
+            files: 0,
+            folders: 0,
+            read_only: false,
+        };
+    }
+    0
+}
+
+extern "C" fn fs_create(
+    ctx: *mut c_void,
+    parent: u32,
+    name: *const u8,
+    len: u32,
+    is_dir: bool,
+    out: *mut RawItem,
+) -> c_int {
+    // SAFETY: as in fs_lookup.
+    unsafe {
+        let name = core::slice::from_raw_parts(name, len as usize);
+        match fs_of(ctx).create(parent, name, is_dir) {
+            Ok(item) => put_item(out, Some(item)),
+            Err(e) => e,
+        }
+    }
+}
+
+extern "C" fn fs_remove(ctx: *mut c_void, id: u32) -> c_int {
+    // SAFETY: as in fs_get.
+    unsafe { fs_of(ctx).remove(id).err().unwrap_or(0) }
+}
+
+extern "C" fn fs_move(ctx: *mut c_void, id: u32, parent: u32, name: *const u8, len: u32) -> c_int {
+    // SAFETY: as in fs_lookup; `name` may be NULL (keep the name).
+    unsafe {
+        let name = (!name.is_null()).then(|| core::slice::from_raw_parts(name, len as usize));
+        fs_of(ctx).move_to(id, parent, name).err().unwrap_or(0)
+    }
+}
+
+extern "C" fn fs_set_info(ctx: *mut c_void, item: *const RawItem) -> c_int {
+    // SAFETY: as in fs_get; `item` is a readable mac_fs_item_t.
+    unsafe {
+        let item = FsItem::from_raw(&*item);
+        fs_of(ctx).set_info(&item).err().unwrap_or(0)
+    }
+}
+
+extern "C" fn fs_write(
+    ctx: *mut c_void,
+    id: u32,
+    rsrc: bool,
+    offset: u32,
+    data: *const c_void,
+    len: u32,
+) -> i32 {
+    // SAFETY: as in fs_get; `data` is readable for `len` bytes.
+    unsafe {
+        let data = core::slice::from_raw_parts(data as *const u8, len as usize);
+        match fs_of(ctx).write(id, rsrc, offset, data) {
+            Ok(n) => n as i32,
+            Err(e) => e,
+        }
+    }
+}
+
+extern "C" fn fs_set_length(ctx: *mut c_void, id: u32, rsrc: bool, length: u32) -> c_int {
+    // SAFETY: as in fs_get.
+    unsafe { fs_of(ctx).set_length(id, rsrc, length).err().unwrap_or(0) }
+}
+
+/// The file system's state (`Mac::fs_status`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FsStatus {
+    /// The install's result: `None` before it ran, 0 or an OSErr after.
+    pub install: Option<i32>,
+    /// Whether the volume is on the Mac's desktop.
+    pub mounted: bool,
+    /// File Manager requests served.
+    pub requests: u32,
+}
+
 /// Why [`Mac::start`] failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartError {
@@ -356,6 +692,10 @@ extern "C" fn audio_trampoline(ctx: *mut c_void, samples: *const u8, count: u32,
     sink.samples.extend_from_slice(data);
 }
 
+/// What the C side points into for the external volume: the file
+/// system, its ops and its name.
+type FsParts = (Box<Box<dyn MacFs>>, Box<FsOps>, Box<[u8]>);
+
 /// The Macintosh IIci of `c/mac` with the built-in video (640x480).
 pub struct Mac {
     // The C side holds pointers into all of these until the Mac is
@@ -365,6 +705,7 @@ pub struct Mac {
     _vram: Box<[u8]>,
     _disk: Box<Box<dyn MacDisk>>,
     audio: Box<AudioSink>,
+    _fs: Option<FsParts>,
 }
 
 impl Mac {
@@ -375,6 +716,7 @@ impl Mac {
         rom: Box<[u8]>,
         ram_size: u32,
         disk: Box<dyn MacDisk>,
+        fs: Option<(Box<dyn MacFs>, &str)>,
         xpram: &[u8; 256],
         rtc_seconds: u32,
     ) -> Result<Mac, StartError> {
@@ -386,7 +728,37 @@ impl Mac {
         let mut vram = vec![0u8; VRAM_SIZE].into_boxed_slice();
         let mut disk = Box::new(disk);
         let mut audio = Box::new(AudioSink::default());
+        // The external volume: its callbacks, its name (Mac Roman, NUL).
+        let fs = fs.map(|(fs, name)| {
+            let mut fs = Box::new(fs);
+            let mut cname: alloc::vec::Vec<u8> = name
+                .chars()
+                .take(27)
+                .map(|c| mac_roman_byte(c).filter(|&b| b != 0).unwrap_or(b'_'))
+                .collect();
+            cname.push(0);
+            let cname = cname.into_boxed_slice();
+            let ops = Box::new(FsOps {
+                ctx: &mut *fs as *mut Box<dyn MacFs> as *mut c_void,
+                volume_name: cname.as_ptr() as *const c_char,
+                get: fs_get,
+                lookup: fs_lookup,
+                child: fs_child,
+                read: fs_read,
+                volume: fs_volume,
+                create: Some(fs_create),
+                remove: Some(fs_remove),
+                move_to: Some(fs_move),
+                set_info: Some(fs_set_info),
+                write: Some(fs_write),
+                set_length: Some(fs_set_length),
+            });
+            (fs, ops, cname)
+        });
         let ops = HostOps {
+            fs: fs
+                .as_ref()
+                .map_or(core::ptr::null(), |(_, ops, _)| &**ops as *const FsOps),
             audio: audio_trampoline,
             audio_ctx: &mut *audio as *mut AudioSink as *mut c_void,
             disk_read: disk_read_trampoline,
@@ -403,7 +775,9 @@ impl Mac {
         // passed (the video RAM CLASSIC_VRAM_SIZE) and are kept by the Mac
         // until it is dropped; `ops` is copied by the callee and its `ctx`
         // points at the boxed disk the Mac also keeps; `xpram` is 256
-        // bytes; no other machine uses the C globals (VM_IN_USE).
+        // bytes; the file system's ops (kept, with their ctx and name, by
+        // the Mac) stay valid while it lives; no other machine uses the C
+        // globals (VM_IN_USE).
         let r = unsafe {
             classic_start(
                 rom.as_mut_ptr(),
@@ -423,6 +797,7 @@ impl Mac {
                 _vram: vram,
                 _disk: disk,
                 audio,
+                _fs: fs,
             }),
             e => {
                 VM_IN_USE.store(false, Ordering::Release);
@@ -500,6 +875,18 @@ impl Mac {
     pub fn sysbeep(&mut self) -> bool {
         // SAFETY: plain call; the model queues the call for its next run.
         unsafe { classic_sysbeep() == 0 }
+    }
+
+    /// The external file system's state.
+    pub fn fs_status(&self) -> FsStatus {
+        let (mut install, mut mounted, mut requests) = (0i32, false, 0u32);
+        // SAFETY: three valid pointers to locals.
+        unsafe { classic_fs_status(&mut install, &mut mounted, &mut requests) };
+        FsStatus {
+            install: (install != 1).then_some(install),
+            mounted,
+            requests,
+        }
     }
 
     /// Whether the Finder runs (low memory CurApName).

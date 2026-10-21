@@ -221,12 +221,12 @@ fn mac_refuses_other_roms() {
     // Not the IIci ROM (its checksum is 368CADFE): nothing of Apple's is
     // in the tests.
     let rom = vec![0u8; 512 * 1024].into_boxed_slice();
-    let r = Mac::start(rom, 8 << 20, Box::new(NoDisk), &[0; 256], 0);
+    let r = Mac::start(rom, 8 << 20, Box::new(NoDisk), None, &[0; 256], 0);
     assert_eq!(r.err(), Some(StartError::BadRom));
     // One machine at a time: a bare 68k machine blocks the Mac.
     let vm = Vm::new(RAM_SIZE, Cpu::M68030).expect("a machine");
     let rom = vec![0u8; 512 * 1024].into_boxed_slice();
-    let r = Mac::start(rom, 8 << 20, Box::new(NoDisk), &[0; 256], 0);
+    let r = Mac::start(rom, 8 << 20, Box::new(NoDisk), None, &[0; 256], 0);
     assert_eq!(r.err(), Some(StartError::Busy));
     drop(vm);
     assert!(Vm::new(RAM_SIZE, Cpu::M68030).is_some());

@@ -18,6 +18,15 @@
 //!
 //! `Classic.app --test-beep` (make test-classic): once the Finder's desktop
 //! is shown, the Mac beeps, and two seconds later Classic.app ends.
+//!
+//! `Classic.app --test-fs` (make test-classic): once the desktop is shown,
+//! the Finder is driven from the keyboard (type "data", Command-O,
+//! Command-N: a new folder in Data), and Classic.app ends.
+//!
+//! The Mac also gets the `Data` volume itself (P11): the File System
+//! Manager plug-in of `c/mac/fsm.c` with `classic::hostfs` over
+//! `datafs::DataStore`; the `Classic` folder (the running disk) is hidden
+//! from it.
 
 #![no_std]
 #![no_main]
@@ -25,11 +34,15 @@
 
 extern crate alloc;
 
+mod datafs;
+
+use abi::key::KeyCode;
 use abi::window::{AUTO, flags};
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use classic::ffi::{Mac, MacDisk, Power, StartError};
+use classic::ffi::{Mac, MacDisk, MacFs, Power, StartError};
+use classic::hostfs::HostFs;
 use classic::keys::adb_code;
 use classic::screen::{Screen, mac_seconds};
 use classic::sound::Resampler;
@@ -180,6 +193,7 @@ fn start() -> Option<Mac> {
         rom.into_boxed_slice(),
         RAM_SIZE,
         Box::new(disk),
+        data_volume().map(|fs| (fs, "Data")),
         &xpram,
         clock,
     ) {
@@ -197,6 +211,106 @@ fn start() -> Option<Mac> {
         }
         Err(e) => {
             println!("classic: cannot start the Mac: {e:?}");
+            None
+        }
+    }
+}
+
+/// A Mac volume that reports its changes (and first reads) on the
+/// console.
+struct LogFs<T: MacFs> {
+    fs: T,
+    read: alloc::collections::BTreeSet<u32>,
+}
+
+impl<T: MacFs> LogFs<T> {
+    fn name(&mut self, id: u32) -> alloc::string::String {
+        self.fs.get(id).map_or_else(
+            || alloc::format!("#{id}"),
+            |i| {
+                i.name
+                    .iter()
+                    .map(|&b| classic::ffi::mac_roman_char(b))
+                    .collect()
+            },
+        )
+    }
+}
+
+impl<T: MacFs> MacFs for LogFs<T> {
+    fn get(&mut self, id: u32) -> Option<classic::ffi::FsItem> {
+        self.fs.get(id)
+    }
+    fn lookup(&mut self, parent: u32, name: &[u8]) -> Option<classic::ffi::FsItem> {
+        self.fs.lookup(parent, name)
+    }
+    fn child(&mut self, parent: u32, index: u32) -> Option<classic::ffi::FsItem> {
+        self.fs.child(parent, index)
+    }
+    fn read(&mut self, id: u32, rsrc: bool, offset: u32, buf: &mut [u8]) -> Option<usize> {
+        if !rsrc && self.read.insert(id) {
+            let name = self.name(id);
+            println!("classic: fs: read {name}");
+        }
+        self.fs.read(id, rsrc, offset, buf)
+    }
+    fn space(&mut self) -> classic::ffi::FsSpace {
+        self.fs.space()
+    }
+    fn create(
+        &mut self,
+        parent: u32,
+        name: &[u8],
+        is_dir: bool,
+    ) -> Result<classic::ffi::FsItem, i32> {
+        let r = self.fs.create(parent, name, is_dir);
+        let text: alloc::string::String = name
+            .iter()
+            .map(|&b| classic::ffi::mac_roman_char(b))
+            .collect();
+        match &r {
+            Ok(_) => println!("classic: fs: created {text}"),
+            Err(e) => println!("classic: fs: cannot create {text}: {e}"),
+        }
+        r
+    }
+    fn remove(&mut self, id: u32) -> Result<(), i32> {
+        let name = self.name(id);
+        let r = self.fs.remove(id);
+        println!("classic: fs: removed {name}: {r:?}");
+        r
+    }
+    fn move_to(&mut self, id: u32, parent: u32, name: Option<&[u8]>) -> Result<(), i32> {
+        let r = self.fs.move_to(id, parent, name);
+        let now = self.name(id);
+        println!("classic: fs: moved or renamed to {now}: {r:?}");
+        r
+    }
+    fn set_info(&mut self, item: &classic::ffi::FsItem) -> Result<(), i32> {
+        self.fs.set_info(item)
+    }
+    fn write(&mut self, id: u32, rsrc: bool, offset: u32, data: &[u8]) -> Result<usize, i32> {
+        self.fs.write(id, rsrc, offset, data)
+    }
+    fn set_length(&mut self, id: u32, rsrc: bool, length: u32) -> Result<(), i32> {
+        self.fs.set_length(id, rsrc, length)
+    }
+}
+
+/// The `Data` volume for the Mac (its `Classic` folder hidden), if it can
+/// be opened.
+fn data_volume() -> Option<Box<dyn MacFs>> {
+    let root = fs::volume_open("Data").ok()?;
+    match datafs::DataStore::new(root) {
+        Ok(store) => Some(Box::new(LogFs {
+            fs: HostFs::new(store, "Data", &["Classic"]),
+            read: alloc::collections::BTreeSet::new(),
+        })),
+        Err(e) => {
+            println!(
+                "classic: the Data volume is not given to the Mac: {}",
+                e.name()
+            );
             None
         }
     }
@@ -256,6 +370,23 @@ fn main() -> i64 {
     menus.add("File", &["Quit"]);
     let _ = conn.set_menubar(&menus.to_text());
     let test_beep = process::args().iter().any(|a| a == "--test-beep");
+    let test_fs = process::args().iter().any(|a| a == "--test-fs");
+    // --test-fs: (frames after the desktop is shown, key, down).
+    let mut script: Vec<(u64, KeyCode, bool)> = Vec::new();
+    if test_fs {
+        let mut at = 30;
+        for key in [KeyCode::D, KeyCode::A, KeyCode::T, KeyCode::A] {
+            script.push((at, key, true));
+            script.push((at + 4, key, false));
+            at += 10;
+        }
+        for (at, key) in [(at + 20, KeyCode::O), (400, KeyCode::N)] {
+            script.push((at, KeyCode::LeftAlt, true));
+            script.push((at + 2, key, true));
+            script.push((at + 6, key, false));
+            script.push((at + 8, KeyCode::LeftAlt, false));
+        }
+    }
     // The sound output is optional: without it (no card, or another
     // program has it) the Mac's sound is dropped.
     let audio = match Audio::open() {
@@ -276,6 +407,7 @@ fn main() -> i64 {
     let mut finder = false;
     let mut finder_frame = 0;
     let mut button = false;
+    let mut fs_mounted = false;
     loop {
         // Events first: the input reaches the Mac before the next frame.
         while let Some(event) = conn.next_event(0) {
@@ -315,9 +447,18 @@ fn main() -> i64 {
         if frame.is_multiple_of(2) && mac.render(&mut picture) {
             show(&conn, &mut window, &mut screen, &picture);
         }
+        if !fs_mounted && frame.is_multiple_of(30) && mac.fs_status().mounted {
+            fs_mounted = true;
+            println!("classic: the Data volume is on the Mac's desktop");
+        }
         if finder && finder_frame + 180 == frame {
             // Three seconds later the desktop has been drawn and shown
             // (make test-classic saves the screen now).
+            let fs = mac.fs_status();
+            println!(
+                "classic: fs: install {:?}, mounted {}, {} requests",
+                fs.install, fs.mounted, fs.requests
+            );
             println!("classic: finder desktop shown");
             if test_beep {
                 println!(
@@ -325,6 +466,29 @@ fn main() -> i64 {
                     if mac.sysbeep() { "sent" } else { "busy" }
                 );
             }
+        }
+        while finder
+            && let Some(&(at, key, down)) = script.first()
+            && finder_frame + 180 + at <= frame
+        {
+            script.remove(0);
+            if let Some(code) = adb_code(key) {
+                mac.key(code, down);
+            }
+            if script.is_empty() {
+                println!("classic: fs test keys sent");
+            }
+        }
+        if test_fs && finder && finder_frame + 180 + 650 == frame {
+            println!("classic: fs test checking");
+        }
+        if test_fs && finder && finder_frame + 180 + 700 == frame {
+            let fs = mac.fs_status();
+            println!("classic: fs test done ({} requests)", fs.requests);
+            let (xpram, _) = mac.xpram();
+            save_pram(&xpram);
+            let _ = conn.close(window);
+            return 0;
         }
         if test_beep && finder && finder_frame + 300 == frame {
             println!("classic: test done");
@@ -366,6 +530,7 @@ fn main() -> i64 {
                 };
                 mac = m;
                 finder = false;
+                fs_mounted = false;
                 continue;
             }
         }

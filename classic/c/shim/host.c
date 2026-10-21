@@ -45,6 +45,10 @@ int classic_start(uint8_t *rom, uint32_t rom_size, uint8_t *ram, uint32_t ram_si
     machine.rtc_seconds = rtc_seconds;
     k_memcpy(machine.xpram, xpram, sizeof machine.xpram);
     machine.xpram_dirty = false;
+    if (ops->fs != NULL)
+    {
+        mac_fsm_attach(&machine, (const mac_fs_ops_t *)ops->fs);
+    }
     mac_reset(&machine);
     return CLASSIC_OK;
 }
@@ -115,5 +119,15 @@ int classic_sysbeep(void)
 uint32_t classic_instructions(void)
 {
     return machine.insn_count;
+}
+
+
+void classic_fs_status(int32_t *install, bool *mounted, uint32_t *requests)
+{
+    const mac_fsm_t *fs = &machine.fsm;
+
+    *install = fs->install_pending ? 1 : fs->install_error;
+    *mounted = fs->volumes > 0 && fs->volume[0].mounted;
+    *requests = fs->requests;
 }
 

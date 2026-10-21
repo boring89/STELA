@@ -263,10 +263,15 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 # then the screen is saved and the Mac's desktop pattern and menu bar
 # are checked inside the window. A second boot with an HDA card runs
 # Classic.app --test-beep: the Mac's SysBeep must reach the WAV file QEMU
-# records.
+# records. A third boot, from a copy of the image made before the first,
+# runs Classic.app --test-fs: the Finder, driven from
+# the keyboard, opens the Data volume (the File System Manager plug-in) and
+# makes a new folder there, which the shell, the host's ehfs-ls and fsck
+# then see.
 MAC_ROM     ?= $(HOME)/mac/mac_rom_archive_-_as_of_8-19-2011/368CADFE - Mac IIci.ROM
 MAC_DISK    ?= $(HOME)/mac/System7_5_3.img
 CLASSIC_IMAGE = $(IMAGES)/classic-data.img
+CLASSIC_FS_IMAGE = $(IMAGES)/classic-fs.img
 CLASSIC_WAV := $(BUILD)/classic.wav
 # The Classic window lands at 70,138 (content, 640x480): the Mac's menu
 # bar (white, 20 rows) on top, the desktop pattern below it.
@@ -284,6 +289,7 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) mkdir /Classic
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_ROM)" /Classic/ROM
 	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_DISK)" /Classic/System.img
+	cp $(CLASSIC_IMAGE) $(CLASSIC_FS_IMAGE)
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic.ppm --log $(BUILD)/test-classic.log \
 		--type "STELA shell" "run Classic.app\n" \
 		--expect "STELA shell" --expect "classic: started" --expect "classic: finder desktop shown" \
@@ -301,6 +307,17 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0 \
 		-audiodev wav,id=a0,path=$(CLASSIC_WAV) -device intel-hda -device hda-duplex,audiodev=a0
 	python3 tools/check_wav.py $(CLASSIC_WAV) 0.05 0
+	python3 tools/qemu_test.py --exit-code 0 --timeout 600 --log $(BUILD)/test-classic-fs.log \
+		--type "STELA shell" "run Classic.app --test-fs\n" \
+		--type "Classic exited" "ls Data:/\n" --type "untitled folder" "shutdown\n" \
+		--expect "classic: the Data volume is on the Mac's desktop" \
+		--expect "classic: fs: created untitled folder" --expect "classic: fs test done" \
+		--expect "untitled folder" --expect "power: turning off" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_FS_IMAGE) \
+		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
+	$(EHFS_TOOLS)/ehfs-ls --offset 133120 $(CLASSIC_FS_IMAGE) / | grep -q "untitled folder"
+	$(EHFS_TOOLS)/fsck.ehfs --offset 133120 $(CLASSIC_FS_IMAGE) | grep -q "unmounted cleanly"
 
 # Networking (docs/net.md): QEMU user networking (slirp: gateway and host
 # 10.0.2.2, DNS 10.0.2.3, us 10.0.2.15) with each of the three cards; an

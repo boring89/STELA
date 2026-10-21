@@ -112,11 +112,43 @@ QEMU（TCG，無 KVM）裡 Finder 在約 300 影格、14 秒後出現。
 
 CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 
+## 7. Data 卷宗：File System Manager 外掛（P11 K9，使用者尚未審核）
+
+**比喻**：玻璃櫃裡的舊電腦本來只有一顆自己的硬碟（`System.img`）。現在在它的背面接一條線到 STELA 的 Data 卷宗：舊電腦以為那是一顆「網路磁碟」，它的檔案櫃管理員（File Manager）每次要找檔案、讀寫，就經這條線問 STELA。
+
+```
+ Mac 的 File Manager ─► FSM ─► c/mac/fsm.s／fsm.c（68k_HAL 的外掛，已複製）
+                                   │ mac_fs_ops_t（get、lookup、child、read、volume、
+                                   │              create、remove、move、set_info、write、set_length）
+                                   ▼ ffi.rs 的 extern "C" trampoline（ctx = Box<dyn MacFs>）
+                     classic::hostfs::HostFs（純邏輯，host 測試）
+                                   │ Store trait
+                                   ▼
+                     main.rs 的 datafs::DataStore：libstela::fs，從 Data 的根 handle
+```
+
+- `classic_host_ops` 多一個 `fs`（`mac_fs_ops_t *`，NULL = 沒有）；`classic_start` 在 `mac_reset` 前 `mac_fsm_attach`。Finder 開始執行後，模型在安全的時間點注入 `install`（Gestalt、AddDrive、InstallFS、PBVolumeMount），桌面上出現「Data」（`classic: the Data volume is on the Mac's desktop`；`classic_fs_status` 給 install 的結果、是否掛上、處理過的請求數）。
+- **ID**：Mac 的 ID = STELA 的持久 ID（eHFS 的 CNID；兩邊的根都是 2，其他 ≥ 16；放不進 32 位元的看不到）。
+- **名字**：UTF-8 ↔ Mac Roman（`c/mac/mac_roman.c` 經 FFI：`ffi::mac_roman_char`／`mac_roman_byte`）；STELA 名字裡的 `:` 在 Mac 上顯示成 `/`（Mac 的 `/` 存成 `:`）；Mac Roman 沒有的字元換成 `_`，換過或超過 31 字元的名字結尾加 `#<ID>`（查詢時也認得這個尾巴）。Mac 給的名字有控制字元、`:` 或以 `.` 開頭 → `bdNamErr`。
+- **看不到的**：`.` 開頭的名字，以及根目錄的 `Classic` 資料夾（裡面是 Mac 正在用的 `System.img`、ROM、PRAM——讓 Mac 改到自己的開機磁碟會壞掉）。
+- **Finder 資訊**：32 bytes 照 HFS 的原意存 FInfo + FXInfo（檔案）或 DInfo + DXInfo（資料夾），經 `FileGetInfo`／`FileSetInfo`（要 `MANAGE`；Classic.app 拿 `VolumeOpen("Data")` 的根，有 MANAGE）。Mouseion 自己的格式（`MI` 開頭）或全 0 時，Mac 看到的是 0；檔案的 type/creator 預設依副檔名（`.txt`、`.md`、`.c`、`.rs`… → `TEXT`／`ttxt`，SimpleText 的文件；其他 `????`）。**和 Mouseion 共用欄位**：Mac 寫過的項目，Mouseion 的圖示位置／視窗狀態會被蓋掉（E 部分的 K22 把 Mouseion 的狀態搬到延伸屬性）。
+- **resource fork**：STELA 的檔案 API 沒有 resource fork，所以存在根目錄的隱藏資料夾 `.rsrc/<ID>`（第一次寫入時建立；項目刪除時一起刪）。
+- **日期**：STELA 的奈秒（1970 起）↔ Mac 的秒（1904 起，差 2082844800）；卷宗大小與剩餘空間最多顯示 2 GB（System 7.5 的上限）。
+- **錯誤對照**：Exists → `dupFNErr`、NotFound → `fnfErr`、NotDir → `dirNFErr`、NoSpace → `dskFulErr`、NotEmpty → `fBsyErr`、ReadOnly／AccessDenied → `wPrErr`、搬進自己 → `badMovErr`、其他 → `ioErr`。
+- **同時寫**：Mac 寫 Data 時 STELA 的其他程式照樣能改（沒有 68k_HAL 的「Mac 執行時唯讀」）；每個呼叫都是重新 open 再 close，所以 STELA 端的改名、刪除 Mac 下次列目錄時就看到（最後一次的列表有快取，Mac 自己改過就清掉）。
+- **執行緒**：回呼在 Musashi 執行中同步呼叫（`Mac::frame` 裡），`libstela::fs` 的 syscall 會讓 Classic.app 的主執行緒等一下（計畫的決定，68k_HAL 也是這樣）。
+- `LogFs`（main.rs）把建立、刪除、搬移與每個檔案第一次的讀取印到 console（`classic: fs: created …`）。
+
+### 7.1 測試
+
+- host：`hostfs` 的測試用記憶體裡的 `Store`：名字兩個方向（`:`／`/`、é ↔ 0x8E、中文 → `_` + `#ID`、超過 31 字元、壞名字）、根與列表（隱藏 `Classic` 與 `.` 開頭的、`TEXT`／`ttxt`、日期、讀、2 GB 上限）、`#ID` 的查詢、寫入（建立、重名、兩個 fork、改長度、Finder 資訊、搬移與改名、搬進自己、非空資料夾、刪除連同 resource fork）、Mouseion 的資訊不給 Mac。
+- `make test-classic`（本機）第三次開機：`run Classic.app --test-fs`：桌面出現三秒後由 Classic.app 自己送鍵盤事件給 Mac——打 `data`（Finder 依名字選取）、Command-O（打開 Data 的視窗）、約 3 秒後 Command-N（新資料夾）——要看到 `classic: fs: created untitled folder`；Classic.app 結束後 shell 的 `ls Data:/` 看得到 `untitled folder`，`shutdown` 後 host 的 `ehfs-ls` 也看得到、`fsck.ehfs` 乾淨。
+
 ## 6. 限制與下一輪
 
 - 只有內建視訊 640x480、1 位元（System 的預設；Monitors 控制台可以改 2/4/8 位元，renderer 支援）。NuBus 顯示卡（大解析度、16/32 位元）、HiDPI 下一輪。
 - 滑鼠只在按住按鈕或按下／放開時送事件（視窗伺服器的 `Move` 只在按住時送），所以游標在 Mac 裡只在點擊與拖曳時跟上；沒有隱藏 STELA 的游標。
-- 一顆磁碟（`System.img`）；`.Disk` 的多磁碟、FSM 卷宗（把 STELA 的 Data 給 Mac 看）、Applications 卷宗下一輪（程式碼已複製，沒接上）。
+- 一顆磁碟（`System.img`）；`.Disk` 的多磁碟、Applications 卷宗下一輪（程式碼已複製，沒接上）。P11 起 Data 卷宗經 FSM 給 Mac（§7）；只有 Data 一顆，沒有 Desktop Manager（Finder 自己在 Data 的根建 `Desktop` 檔）。
 - 聲音（ASC）已接到 `Audio`（S 完成後補上，`--test-beep` 驗證 SysBeep）；最近鄰的重新取樣、沒有音量控制；Classic.app 開著時別的程式（`tone`）拿不到音效（`Busy`）。
 - 序列埠、網路、SCSI 裝置都沒有。
 - 時鐘當成 UTC（STELA 的 RTC 也當成 UTC，`docs/time.md` §5.5），所以 Mac 的時間比台灣時間慢 8 小時。

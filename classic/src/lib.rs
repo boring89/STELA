@@ -14,6 +14,7 @@
 extern crate alloc;
 
 pub mod ffi;
+pub mod hostfs;
 pub mod keys;
 pub mod screen;
 pub mod sound;

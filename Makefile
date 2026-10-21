@@ -263,7 +263,9 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 # then the screen is saved and the Mac's desktop pattern and menu bar
 # are checked inside the window. A second boot with an HDA card runs
 # Classic.app --test-beep: the Mac's SysBeep must reach the WAV file QEMU
-# records. A third boot, from a copy of the image made before the first,
+# records. Then Data:/Classic/classic.cfg asks for 32 MiB and the NuBus
+# card at 800x600 (1 bit): the window must be that big. A fourth boot, from
+# a copy of the image made before the first,
 # runs Classic.app --test-fs: the Finder, driven from
 # the keyboard, opens the Data volume (the File System Manager plug-in) and
 # makes a new folder there, which the shell, the host's ehfs-ls and fsck
@@ -311,8 +313,11 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0 \
 		-audiodev wav,id=a0,path=$(CLASSIC_WAV) -device intel-hda -device hda-duplex,audiodev=a0
 	python3 tools/check_wav.py $(CLASSIC_WAV) 0.05 0
+	printf '# make test-classic\nram=32\nresolution=800x600\ndepth=1\n' > $(BUILD)/classic.cfg
+	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in $(BUILD)/classic.cfg /Classic/classic.cfg
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic-card.ppm --log $(BUILD)/test-classic-card.log \
-		--type "STELA shell" "run Classic.app resolution=800x600 depth=1\n" \
+		--type "STELA shell" "run Classic.app\n" \
+		--expect "classic: started (ROM 368CADFE, 32 MiB" \
 		--expect "classic: screen 800x600" --expect "classic: finder desktop shown" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \

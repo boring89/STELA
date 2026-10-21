@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+pub mod config;
 pub mod ffi;
 pub mod hostfs;
 pub mod keys;

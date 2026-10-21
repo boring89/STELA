@@ -8,6 +8,7 @@
 //!  Data:/Classic/System.img  the System disk (HFS image), read and written
 //!  Data:/Classic/pram        the parameter RAM (256 bytes; made when the
 //!                            Mac OS changes it)
+//!  Data:/Classic/classic.cfg the settings (classic::config; optional)
 //! ```
 //!
 //! The main loop runs the Mac one 60 Hz frame at a time (416,000 cycles
@@ -41,6 +42,7 @@ use abi::window::{AUTO, flags};
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
+use classic::config::Config;
 use classic::ffi::{Card, Mac, MacDisk, MacFs, Power, StartError, card_depth, card_resolution};
 use classic::hostfs::HostFs;
 use classic::keys::adb_code;
@@ -57,8 +59,6 @@ use toolbox::window::{Connection, Window};
 
 libstela::entry!(main);
 
-/// The Mac's RAM.
-const RAM_SIZE: u32 = 16 << 20;
 /// The ROM's size (the IIci ROM is 512 KiB).
 const ROM_SIZE: usize = 512 * 1024;
 /// One frame of real time.
@@ -148,31 +148,38 @@ fn save_pram(xpram: &[u8; 256]) {
     }
 }
 
-/// The NuBus card asked for with `resolution=WxH` (and `depth=N`) among
-/// the arguments; `None`: the built-in video.
-fn card_from_args() -> Option<Card> {
-    let args = process::args();
-    let value = |key: &str| {
-        args.iter().find_map(|a| {
-            a.strip_prefix(key)?
-                .strip_prefix('=')
-                .map(alloc::string::String::from)
-        })
+/// The settings: `Data:/Classic/classic.cfg` (if there is one), then the
+/// arguments of the form `key=value` over it.
+fn settings() -> Config {
+    let (mut config, problems) = match read_all("classic.cfg", 64 * 1024) {
+        Ok(text) => Config::parse(&alloc::string::String::from_utf8_lossy(&text)),
+        Err(_) => (Config::default(), Vec::new()),
     };
-    let (w, h) = value("resolution")?
-        .split_once('x')
-        .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))?;
+    for p in problems {
+        println!("classic: classic.cfg: {p} (ignored)");
+    }
+    for arg in process::args().iter().skip(1).filter(|a| a.contains('=')) {
+        if let Err(e) = config.set(arg) {
+            println!("classic: {e} (ignored)");
+        }
+    }
+    config
+}
+
+/// The NuBus card of the settings; `None`: the built-in video.
+fn card_of(config: &Config) -> Option<Card> {
+    let (w, h) = config.resolution?;
     let Some(resolution) = card_resolution(w, h) else {
         println!("classic: the card has no {w}x{h} mode; the built-in video it is");
         return None;
     };
-    let bits = value("depth").and_then(|d| d.parse().ok()).unwrap_or(8);
-    let depth = card_depth(bits).unwrap_or(3);
+    let depth = card_depth(config.depth).unwrap_or(3);
     Some(Card { resolution, depth })
 }
 
-/// Starts the Mac from the files; prints why it cannot.
-fn start(card: Option<Card>) -> Option<Mac> {
+/// Starts the Mac from the files with the settings; prints why it cannot.
+fn start(config: &Config) -> Option<Mac> {
+    let card = card_of(config);
     let rom = match read_all("ROM", ROM_SIZE) {
         Ok(r) if r.len() == ROM_SIZE => r,
         Ok(r) => {
@@ -212,11 +219,18 @@ fn start(card: Option<Card>) -> Option<Mac> {
         Err(_) => {}
     }
     let clock = mac_seconds(process::wall_clock_ns().unwrap_or(0));
+    let fs = if config.fs {
+        data_volume().map(|fs| (fs, "Data"))
+    } else {
+        println!("classic: the Data volume is not given to the Mac (fs=off)");
+        None
+    };
+    let ram = config.ram_mib << 20;
     match Mac::start(
         rom.into_boxed_slice(),
-        RAM_SIZE,
+        ram,
         Box::new(disk),
-        data_volume().map(|fs| (fs, "Data")),
+        fs,
         card,
         &xpram,
         clock,
@@ -224,7 +238,7 @@ fn start(card: Option<Card>) -> Option<Mac> {
         Ok(mac) => {
             println!(
                 "classic: started (ROM 368CADFE, {} MiB, disk {} KiB)",
-                RAM_SIZE >> 20,
+                config.ram_mib,
                 size / 1024
             );
             Some(mac)
@@ -369,8 +383,8 @@ fn main() -> i64 {
         println!("classic: turned off by the boot option classic=off");
         return 1;
     }
-    let card = card_from_args();
-    let Some(mut mac) = start(card) else {
+    let config = settings();
+    let Some(mut mac) = start(&config) else {
         return 1;
     };
     let mut conn = match Connection::open() {
@@ -560,7 +574,7 @@ fn main() -> i64 {
                 save_pram(&xpram);
                 println!("classic: restarting");
                 drop(mac);
-                let Some(m) = start(card) else {
+                let Some(m) = start(&config) else {
                     return 1;
                 };
                 mac = m;

@@ -220,15 +220,29 @@ test-qemu-min: esp-test test-images $(BUILD)/OVMF_VARS.fd
 # A disk image for a real machine (docs/p520.md): GPT, an ESP with the
 # loader, kernel, initrd and a boot.cfg (all options commented out), and
 # an eHFS Data volume of DATA_MIB MiB. Only the file build/stela.img is
-# written; copying it to a USB stick is the user's own step.
+# written; copying it to a USB stick is the user's own step. When the
+# user's Mac ROM and System disk are there (MAC_ROM, MAC_DISK; local
+# only, P11), they are copied into Data:/Classic/ for Classic.app; set
+# MAC_ROM= to leave them out.
 DATA_MIB    ?= 4096
 DISK_IMAGE  := $(BUILD)/stela.img
 DISK_ESP    := $(BUILD)/disk-esp
+# The Data partition's first sector (65 MiB; tools/make_disk_image.py),
+# for ehfs-cp --offset.
+DATA_SECTOR := 133120
 disk-image: esp ehfs-tools
 	rm -rf $(DISK_ESP)
 	cp -r $(ESP) $(DISK_ESP)
 	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
 	python3 tools/make_disk_image.py $(DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) $(DATA_MIB)
+	@if [ -f "$(MAC_ROM)" ] && [ -f "$(MAC_DISK)" ]; then \
+		$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(DISK_IMAGE) mkdir /Classic && \
+		$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(DISK_IMAGE) in "$(MAC_ROM)" /Classic/ROM && \
+		$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(DISK_IMAGE) in "$(MAC_DISK)" /Classic/System.img && \
+		echo "disk-image: copied your Mac ROM and System disk into Data:/Classic/ (this image is yours only: do not share it)"; \
+	else \
+		echo "disk-image: no Mac ROM or System disk at MAC_ROM=$(MAC_ROM) MAC_DISK=$(MAC_DISK); Data:/Classic/ left out (Classic.app will say what is missing)"; \
+	fi
 
 # The disk image as the only disk (AHCI, the firmware boots from it): the
 # desktop comes up, a folder made in the shell survives a shutdown (the

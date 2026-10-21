@@ -6,7 +6,7 @@
 
 use crate::block::Disk;
 use crate::fs::cache::CachedDevice;
-use crate::fs::fat::{Dir, FatEntry, FatError, FatVolume};
+use crate::fs::fat::{Dir, FatEntry, FatError, FatVolume, fat_now};
 use abi::Error;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -172,6 +172,35 @@ static VOLUMES: SpinLock<Vec<Arc<Volume>>> = SpinLock::new(Vec::new());
 /// and go (P11 K41: USB disks).
 static NEXT_INDEX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// Ports told about volumes coming and going (`VolumeWatch`, P11 K42).
+static WATCHERS: SpinLock<Vec<Arc<crate::object::port::Port>>> = SpinLock::new(Vec::new());
+
+/// Most ports `VolumeWatch` keeps.
+pub const MAX_WATCHERS: usize = 16;
+
+/// Adds `port` to the ports told about volumes (closed ones are dropped
+/// first). `Full` past [`MAX_WATCHERS`].
+pub fn watch(port: Arc<crate::object::port::Port>) -> Result<(), Error> {
+    let mut w = WATCHERS.lock();
+    w.retain(|p| !p.is_closed());
+    if w.len() >= MAX_WATCHERS {
+        return Err(Error::Full);
+    }
+    w.push(port);
+    Ok(())
+}
+
+/// Tells the watchers that volume `name` came (`kind` 1) or went (2).
+fn notify(kind: u8, name: &str) {
+    let ports: Vec<_> = WATCHERS.lock().clone();
+    let mut data = alloc::vec![kind];
+    data.extend_from_slice(&name.as_bytes()[..name.len().min(abi::MESSAGE_DATA - 1)]);
+    for p in ports {
+        let msg = abi::Message::with_data(abi::tag::VOLUME_CHANGED, &data);
+        let _ = p.send(crate::object::port::QueuedMessage::plain(msg));
+    }
+}
+
 /// Adds a volume under `name` (made unique: "Name 2", ...); returns it.
 pub fn mount(name: &str, fs: Arc<dyn FileSystem>) -> Arc<Volume> {
     let mut volumes = VOLUMES.lock();
@@ -187,6 +216,8 @@ pub fn mount(name: &str, fs: Arc<dyn FileSystem>) -> Arc<Volume> {
         fs,
     });
     volumes.push(Arc::clone(&volume));
+    drop(volumes);
+    notify(1, &volume.name);
     volume
 }
 
@@ -219,6 +250,7 @@ pub fn unmount(name: &str) -> Option<Arc<Volume>> {
     if let Err(e) = volume.fs.unmount() {
         frame::kprintln!("vfs: unmounting {}: {}", volume.name, e.name());
     }
+    notify(2, &volume.name);
     Some(volume)
 }
 
@@ -450,6 +482,11 @@ fn fat_error(e: FatError) -> Error {
         FatError::Device(_) | FatError::Corrupt | FatError::NotFat | FatError::Fat12 => {
             Error::IoError
         }
+        FatError::Exists => Error::Exists,
+        FatError::NotFound => Error::NotFound,
+        FatError::NotEmpty => Error::NotEmpty,
+        FatError::NoSpace => Error::NoSpace,
+        FatError::BadName => Error::InvalidArgument,
     }
 }
 
@@ -472,10 +509,12 @@ fn fat_time(t: (u16, u8, u8, u8, u8, u8)) -> u64 {
     (secs.max(0) as u64) * 1_000_000_000
 }
 
-/// A FAT volume, read only. FAT has no persistent ids: entries get ids as
-/// they are seen (stable while the system runs).
+/// A FAT volume (P11 K42: writable on USB disks; the EFI System Partition
+/// stays read only). FAT has no persistent ids: entries get ids as they
+/// are seen (stable while the system runs).
 pub struct FatFs {
     fat: SleepMutex<FatVolume<VolumeDevice>>,
+    read_only: bool,
     /// id -> (entry, the folder it is in).
     ids: SpinLock<BTreeMap<u64, FatEntry>>,
     /// (folder id, upper-case name) -> id.
@@ -486,12 +525,13 @@ const FAT_ROOT: u64 = 1;
 
 impl FatFs {
     /// Mounts the FAT volume on `device`.
-    pub fn mount(device: VolumeDevice) -> Result<(FatFs, String), FatError> {
+    pub fn mount(device: VolumeDevice, read_only: bool) -> Result<(FatFs, String), FatError> {
         let fat = FatVolume::mount(device)?;
         let label = String::from(fat.label());
         Ok((
             FatFs {
                 fat: SleepMutex::new(fat),
+                read_only,
                 ids: SpinLock::new(BTreeMap::new()),
                 names: SpinLock::new(BTreeMap::new()),
             },
@@ -591,32 +631,78 @@ impl FileSystem for FatFs {
             .map_err(fat_error)
     }
 
-    fn write(&self, _: u64, _: u64, _: &[u8]) -> Result<(), Error> {
-        Err(Error::ReadOnly)
+    fn write(&self, id: u64, offset: u64, data: &[u8]) -> Result<(), Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let mut e = self.ids.lock().get(&id).cloned().ok_or(Error::NotFound)?;
+        let now = fat_now(frame::time::wall_clock_ns());
+        self.fat
+            .with(|f| f.write_file(&mut e, offset, data, now))
+            .map_err(fat_error)?;
+        self.ids.lock().insert(id, e);
+        Ok(())
     }
 
-    fn create(&self, _: u64, _: &str, _: bool) -> Result<NodeInfo, Error> {
-        Err(Error::ReadOnly)
+    fn create(&self, dir: u64, name: &str, is_dir: bool) -> Result<NodeInfo, Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let d = self.dir_of(dir)?;
+        let now = fat_now(frame::time::wall_clock_ns());
+        let e = self
+            .fat
+            .with(|f| f.create(d, name, is_dir, now))
+            .map_err(fat_error)?;
+        Ok(self.info(dir, &e))
     }
 
-    fn remove(&self, _: u64, _: &str) -> Result<(), Error> {
-        Err(Error::ReadOnly)
+    fn remove(&self, dir: u64, name: &str) -> Result<(), Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let d = self.dir_of(dir)?;
+        self.fat.with(|f| f.remove(d, name)).map_err(fat_error)?;
+        if let Some(id) = self.names.lock().remove(&(dir, name.to_ascii_uppercase())) {
+            self.ids.lock().remove(&id);
+        }
+        Ok(())
     }
 
-    fn rename(&self, _: u64, _: &str, _: u64, _: &str) -> Result<(), Error> {
-        Err(Error::ReadOnly)
+    fn rename(&self, dir: u64, name: &str, new_dir: u64, new_name: &str) -> Result<(), Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let (d, nd) = (self.dir_of(dir)?, self.dir_of(new_dir)?);
+        let now = fat_now(frame::time::wall_clock_ns());
+        self.fat
+            .with(|f| f.rename(d, name, nd, new_name, now))
+            .map_err(fat_error)?;
+        if let Some(id) = self.names.lock().remove(&(dir, name.to_ascii_uppercase())) {
+            self.ids.lock().remove(&id);
+        }
+        Ok(())
     }
 
-    fn set_size(&self, _: u64, _: u64) -> Result<(), Error> {
-        Err(Error::ReadOnly)
+    fn set_size(&self, id: u64, size: u64) -> Result<(), Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        let mut e = self.ids.lock().get(&id).cloned().ok_or(Error::NotFound)?;
+        let now = fat_now(frame::time::wall_clock_ns());
+        self.fat
+            .with(|f| f.set_size(&mut e, size, now))
+            .map_err(fat_error)?;
+        self.ids.lock().insert(id, e);
+        Ok(())
     }
 
     fn read_only(&self) -> bool {
-        true
+        self.read_only
     }
 
     fn space(&self) -> (u64, u64) {
-        (self.fat.with(|f| f.size()), 0)
+        self.fat.with(|f| (f.size(), f.free_bytes().unwrap_or(0)))
     }
 
     fn kind(&self) -> u32 {

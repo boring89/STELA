@@ -4,7 +4,7 @@
 //! Files and folders (`docs/vfs.md`): every call is relative to a folder
 //! handle; `volume_open` gives the root of a volume by name.
 
-use crate::sys::{syscall2, syscall3, syscall4, syscall6};
+use crate::sys::{syscall1, syscall2, syscall3, syscall4, syscall6};
 use abi::{
     DIR_ENTRY_SIZE, DirEntry, Error, Handle, STAT_SIZE, Stat, Syscall, VOLUME_INFO_SIZE, VolumeInfo,
 };
@@ -136,6 +136,18 @@ pub fn stat(h: Handle) -> Result<Stat, Error> {
 /// Sets a file's size.
 pub fn set_size(file: Handle, size: u64) -> Result<(), Error> {
     syscall2(Syscall::FileSetSize, file.raw(), size).map(|_| ())
+}
+
+/// Asks the kernel to send `tag::VOLUME_CHANGED` to `port` (a handle
+/// that may send; it is duplicated) when a volume comes or goes (P11
+/// K42). The message's first byte is 1 (mounted) or 2 (taken away), then
+/// the volume's name.
+pub fn volume_watch(port: Handle) -> Result<(), Error> {
+    let h = crate::ipc::handle_duplicate(port, crate::Rights::SEND)?;
+    let r = syscall1(Syscall::VolumeWatch, h.raw()).map(|_| ());
+    // The kernel keeps the port itself, not the handle.
+    let _ = crate::ipc::handle_close(h);
+    r
 }
 
 /// The volume whose index (`VolumeInfo::index`, `Stat::volume`) is

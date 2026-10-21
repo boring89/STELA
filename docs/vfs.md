@@ -141,6 +141,8 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Archive (eHFS, rw,
 
 - **分割表**：GPT；沒有 GPT 時看 **MBR**（`block::mbr`：四個項目、`55 AA`、保護用的 `EE` 不算；開始的扇區要對齊 4 KiB）；都沒有就整顆。開機時的磁碟也走這條（QEMU 的 `fat:rw` ESP 有一個從扇區 63 開始的 MBR 分割區，對不齊，印一行略過——它本來就不掛）。
 - **USB 磁碟**（`mount_removable`）：每個分割區是 eHFS 就用它的卷宗名稱掛（可寫），是 FAT 就用 FAT 的卷標（沒有卷標叫 `USB`，ESP 叫 `EFI`），FAT 目前唯讀；**不會**變成 `Data`。印 `vfs: mounted STICK (FAT, 62 MiB) from usb1`。
+- **FAT 寫入（P11 K42）**：USB 上的 FAT 可寫（`Boot` 的 ESP 仍唯讀；之後要改 `boot.cfg` 得另外做「掛成可寫」的指令）。`kernel/src/fs/fat.rs`：建檔與資料夾（短名：合乎 8.3 的大寫名稱直接用，其他產生 `NAME~N.EXT` 並寫長檔名項目，UTF-16、每項 13 個；資料夾寫 `.` 與 `..`）、寫入（不夠就配 cluster：從上次的位置掃 FAT 找空的、清成 0、接到鏈尾）、截短／加長、刪除（項目標 `E5`、釋放 cluster；資料夾要是空的）、改名與搬移（先建新項目再指向舊資料、拿掉舊項目；搬資料夾時改它的 `..`）；每次改 FAT 都寫每一份 FAT；第一次寫時把 FAT32 的 FSInfo 空間數設成「不知道」（`FFFFFFFF`，規格允許）；時間寫 UTC（FAT 沒有時區）。剩餘空間數一次（之後隨配置與釋放更新）。不做碎片整理、不寫 FAT12。host 測試在 mtools 做的映像上寫、讀回、刪掉後空間回到原值。
+- **`VolumeWatch(port)`**（syscall 63，P11 K42）：之後每次卷宗掛上或拿掉，kernel 送 `tag::VOLUME_CHANGED`（第一個 byte 1 = 掛上、2 = 拿掉，接著卷宗名稱）到那個 port（最多 16 個；關掉的 port 會被清掉）。libstela `fs::volume_watch`。Mouseion 用它：重畫桌面的卷宗圖示，拿掉的卷宗的視窗關掉（印 `mouseion: volume STICK came/went`）。
 - **卸載**（`unmount_removable` → `vfs::unmount(name)`）：卷宗從清單拿掉（之後開不到），先 flush；已經開著的 handle 還留著那個卷宗，之後的讀寫得到 `IoError`（磁碟不在了）。
 - **卷宗編號**：以前是清單裡的位置；P11 起卷宗會來來去去，編號改成不重複的計數（`VolumeInfo::index`、`Stat::volume`）。`VolumeList(i)` 仍是第 i 個；用編號找卷宗要 libstela 的 `fs::volume_by_index`（`cli::sys`、Classic 的 `datafs` 改用它）。
 

@@ -241,11 +241,15 @@ pub enum Syscall {
     /// running process by its id, for a system monitor; needs the `POWER`
     /// capability (P11). `NotFound` when it is not running.
     ProcessOpen = 62,
+    /// `VolumeWatch(port)`: from now on the kernel sends
+    /// `tag::VOLUME_CHANGED` to `port` (a `SEND` handle) when a volume is
+    /// mounted or taken away (P11 K42; at most 16 ports).
+    VolumeWatch = 63,
 }
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 62] = [
+    pub const ALL: [Syscall; 63] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -308,6 +312,7 @@ impl Syscall {
         Syscall::FileListAttr,
         Syscall::ThreadJoin,
         Syscall::ProcessOpen,
+        Syscall::VolumeWatch,
     ];
 
     /// The call with number `raw`, if any.
@@ -737,6 +742,9 @@ pub mod tag {
     /// answer, sent back with the same tag and an `Error` value (u64 LE)
     /// when it fails (on success the machine is gone).
     pub const POWER_REQUEST: u32 = 8;
+    /// The kernel to a port given to `VolumeWatch` (P11 K42): a volume was
+    /// mounted (data byte 0 = 1) or taken away (2); then its name.
+    pub const VOLUME_CHANGED: u32 = 9;
 }
 
 /// Capabilities (P11, `docs/userland.md` §2.3): handles whose possession
@@ -1976,6 +1984,7 @@ mod tests {
         assert_eq!((ATTR_NAME_MAX, ATTR_VALUE_MAX), (255, 3072));
         assert_eq!(Syscall::ThreadJoin.raw(), 61);
         assert_eq!(Syscall::ProcessOpen.raw(), 62);
+        assert_eq!((Syscall::VolumeWatch.raw(), tag::VOLUME_CHANGED), (63, 9));
         assert_eq!(time::parse_offset("+08:00"), Some(480));
         assert_eq!(time::parse_offset(" -05:30\n"), Some(-330));
         assert_eq!(time::parse_offset("+0800"), Some(480));

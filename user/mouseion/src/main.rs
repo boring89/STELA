@@ -1437,12 +1437,38 @@ impl Mouseion {
                     _ => {}
                 }
             }
+            Event::Other(msg) if msg.tag == libstela::tag::VOLUME_CHANGED => {
+                self.volume_changed(msg.payload());
+            }
             Event::Other(msg) => {
                 for &h in msg.carried() {
                     let _ = handle_close(h);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// A volume came or went (P11 K42, `VolumeWatch`): the desktop shows
+    /// the volumes again; the windows of a volume that went are closed.
+    fn volume_changed(&mut self, data: &[u8]) {
+        let Some((&kind, name)) = data.split_first() else {
+            return;
+        };
+        let name = String::from_utf8_lossy(name).into_owned();
+        println!(
+            "mouseion: volume {name} {}",
+            if kind == 1 { "came" } else { "went" }
+        );
+        if kind == 2 {
+            while let Some(p) = self.panes.iter().position(
+                |p| matches!(&p.place, Place::Folder { volume, .. } if volume.eq_ignore_ascii_case(&name)),
+            ) {
+                self.close_pane(p);
+            }
+        }
+        if let Some(d) = self.panes.iter().position(|p| p.place == Place::Desktop) {
+            self.load_desktop(d);
         }
     }
 }
@@ -1506,6 +1532,10 @@ fn main() -> i64 {
         &["Terminal", "Monitor", "-", "Restart", "Shut Down"],
     );
     let _ = conn.set_menubar(&menus.to_text());
+    // USB disks come and go (P11 K42).
+    if let Err(e) = fs::volume_watch(bootstrap::MAIN_PORT) {
+        println!("mouseion: no volume changes: {}", describe(e));
+    }
     let desktop = match conn.create_window(1, 1, flags::DESKTOP, 0, 0, "Desktop") {
         Ok(w) => w,
         Err(e) => {

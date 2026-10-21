@@ -154,5 +154,5 @@ usb: 7: hub (0409:55aa, full speed)
 - **純邏輯**（host 測試）：`cbw`、`csw_status`、`scsi::{inquiry, rw10, capacity, names}`。
 - **插入**：kernel 註冊的 `StorageHooks::attach` 把磁碟加進 `kernel::block`（名字 `usb1`、`usb2`…），**另開一個執行緒**掛載（掛載要讀磁碟，而讀磁碟要 USB 執行緒服務——在 USB 執行緒裡掛載會自己等自己）。
 - **拔除**：`detach` 把磁碟標成 gone（之後的請求一律 `IoError`），另開執行緒卸載它的卷宗（`docs/vfs.md` §6.2）。
-- 測試：`make test-usb` 的 QEMU 多一個 `usb-storage`（接在 hub 的 port 2，全速），映像是 `build/images/usb-stick.img`（64 MiB，MBR 一個 FAT32 分割區、卷標 STICK、`HELLO.TXT`；mtools 只寫這個檔）；看到 `vfs: mounted STICK (FAT, 62 MiB) from usb1`，shell `cat STICK:/hello.txt` 印出內容。
+- 測試：`make test-usb` 的 QEMU 多一個 `usb-storage`（接在 hub 的 port 2，全速；K42 加：QMP `device_del` 拔掉 → `vfs: unmounted STICK (usb1 went away)`、Mouseion `volume STICK went` → `device_add` 插一支複本（第二個映像，`-blockdev`）→ 掛成 `usb2`、shell `echo written by STELA > STICK:/new.txt` 再 `cat` 回來，結束後 host 的 `mtype` 找到那個檔），映像是 `build/images/usb-stick.img`（64 MiB，MBR 一個 FAT32 分割區、卷標 STICK、`HELLO.TXT`；mtools 只寫這個檔）；看到 `vfs: mounted STICK (FAT, 62 MiB) from usb1`，shell `cat STICK:/hello.txt` 印出內容。
 - 限制：只有 Bulk-Only（沒有 UAS）；只看 LUN 0；STALL 不復原（指令失敗就算失敗）；READ CAPACITY (16)（2 TiB 以上）沒有做；寫入時沒有 SYNCHRONIZE CACHE；一次 4 KiB。

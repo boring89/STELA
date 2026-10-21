@@ -66,6 +66,7 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::TtyWrite) => tty_write(a0, a1, a2),
         Some(Syscall::TtySetSize) => tty_set_size(a0, a1, a2),
         Some(Syscall::ThreadJoin) => thread_join(a0, a1),
+        Some(Syscall::VolumeWatch) => volume_watch(a0),
         Some(Syscall::HandleKind) => handle_kind(a0),
         Some(Syscall::WaitSetCreate) => wait_set_create(),
         Some(Syscall::WaitSetAdd) => wait_set_add(a0, a1, a2, args[3]),
@@ -421,6 +422,21 @@ fn input_attach(handle: u64, input: u64) -> Result<u64, Error> {
         return Err(Error::AccessDenied);
     }
     crate::input::attach(target);
+    Ok(0)
+}
+
+/// `VolumeWatch(port)` (P11 K42).
+fn volume_watch(handle: u64) -> Result<u64, Error> {
+    let process = caller()?;
+    let port = {
+        let handles = process.handles().lock();
+        let entry = handles.get(Handle::from_raw(handle))?;
+        if !entry.rights.contains(Rights::SEND) {
+            return Err(Error::AccessDenied);
+        }
+        Arc::clone(entry.object.as_port().ok_or(Error::WrongType)?)
+    };
+    crate::vfs::watch(port)?;
     Ok(0)
 }
 

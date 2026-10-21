@@ -638,13 +638,18 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 # (so the root ports stay as they were; the keyboard added back goes to
 # hub port 3): an MBR with one FAT32 partition at 1 MiB, labelled STICK,
 # holding HELLO.TXT (made with mtools in build/images); it is mounted as
-# STICK: and read from the shell.
+# STICK: and read from the shell. K42: it is unplugged (unmounted;
+# Mouseion hears of it), a copy is plugged in (a second image: QEMU locks
+# an image while a drive uses it), the shell writes a file on it (FAT
+# writing) and reads it back, and mtools finds the file on the host.
 USB_STICK = $(IMAGES)/usb-stick.img
+USB_STICK2 = $(IMAGES)/usb-stick2.img
 USB_FLAGS = -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0,id=kbd \
 	-device usb-mouse,bus=xhci.0,id=mouse -device usb-hub,bus=xhci.0,id=hub \
 	-device usb-kbd,bus=xhci.0,port=3.1,id=kbd2 \
 	-drive if=none,id=stick,format=raw,file=$(USB_STICK) \
-	-device usb-storage,bus=xhci.0,port=3.2,drive=stick,id=stick
+	-device usb-storage,bus=xhci.0,port=3.2,drive=stick,id=stick \
+	-blockdev driver=raw,node-name=stick2,file.driver=file,file.filename=$(abspath $(USB_STICK2))
 test-usb: esp $(BUILD)/OVMF_VARS.fd
 	mkdir -p $(IMAGES)
 	rm -f $(USB_STICK)
@@ -653,6 +658,7 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 	mformat -i $(USB_STICK)@@1M -T 129024 -F -v STICK ::
 	printf 'hello from the USB stick\n' > $(BUILD)/stick-hello.txt
 	mcopy -i $(USB_STICK)@@1M $(BUILD)/stick-hello.txt ::/HELLO.TXT
+	cp $(USB_STICK) $(USB_STICK2)
 	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-usb.log \
 		--type "usb: 7: hub" "uptime\n" \
 		--qmp "uptime:" input-send-event '{"events":[{"type":"rel","data":{"axis":"x","value":30}}]}' \
@@ -663,10 +669,17 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 		--expect "usb: xhci0" --expect "usb: 7: hub" --expect "uptime:" \
 		--expect "usb: 6: first report" --expect "usb: 6: removed" --expect "usb: 8: mouse" \
 		--type "usb: 7.3: keyboard" "cat STICK:/hello.txt\n" \
+		--qmp "hello from the USB stick" device_del '{"id":"stick"}' \
+		--qmp "mouseion: volume STICK went" device_add '{"driver":"usb-storage","bus":"xhci.0","port":"3.2","drive":"stick2","id":"stick2"}' \
+		--type "mouseion: volume STICK came" "echo written by STELA > STICK:/new.txt\n" \
+		--type "echo exited with code 0" "cat STICK:/new.txt\n" \
 		--expect "usb: 7.1: removed" --expect "usb: 7.3: keyboard" \
-		--expect "hello from the USB stick" \
+		--expect "hello from the USB stick" --expect "vfs: unmounted STICK (usb1 went away)" \
+		--expect "mouseion: volume STICK went" --expect "vfs: mounted STICK (FAT, rw, 62 MiB) from usb2" \
+		--expect "mouseion: volume STICK came" --expect "> cat STICK:/new.txt" --expect "written by STELA" \
 		-- $(QEMU) $(subst -machine q35,-machine q35$(comma)i8042=off,$(QEMU_FLAGS)) \
 		-display none -serial stdio $(USB_FLAGS)
+	mtype -i $(USB_STICK2)@@1M ::/new.txt | grep -q "written by STELA"
 
 # Mouseion (2560x1600, 16x32 font, 64-pixel icons in 160x112 cells; the
 # desktop's volume icons on the right: Boot, Data, Initrd, Tmp): double

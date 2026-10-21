@@ -98,7 +98,7 @@ pub fn mount_removable(disk_name: &str, disk: Disk) {
             })
         } else {
             let device: VolumeDevice = CachedDevice::new(part, FAT_CACHE);
-            FatFs::mount(device).ok().map(|(fs, label)| {
+            FatFs::mount(device, false).ok().map(|(fs, label)| {
                 let label = if label.trim().is_empty() || kind == Some(Guid::ESP) {
                     String::from(if kind == Some(Guid::ESP) {
                         "EFI"
@@ -108,7 +108,7 @@ pub fn mount_removable(disk_name: &str, disk: Disk) {
                 } else {
                     String::from(label.trim())
                 };
-                let what = alloc::format!("FAT, {}", mib(super::FileSystem::space(&fs).0));
+                let what = alloc::format!("FAT, rw, {}", mib(super::FileSystem::space(&fs).0));
                 (mount(&label, Arc::new(fs)), what)
             })
         };
@@ -214,7 +214,7 @@ fn mount_partition(
     }
     if kind == Some(Guid::ESP) {
         let device: VolumeDevice = CachedDevice::new(part, FAT_CACHE);
-        match FatFs::mount(device) {
+        match FatFs::mount(device, true) {
             Ok((fs, _label)) => {
                 let (total, _) = super::FileSystem::space(&fs);
                 let volume = mount("Boot", Arc::new(fs));

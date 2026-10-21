@@ -29,6 +29,7 @@ pub use abi::{Error, Handle, MESSAGE_DATA, Message, PORT_QUEUE_DEPTH, Rights, bo
 pub mod audio;
 pub mod fs;
 pub mod heap;
+pub mod http;
 pub mod io;
 pub mod ipc;
 pub mod line;

@@ -1,0 +1,27 @@
+[package]
+name = "periplus"
+description = "Periplus: a small web browser, HTTP only (working name, from the Greek for a voyage around)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+bench = false
+doctest = false
+
+[[bin]]
+name = "periplus"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+toolbox = { path = "../toolbox" }
+
+[lints]
+workspace = true

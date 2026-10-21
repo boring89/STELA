@@ -37,6 +37,7 @@ members = [
     "user/bench",
     "user/kalamos",
     "user/monitor",
+    "user/periplus",
     "classic",
     "tools/ehfs",
 ]

@@ -116,3 +116,33 @@ shell 的 `cp` 多了 `cp -r 來源 目的`：整個資料夾（遞迴，最深 
 ### 3.2 About STELA
 
 Mouseion 的 **Mouseion > About STELA**（K28）：版本、CPU、處理器數、記憶體、畫面、開機多久——資料來自硬體報告的摘要行（`docs/hwinfo.md`）。
+
+## 4. 瀏覽器 `Periplus.app`（P11 K36）
+
+**比喻**：periplus（περίπλους）是古希臘的航海指南——沿著海岸一站一站寫下港口。Periplus 也是這樣：一頁一頁沿著連結走，記住來時的路（上一頁／下一頁）。
+
+```
+ [<] [>] [Reload] [ http://host/path                            ]
+ ┌────────────────────────────────────────────────────────────┬─┐
+ │ 頁面：標題與 <b> 粗體，連結有底線（Tab 選到的反白）          │▲│
+ └────────────────────────────────────────────────────────────┴─┘
+ http://host/path: 12 KiB, status 200                ← 狀態列
+```
+
+- **只有 HTTP**：HTTPS 需要 TLS（加密、憑證），這一輪沒有做；打 `https://` 會說明。位址：`http://host[:port]/path`、`stela:home`（內建首頁：說明與幾個連結）、`Volume:/path` 或 `file:Volume:/path`（本機檔案；`.html`/`.htm` 當 HTML，其他當純文字）。
+- **libstela `http`**（新，純邏輯 host 測試）：`get(url)`：HTTP/1.0 GET、`Host` 標頭、讀到連線結束；`parse_head`（狀態、標頭）、301/302/303/307/308 跟著 `Location` 走（最多 5 次）、`Transfer-Encoding: chunked` 解開（`dechunk`）、`Response::is_html`（`Content-Type`，沒有時看內容開頭）、`join(base, link)`（相對連結、`/` 開頭、`.`／`..`、丟掉 `#`；也適用 `Volume:/`）。`net::http_get_raw` 給它原始回應。
+- **HTML 子集**（`user/periplus/src/lib.rs`，純邏輯 host 測試）：容錯的 tokenizer（標籤名稱轉小寫、屬性有沒有引號都行、註解與 `<!…>` 略過、`script`／`style` 的內容略過、實體 `&amp; &lt; &gt; &quot; &apos; &nbsp; &#N; &#xN;`）→ `Page { title, blocks, links }`：`h1`–`h6`（粗體）、`p`／`div` 等區塊、`br`、`hr`、`pre`（保留換行與空白）、`blockquote`（縮排）、`ul`／`ol`／`li`（`*` 或 `1.`，巢狀縮排）、`table`／`tr`／`td`／`th`（一列一行，儲存格用 16 欄的定位點）、`b`／`strong`、`i`／`em`（照常顯示）、`a href`、`img`（顯示 `[alt]`）。其他標籤略過但保留文字。
+- **排版**（`layout(page, cols)`）：等寬字型的欄；區塊之間空一行（相鄰的清單項目不空）、單字換行（太長的字切開）、`pre` 不換行（超出就切）。粗體是同一行字往右一像素再畫一次。
+- **操作**：Ctrl-L（或 File > Open Address）清空網址列開始打字，Enter 前往、Escape 放回原網址；沒給網址啟動時停在首頁、網址列已在等打字。Tab／Shift-Tab 選下一個／上一個連結（捲到看得到），Enter 前往；點連結前往；Alt-Left／Alt-Right（或按鈕、Go 選單）上一頁／下一頁；Ctrl-R、F5、Reload 重新載入；方向鍵、PgUp/PgDn、空白鍵、Home/End 捲動。標題列是頁面的 `title`。
+- 載入是同步的（載入中視窗不回應，狀態列顯示 `Loading…`）；印 `periplus: loading X`、`periplus: loaded X (title "…")`（轉址後的位址）或 `periplus: X: 錯誤`。
+
+### 4.1 測試
+
+- host：`libstela::http`（標頭、chunked、HTML 判斷、連結解析）、`periplus`（實體與 tokenizer、整頁的區塊與連結、換行與連結位置、清單／pre／表格、太長的字）。
+- `make test-browser`（加進 `make test`）：host 的 `with_http.py` 提供 `build/www`（`sub/index.html` 與 `page2.html`）；shell `run Periplus.app` → 首頁 → 打 `http://10.0.2.2:8642/sub`（host 的伺服器把資料夾轉址到 `/sub/`）→ `loaded …/sub/ (title "Sub page")` → Tab Enter 跟著 `../page2.html` → `(title "Second page")` → Alt-Left 回到 `…/sub/`。
+
+### 4.2 限制
+
+- 沒有 HTTPS、CSS、JavaScript、圖片（只顯示 alt）、表單、cookie、快取；只有一種字型（標題不放大）；非 ASCII 字畫不出來。
+- 載入時整個視窗等著（沒有背景載入、不能中止）；回應整個讀進記憶體（最多 4 MiB 拿來顯示）。
+- 文字編碼一律當 UTF-8（壞的位元組換成替代字元）。

@@ -310,6 +310,12 @@ pub fn parse_response(raw: &[u8]) -> Option<Response> {
 /// `GET url` over HTTP/1.0 (the server closes the connection at the
 /// end); `timeout_ns` for the connection and each read.
 pub fn http_get(url: &str, timeout_ns: u64) -> Result<Response, Error> {
+    parse_response(&http_get_raw(url, timeout_ns)?).ok_or(Error::IoError)
+}
+
+/// The whole raw response (head and body) to `GET url` (`crate::http`
+/// makes sense of it).
+pub fn http_get_raw(url: &str, timeout_ns: u64) -> Result<Vec<u8>, Error> {
     let (host, port, path) = parse_url(url).ok_or(Error::InvalidArgument)?;
     let ip = resolve(host)?;
     let s = Socket::tcp()?;
@@ -327,7 +333,7 @@ pub fn http_get(url: &str, timeout_ns: u64) -> Result<Response, Error> {
         }
         raw.extend_from_slice(&buf[..n]);
     }
-    parse_response(&raw).ok_or(Error::IoError)
+    Ok(raw)
 }
 
 #[cfg(test)]

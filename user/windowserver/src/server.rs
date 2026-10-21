@@ -355,6 +355,7 @@ impl Server {
         let cursor = self.cursor_rect();
         let (cx, cy) = self.cursor;
         let scale = self.scale;
+        let hidden = self.hides_cursor(cx, cy);
         let Ok(fb) = self.fb.words_mut() else {
             return;
         };
@@ -370,7 +371,7 @@ impl Server {
                 dst.copy_from_slice(src);
             }
         }
-        if cursor.overlaps(&r) {
+        if cursor.overlaps(&r) && !hidden {
             for (ry, row) in ARROW.iter().enumerate() {
                 for (rx, c) in row.bytes().enumerate() {
                     let pixel = match c {
@@ -429,8 +430,44 @@ impl Server {
         match (was, down) {
             (false, true) => self.press(x, y, e.buttons),
             (true, false) => self.release(x, y, e.buttons),
+            _ if moved && self.drag.is_none() => self.hover(x, y, e.buttons),
             _ if moved => self.drag_to(x, y, e.buttons),
             _ => {}
+        }
+        // The pointer may have gone into or out of a window that hides it.
+        if moved && self.hides_cursor(old.x, old.y) != self.hides_cursor(x, y) {
+            let new = self.cursor_rect();
+            self.mark(old);
+            self.mark(new);
+        }
+    }
+
+    /// The window whose content is at (x, y) and has `flag`, if any.
+    fn content_with(&self, x: i32, y: i32, flag: u32) -> Option<u32> {
+        match self.stack.hit(x, y, &self.m) {
+            Part::Content(id) if self.stack.get(id).is_some_and(|w| w.flags & flag != 0) => {
+                Some(id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the pointer at (x, y) is not drawn (`HIDE_CURSOR_INSIDE`).
+    fn hides_cursor(&self, x: i32, y: i32) -> bool {
+        self.drag.is_none() && self.content_with(x, y, flags::HIDE_CURSOR_INSIDE).is_some()
+    }
+
+    /// A move with no button held: to the window under the pointer if it
+    /// asked for every move (`WANT_MOTION`).
+    fn hover(&mut self, x: i32, y: i32, buttons: u8) {
+        if let Some(id) = self.content_with(x, y, flags::WANT_MOTION) {
+            let (cx, cy) = self.content_point(id, x, y);
+            if let Some(client) = self.window_owner(id) {
+                self.send(
+                    client,
+                    &proto::mouse_event(id, cx, cy, buttons, mouse::MOVE, 0),
+                );
+            }
         }
     }
 

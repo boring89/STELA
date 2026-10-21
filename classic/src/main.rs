@@ -359,7 +359,7 @@ fn main() -> i64 {
     let Ok(mut window) = conn.create_window(
         w,
         h,
-        flags::TITLE_BAR | flags::CLOSE_BOX,
+        flags::TITLE_BAR | flags::CLOSE_BOX | flags::WANT_MOTION | flags::HIDE_CURSOR_INSIDE,
         AUTO,
         AUTO,
         "Classic",

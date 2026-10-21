@@ -93,10 +93,17 @@ pub mod flags {
     /// The desktop: no frame, always at the back, covering the screen
     /// below the menu bar (Mouseion's icons).
     pub const DESKTOP: u32 = 1 << 3;
+    /// Every pointer move over the content comes as `MOUSE` (`MOVE`), not
+    /// only those with a button held (P11; Classic.app).
+    pub const WANT_MOTION: u32 = 1 << 4;
+    /// The server's pointer is not drawn over the content (the window
+    /// draws its own; P11).
+    pub const HIDE_CURSOR_INSIDE: u32 = 1 << 5;
     /// A normal document window.
     pub const DOCUMENT: u32 = TITLE_BAR | CLOSE_BOX | RESIZABLE;
     /// Every defined flag.
-    pub const ALL: u32 = TITLE_BAR | CLOSE_BOX | RESIZABLE | DESKTOP;
+    pub const ALL: u32 =
+        TITLE_BAR | CLOSE_BOX | RESIZABLE | DESKTOP | WANT_MOTION | HIDE_CURSOR_INSIDE;
 }
 
 /// `MOUSE` kinds.
@@ -279,7 +286,8 @@ mod tests {
         assert_eq!(VERSION, 2);
         assert_eq!(word(&connect(), 0), VERSION);
         assert_eq!(flags::DOCUMENT, 7);
-        assert_eq!(flags::ALL, 15);
+        assert_eq!(flags::ALL, 63);
+        assert_eq!((flags::WANT_MOTION, flags::HIDE_CURSOR_INSIDE), (16, 32));
         assert_eq!((mouse::MOVE, mouse::DOWN, mouse::UP), (1, 2, 3));
         assert_eq!(window_event::CLOSE_REQUESTED, 5);
     }

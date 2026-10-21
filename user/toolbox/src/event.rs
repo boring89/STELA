@@ -12,7 +12,8 @@ use libstela::Message;
 /// What a mouse event was.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseKind {
-    /// The pointer moved with a button held.
+    /// The pointer moved with a button held (or without, for a window
+    /// with `WANT_MOTION`).
     Move,
     /// A button went down.
     Down,

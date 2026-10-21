@@ -78,7 +78,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `MENU_SELECTED` 0x186 | 選單 index、項目 index |
 | `ERROR` 0x187 | 請求的 tag、`abi::Error` |
 
-旗標：`TITLE_BAR` 1、`CLOSE_BOX` 2、`RESIZABLE` 4、`DESKTOP` 8（沒有框、永遠在最後面、蓋滿選單列以下的整個畫面：給 P9 的 Mouseion 畫桌面圖示）；`DOCUMENT` = 1|2|4。
+旗標：`TITLE_BAR` 1、`CLOSE_BOX` 2、`RESIZABLE` 4、`DESKTOP` 8（沒有框、永遠在最後面、蓋滿選單列以下的整個畫面：給 P9 的 Mouseion 畫桌面圖示）；`DOCUMENT` = 1|2|4。P11：`WANT_MOTION` 16（沒按按鈕時指標在內容上移動也送 `MOUSE`／`MOVE`，給指標在它下面的那個視窗）、`HIDE_CURSOR_INSIDE` 32（指標在內容上時伺服器不畫箭頭；拖曳中照畫）——Classic.app 兩個都設（Mac 自己畫游標）。
 
 ## 4. 合成（`compose.rs`、`server.rs`）
 

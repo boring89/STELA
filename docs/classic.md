@@ -147,7 +147,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 ## 6. 限制與下一輪
 
 - 只有內建視訊 640x480、1 位元（System 的預設；Monitors 控制台可以改 2/4/8 位元，renderer 支援）。NuBus 顯示卡（大解析度、16/32 位元）、HiDPI 下一輪。
-- 滑鼠只在按住按鈕或按下／放開時送事件（視窗伺服器的 `Move` 只在按住時送），所以游標在 Mac 裡只在點擊與拖曳時跟上；沒有隱藏 STELA 的游標。
+- P11：視窗設 `WANT_MOTION` 與 `HIDE_CURSOR_INSIDE`（`docs/window.md` §3）：沒按按鈕的移動也送進來，Mac 的游標一直跟著；指標在視窗內時 STELA 的箭頭不畫，只看到 Mac 的游標。座標直接對應（沒有 Mac 的滑鼠加速）。
 - 一顆磁碟（`System.img`）；`.Disk` 的多磁碟、Applications 卷宗下一輪（程式碼已複製，沒接上）。P11 起 Data 卷宗經 FSM 給 Mac（§7）；只有 Data 一顆，沒有 Desktop Manager（Finder 自己在 Data 的根建 `Desktop` 檔）。
 - 聲音（ASC）已接到 `Audio`（S 完成後補上，`--test-beep` 驗證 SysBeep）；最近鄰的重新取樣、沒有音量控制；Classic.app 開著時別的程式（`tone`）拿不到音效（`Busy`）。
 - 序列埠、網路、SCSI 裝置都沒有。

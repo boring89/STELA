@@ -72,7 +72,7 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Initrd (initrd, ro
 ```
 
 - **找得到尾端**：映像可能比槽小（24 MiB 的映像放在 64 MiB 的槽），所以尾端不是「槽的最後一塊」，而是 eHFS 卷宗之後的那一塊——kernel 從區塊 0 的 superblock 讀卷宗的區塊數 N（`ehfs::block_count`），尾端在第 N 塊。`make_system_image.py` 讓 mkfs 少用最後 4 KiB，`tools/sysimage.py sign` 寫尾端。
-- **簽章**：ed25519（RFC 8032），簽的是尾端的前 128 bytes（含 SHA-256 與版本），所以「簽章對 + SHA-256 對」= 內容是簽的人做的。金鑰是 pkg 的**測試鑰匙**（`tools/pkg.pub`，私鑰由固定種子產生，任何人都能簽）；kernel 把 `tools/pkg.pub` 編進去（`system.rs` 的 `KEY_HEX`）。**正式發布前要換**（和 pkg 一樣，`docs/pkg.md` §6）。
+- **簽章**：ed25519（RFC 8032），簽的是尾端的前 128 bytes（含 SHA-256 與版本），所以「簽章對 + SHA-256 對」= 內容是簽的人做的。金鑰是 System 專用的**測試鑰匙**（`tools/system.pub`，`tools/sysimage.py keygen` 由固定種子產生私鑰，任何人都能簽）；kernel 把 `tools/system.pub` 編進去（`system.rs` 的 `KEY_HEX`），`stela-update` 讀 `Initrd:/certs/system.pub`。它**不是**套件的鑰匙（`tools/pkg.pub`）：套件的私鑰會放在 CI 的 secret，萬一外洩，也不能拿來簽一個會被開機的 System；System 的正式私鑰只放在發布者自己的機器上。**正式發布前兩把都要換**（`docs/pkg.md` §6）。套件伺服器的 index 裡的 `system` 項（§6）由套件鑰匙簽，但它指到的映像本身仍要 System 鑰匙的簽章。
 - **什麼時候算 SHA-256**：每次開機都驗尾端的簽章（一次 ed25519，很快）；整個映像的 SHA-256（24 MiB，TCG 下約 1–2 秒）只在「slot 檔說這是更新後還沒成功開機過（`new`）」、「上次開機沒有到桌面（嘗試次數 > 0）」、`boot.cfg` 的 `verify`、或換到另一槽時才算（計畫的決定）。
 - 純邏輯在新的 workspace crate **`sysimage`**（`no_std`，host 測試；kernel 與之後的 `stela-update` 共用）。它用的 `ed25519-dalek` 2 與 `sha2` 0.10 是 P12 的 pkgcore 已經在用的同一版本，**不是新的第三方 crate**（kernel 第一次直接依賴它們）。
 
@@ -114,7 +114,7 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Initrd (initrd, ro
 ```
  Mouseion：Special > Software Update…（ask_text：檔案；空白 = 套件伺服器；rollback）
    └► Initrd:/bin/stela-update apply --file F --window（帶 POWER）
-        讀整個映像 → 尾端的簽章（Initrd:/certs/pkg.pub）+ SHA-256，不對就一個 byte 都不寫
+        讀整個映像 → 尾端的簽章（Initrd:/certs/system.pub）+ SHA-256，不對就一個 byte 都不寫
         PartitionWrite(offset, 1 MiB) × N（syscall 79，要 POWER；只寫沒掛上的槽）
             offset 0 那次：slot 檔若指著正要寫的槽，先指回掛著的槽（寫到一半斷電也不會開到半個映像）
         SystemUse(0)（syscall 80）：kernel 把那一槽整個再驗一次（簽章 + SHA-256）→ slot 檔 "b 0 new"
@@ -150,7 +150,7 @@ Setup 的 install 頁把 ESP、System A（掛著的槽的映像）、空的 Syst
 
 - System 映像每次 `make` 都重做（`mkfs` 的 UUID 與時間是新的，內容相同時位元組也不同）。
 - 整顆磁碟形式的 System 看卷宗名與簽章（K5）。
-- 簽章用的是**測試鑰匙**（`tools/pkg.pub`）：任何人都能做出 kernel 接受的 System 映像，正式發布前一定要換（§3）。
+- 簽章用的是 System 的**測試鑰匙**（`tools/system.pub`）：任何人都能做出 kernel 接受的 System 映像，正式發布前一定要換（§3）。
 - slot 檔放在 ESP（FAT），kernel 寫它時沒有日誌：寫到一半斷電可能留下壞的 slot 檔——壞的或讀不到就當 `a 0`。
 - 槽只有兩個、大小固定（`make disk-image` 的 `SYSTEM_MIB`，預設 64 MiB；映像 16 MiB，`SYSTEM_IMG_MIB`）；映像比槽大就裝不進去（`make_disk_image.py` 拒絕、`PartitionWrite` 回 `InvalidArgument`）。
 - 更新是整個映像（16 MiB）重寫，沒有差分；從套件伺服器下載時整個放在記憶體裡。

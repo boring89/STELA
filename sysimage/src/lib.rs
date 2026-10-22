@@ -134,7 +134,7 @@ pub fn verify(block: &[u8], key: &[u8; 32]) -> bool {
     .is_ok()
 }
 
-/// A public key written in hex (`tools/pkg.pub`).
+/// A public key written in hex (`tools/system.pub`).
 pub fn key_from_hex(text: &str) -> Option<[u8; 32]> {
     let text = text.trim();
     if text.len() != 64 {

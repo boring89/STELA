@@ -71,6 +71,7 @@ pkgsign.py index KEYFILE DIR URL     DIR/*.tar 的 index.json + .sig
 ## 6. 已知限制
 
 - 沒有正式的套件伺服器（`pkg.conf` 要自己寫），公鑰是測試鍵。
+- System 映像用另一把鑰匙（`tools/system.pub`，P14；`docs/system.md` §3）：套件鑰匙外洩也簽不出會被開機的 System。兩把都是測試鍵。
 - index 沒有版本號與過期時間：舊的（簽過的）index 可以被重送（rollback）；`upgrade` 只比較版本字串是否不同。
 - 安裝不是交易式的：中途失敗留下一半的資料夾（下次 install 會先整個刪掉再解）；同時跑兩個 pkg 會互相覆蓋 `installed.json`。
 - 沒有「誰依賴我」：`remove` 不檢查別的套件是否需要它。

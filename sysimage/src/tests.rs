@@ -7,10 +7,10 @@ use super::*;
 
 extern crate std;
 
-/// The test key's seed (`tools/pkgsign.py`: SHA-256 of a fixed
-/// sentence); its public half is `tools/pkg.pub`.
+/// The test System key's seed (`tools/sysimage.py keygen`: SHA-256 of a
+/// fixed sentence); its public half is `tools/system.pub`.
 fn test_signing_key() -> ed25519_dalek::SigningKey {
-    let seed = sha256(b"STELA test package signing key - replace before use");
+    let seed = sha256(b"STELA test System image signing key - replace before use");
     ed25519_dalek::SigningKey::from_bytes(&seed)
 }
 
@@ -28,10 +28,14 @@ fn trailer_round_trip_and_signature() {
     assert_eq!(t.data_len, 10_000);
     assert_eq!(t.sha256, sha256(&data));
     assert_eq!(t.version, "0.2.0");
-    let key = key_from_hex(include_str!("../../tools/pkg.pub")).unwrap();
+    let key = key_from_hex(include_str!("../../tools/system.pub")).unwrap();
     assert!(!verify(&b, &key), "unsigned");
     signed(&mut b);
     assert!(verify(&b, &key));
+    // The package key is another key: it cannot vouch for a System.
+    let pkg = key_from_hex(include_str!("../../tools/pkg.pub")).unwrap();
+    assert_ne!(pkg, key);
+    assert!(!verify(&b, &pkg));
     // Any change to the signed part breaks it.
     let mut bad = b;
     bad[57] = b'9';

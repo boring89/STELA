@@ -19,9 +19,10 @@ use block::{BLOCK_SIZE, BlockDevice, Partition};
 use frame::sync::SpinLock;
 use sysimage::{Slot, SlotFile};
 
-/// The key System images are signed with: `tools/pkg.pub`, the TEST key
-/// (`docs/system.md` §3; replace before releasing).
-const KEY_HEX: &str = include_str!("../../tools/pkg.pub");
+/// The key System images are signed with: `tools/system.pub`, the TEST
+/// System key (not the package key; `docs/system.md` §3; replace before
+/// releasing).
+const KEY_HEX: &str = include_str!("../../tools/system.pub");
 
 /// Where the slot file is on the ESP.
 const SLOT_FOLDER: &str = "STELA";

@@ -4,6 +4,7 @@
 """The System image's trailer (P14 K5, docs/system.md §3; the format is
 sysimage/src/lib.rs).
 
+    sysimage.py keygen KEYFILE PUBFILE       the TEST System key pair
     sysimage.py sign IMAGE KEYFILE VERSION   writes the trailer into the
                                              last 4 KiB of IMAGE
     sysimage.py show IMAGE                   prints the trailer
@@ -12,16 +13,24 @@ sysimage/src/lib.rs).
     sysimage.py badsig IMAGE                 flips a byte of the signed part of
                                              the trailer (make test-update)
 
-KEYFILE is a seed in hex as tools/pkgsign.py makes it (`keygen` makes the
-TEST key, whose public half tools/pkg.pub the kernel trusts; replace it
-before releasing). IMAGE must be a regular file under build/.
+KEYFILE is a 32-byte seed in hex. The System key is not the package
+key (tools/pkg.pub): a leaked package key must not be able to sign a
+bootable System. `keygen` makes the TEST System key: its seed is SHA-256
+of a fixed sentence, so its public half tools/system.pub (committed; the
+kernel trusts it, Initrd:/certs/system.pub) and the private key every
+build makes always match. Anyone can sign with it: replace it (a key
+made with Ed25519PrivateKey.generate(), kept only on the releaser's
+machine) before releasing. IMAGE must be a regular file under build/.
 """
 import hashlib
 import os
 import struct
 import sys
 
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+TEST_SEED = hashlib.sha256(b"STELA test System image signing key - replace before use").digest()
 
 BLOCK = 4096
 MAGIC = b"STELASYS"
@@ -93,9 +102,21 @@ def badsig(image):
         f.write(bytes([b[0] ^ 0x01]))
 
 
+def keygen(keyfile, pubfile):
+    key = Ed25519PrivateKey.from_private_bytes(TEST_SEED)
+    os.makedirs(os.path.dirname(os.path.abspath(keyfile)), exist_ok=True)
+    with open(keyfile, "w") as f:
+        f.write(TEST_SEED.hex() + "\n")
+    raw = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    with open(pubfile, "w") as f:
+        f.write(raw.hex() + "\n")
+
+
 def main():
     a = sys.argv[1:]
-    if len(a) == 4 and a[0] == "sign":
+    if len(a) == 3 and a[0] == "keygen":
+        keygen(a[1], a[2])
+    elif len(a) == 4 and a[0] == "sign":
         sign(checked(a[1]), a[2], a[3])
     elif len(a) == 2 and a[0] == "show":
         show(a[1])

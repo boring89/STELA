@@ -161,8 +161,8 @@ system-image: user linux-tests ehfs-tools $(CHEWING_DATA)
 	cp -r $(LINUX_DIR)/lib $(SYSTEM_ROOT)/linux/lib
 	printf '%s\n' "$(VERSION)" > $(SYSTEM_ROOT)/VERSION
 	python3 tools/make_system_image.py $(SYSTEM_ROOT) $(SYSTEM_IMG) $(SYSTEM_IMG_MIB) $(EHFS_TOOLS)
-	python3 tools/pkgsign.py keygen $(BUILD)/sys-signing.key $(BUILD)/sys-signing.pub
-	cmp $(BUILD)/sys-signing.pub tools/pkg.pub
+	python3 tools/sysimage.py keygen $(BUILD)/sys-signing.key $(BUILD)/sys-signing.pub
+	cmp $(BUILD)/sys-signing.pub tools/system.pub
 	python3 tools/sysimage.py sign $(SYSTEM_IMG) $(BUILD)/sys-signing.key "$(VERSION)"
 
 # P14 K2 (docs/mouseion.md §4.2): bundles with their own icon (NAME:the
@@ -180,6 +180,7 @@ initrd: user linux-tests
 	mkdir -p $(INITRD_ROOT)/certs
 	python3 tools/cacert_to_der.py third_party/mozilla-ca/cacert.pem $(INITRD_ROOT)/certs/cacert.der
 	cp tools/pkg.pub $(INITRD_ROOT)/certs/pkg.pub
+	cp tools/system.pub $(INITRD_ROOT)/certs/system.pub
 	$(call put_bundles,$(INITRD_BUNDLES),$(INITRD_ROOT))
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
 		-cf $(INITRD) -C $(INITRD_ROOT) .

@@ -19,7 +19,7 @@
 //! are refused (the shell has no `POWER`).
 //!
 //! The image is checked before a byte is written: its trailer's
-//! signature (the key of `Initrd:/certs/pkg.pub`) and the SHA-256 of the
+//! signature (the key of `Initrd:/certs/system.pub`) and the SHA-256 of the
 //! rest; the kernel checks the written slot again before it switches.
 
 #![no_std]
@@ -125,12 +125,14 @@ impl Out {
     }
 }
 
-/// The trusted key (`Initrd:/certs/pkg.pub`, the TEST key for now).
+/// The System key (not the package key), the TEST key for now.
+const SYSTEM_KEY: &str = "Initrd:/certs/system.pub";
+
+/// The trusted key ([`SYSTEM_KEY`]).
 fn key() -> Result<[u8; 32], String> {
-    let text = fs::read_path(pkgcore::PUBLIC_KEY)
-        .map_err(|e| format!("{}: {}", pkgcore::PUBLIC_KEY, e.name()))?;
+    let text = fs::read_path(SYSTEM_KEY).map_err(|e| format!("{SYSTEM_KEY}: {}", e.name()))?;
     sysimage::key_from_hex(&String::from_utf8_lossy(&text))
-        .ok_or_else(|| format!("{}: not a key", pkgcore::PUBLIC_KEY))
+        .ok_or_else(|| format!("{SYSTEM_KEY}: not a key"))
 }
 
 /// Checks a whole image: its trailer is the last block, signed with the

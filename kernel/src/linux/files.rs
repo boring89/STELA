@@ -1131,6 +1131,8 @@ pub fn unlinkat(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> LinuxResult {
     if fs.read_only() {
         return Err(EROFS);
     }
+    fs.check_unlocked(parent.id, &name)
+        .map_err(errno::from_error)?;
     fs.remove(parent.id, &name).map_err(|e| match e {
         abi::Error::NotEmpty => ENOTEMPTY,
         e => errno::from_error(e),
@@ -1152,7 +1154,11 @@ pub fn renameat(p: &Process, olddir: u64, old: u64, newdir: u64, new: u64) -> Li
     if fs.read_only() {
         return Err(EROFS);
     }
+    fs.check_unlocked(from_parent.id, &from_name)
+        .map_err(errno::from_error)?;
     if let Ok(existing) = fs.lookup(to_parent.id, &to_name) {
+        fs.check_unlocked(to_parent.id, &to_name)
+            .map_err(errno::from_error)?;
         if existing.is_dir {
             return Err(EISDIR);
         }

@@ -88,7 +88,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 | 37 | `FileGetInfo` | 檔案或資料夾, &mut [u8; 32] | — |
 | 38 | `FileSetInfo` | 檔案或資料夾, &[u8; 32] | WRITE + `MANAGE`（P11）；唯讀卷宗 → `ReadOnly` |
 
-每個項目 32 bytes 的 Finder 資訊（`abi::FINDER_INFO_SIZE`），kernel 不解讀：eHFS 存在目錄記錄裡（格式本來就有，`docs/ehfs.md`），`Tmp` 存在記憶體；FAT 與 Initrd 回 `NotSupported`。後端：`FileSystem::get_info`／`set_info`（預設 `NotSupported`）。Mouseion 的配置（視窗矩形、圖示位置）見 `docs/mouseion.md`。
+每個項目 32 bytes 的 Finder 資訊（`abi::FINDER_INFO_SIZE`），kernel 不解讀：eHFS 存在目錄記錄裡（格式本來就有，`docs/ehfs.md`），`Tmp` 存在記憶體；FAT 與 Initrd 回 `NotSupported`。後端：`FileSystem::get_info`／`set_info`（預設 `NotSupported`）。P14 K2：kernel 只看一個位元——`fdFlags`（bytes 8–9，大端序）的 `kNameLocked` 0x1000（`abi::finder`）：`DirRemove`、`DirRename` 與 Linux 的 `unlinkat`、`renameat` 遇到鎖定的項目回 `AccessDenied`（`FileSystem::check_unlocked`）。Mouseion 的配置（視窗矩形、圖示位置）見 `docs/mouseion.md`。
 
 ### 4.4 `FilePath`（P11，使用者已於 2026-10-22 審核）
 

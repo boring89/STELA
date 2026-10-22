@@ -24,6 +24,7 @@ extern crate alloc;
 
 use abi::window::{self as proto, AUTO, flags};
 use abi::{DirEntry, kind};
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -106,7 +107,13 @@ struct Pane {
     found: Vec<String>,
     /// The order of the items (P11 K43: the list view's column titles).
     sort: model::SortBy,
+    /// For Get Info (P14 K2): the item's folder (a handle of its own) and
+    /// the item, which the keys N, T, C and L edit.
+    about: Option<(Owned, Item, String)>,
 }
+
+/// The extended attribute of Get Info's comment (P14 K2).
+const COMMENT_ATTR: &str = "stela.mouseion.comment";
 
 /// A press that may turn into a drag.
 #[derive(Clone, Copy, Debug)]
@@ -217,7 +224,14 @@ struct Mouseion {
     order: Vec<u32>,
     press: Option<Press>,
     menus: MenuBar,
+    /// Programs' own icons (P14 K6), by (folder path, item id): the
+    /// 1x picture and the 2x one; `None` when the bundle has none.
+    pictures: BTreeMap<(String, u64), Option<Bundled>>,
 }
+
+/// A bundle's `icon-32.ppm` (1x) and `icon-64.ppm` (2x) (or 16 and 32 on
+/// small screens, as `icons::size_for`).
+type Bundled = (icons::Picture, Option<icons::Picture>);
 
 const LIST_LINE_EXTRA: i32 = 8;
 const SCROLL_WIDTH: i32 = 24;
@@ -315,6 +329,33 @@ fn pass_file(h: Handle) -> Handle {
         .unwrap_or(Handle::NONE)
 }
 
+/// The folder at `path` (`Volume:/a/b`), opened by name from the volume's
+/// root so that it has `MANAGE` (P14 K2).
+fn open_folder_path(path: &str) -> Result<Owned, Error> {
+    let (volume, inside) = path.split_once(':').ok_or(Error::InvalidArgument)?;
+    let root = Owned(fs::volume_open(volume)?);
+    let inside = inside.trim_matches('/');
+    if inside.is_empty() {
+        return Ok(root);
+    }
+    let d = open::READ | open::DIRECTORY;
+    fs::open(root.0, inside, d | open::WRITE)
+        .or_else(|_| fs::open(root.0, inside, d))
+        .map(Owned)
+}
+
+/// Item `name` of folder `dir`, opened by name so that the handle has
+/// `MANAGE` when the folder's has (`VolumeOpenById` never gives it):
+/// Finder information and attributes need it (P14 K2).
+fn open_named(dir: Handle, name: &str) -> Result<Owned, Error> {
+    let d = open::READ | open::DIRECTORY;
+    fs::open(dir, name, open::READ | open::WRITE)
+        .or_else(|_| fs::open(dir, name, d | open::WRITE))
+        .or_else(|_| fs::open(dir, name, open::READ))
+        .or_else(|_| fs::open(dir, name, d))
+        .map(Owned)
+}
+
 fn describe(e: Error) -> &'static str {
     match e {
         Error::NotFound => "not found",
@@ -334,6 +375,37 @@ fn list(h: Handle) -> Vec<DirEntry> {
 impl Mouseion {
     fn pane(&self, window: u32) -> Option<usize> {
         self.panes.iter().position(|p| p.window.id == window)
+    }
+
+    /// Item `i` of pane `p`'s own icon, if it is a bundle with one
+    /// (`Name.app/icon-32.ppm`, and `icon-64.ppm` for scale 2); read once
+    /// and kept.
+    fn picture_for(&mut self, p: usize, i: usize) -> Option<Bundled> {
+        let item = self.panes[p].items.get(i)?;
+        if item.kind != Kind::Bundle {
+            return None;
+        }
+        let Place::Folder { path, .. } = &self.panes[p].place else {
+            return None;
+        };
+        let key = (path.clone(), item.id);
+        if let Some(cached) = self.pictures.get(&key) {
+            return cached.clone();
+        }
+        let size = self.icon_size as u32;
+        let loaded = self.panes[p].handle.as_ref().and_then(|h| {
+            let bundle = Owned(fs::open_by_id(h.0, item.id).ok()?);
+            let read = |s: u32| {
+                let f = Owned(fs::open(bundle.0, &format!("icon-{s}.ppm"), open::READ).ok()?);
+                icons::parse_ppm(&fs::read_all(f.0).ok()?, s)
+            };
+            Some((read(size)?, read(size * 2)))
+        });
+        if loaded.is_some() {
+            println!("mouseion: {} has its own icon", item.name);
+        }
+        self.pictures.insert(key, loaded.clone());
+        loaded
     }
 
     fn icon_for(&self, item: &Item) -> Option<&'static Icon> {
@@ -420,6 +492,9 @@ impl Mouseion {
             .iter()
             .map(|i| icons::find(if i.volume { "volume" } else { i.kind.icon() }, 16))
             .collect();
+        let pictures: Vec<Option<Bundled>> = (0..self.panes[index].items.len())
+            .map(|i| self.picture_for(index, i))
+            .collect();
         let bar = self.scrollbar(&self.panes[index]);
         let window_id = self.panes[index].window.id;
         let editing = self.editing.clone().filter(|e| e.window == window_id);
@@ -490,8 +565,11 @@ impl Mouseion {
                 let label = display_name(&item.name, item.is_dir);
                 match pane.view {
                     View::Icons => {
-                        if let Some(icon) = icons[i] {
-                            c.icon(r.x + (cell.0 - icon_size) / 2, r.y + 4, icon, selected);
+                        let x = r.x + (cell.0 - icon_size) / 2;
+                        if let Some((small, big)) = &pictures[i] {
+                            c.picture(x, r.y + 4, small, big.as_ref(), selected);
+                        } else if let Some(icon) = icons[i] {
+                            c.icon(x, r.y + 4, icon, selected);
                         }
                         let text = ellipsize(label, (cell.0 / font.width) as usize);
                         let tw = font.text_width(&text);
@@ -818,6 +896,7 @@ impl Mouseion {
             note: Vec::new(),
             found: Vec::new(),
             sort: model::SortBy::Name,
+            about: None,
         });
         self.order.insert(0, id_w);
         let index = self.panes.len() - 1;
@@ -1690,11 +1769,13 @@ impl Mouseion {
             println!("mouseion: set type {name}: not two four-letter words");
             return;
         };
-        let Some(h) = self.panes[p].handle.as_ref().map(|h| h.0) else {
-            return;
+        // P14 K2: by name from the volume's root, so that the handle has
+        // MANAGE (the folder window's handle may not; FileSetInfo needs it).
+        let folder = match &self.panes[p].place {
+            Place::Folder { path, .. } => open_folder_path(path),
+            _ => Err(Error::NotFound),
         };
-        let id = self.panes[p].items[i].id;
-        let result = fs::open_by_id(h, id).map(Owned).and_then(|f| {
+        let result = folder.and_then(|d| open_named(d.0, &name)).and_then(|f| {
             let mut info = fs::get_info(f.0)?;
             info[0..4].copy_from_slice(&t);
             info[4..8].copy_from_slice(&c);
@@ -1802,10 +1883,193 @@ impl Mouseion {
             note: lines,
             found,
             sort: model::SortBy::Name,
+            about: None,
         });
         self.order.insert(0, id);
         let index = self.panes.len() - 1;
         self.draw(index);
+    }
+
+    /// The lines of a Get Info window for `item` in folder `dir` (`where_`
+    /// is the folder's path).
+    fn info_lines(&self, dir: Option<Handle>, item: &Item, where_: &str) -> Vec<String> {
+        let kind = if item.volume {
+            "volume"
+        } else {
+            item.kind.word()
+        };
+        let file = dir.and_then(|d| open_named(d, &item.name).ok());
+        let info = file.as_ref().and_then(|f| fs::get_info(f.0).ok());
+        let comment = file
+            .as_ref()
+            .and_then(|f| fs::get_attr(f.0, COMMENT_ATTR).ok())
+            .map(|v| String::from_utf8_lossy(&v).into_owned())
+            .unwrap_or_default();
+        let mut lines = vec![
+            format!("name:  {}", item.name),
+            format!("kind:  {kind}"),
+            format!("size:  {} bytes", item.size),
+            format!("where: {where_}"),
+            format!("id:    {}", item.id),
+            // P13 K20: the Mac's type and creator.
+            format!(
+                "type:  {}",
+                info.as_ref()
+                    .filter(|_| !item.is_dir && !item.volume)
+                    .map(|i| model::format_type_creator(i))
+                    .unwrap_or_default()
+            ),
+            if item.mtime == 0 {
+                String::from("changed: -")
+            } else {
+                // Local time (P11 K40).
+                let offset = libstela::time::offset_minutes();
+                format!(
+                    "changed: {} {}",
+                    libstela::time::format(libstela::time::to_local(item.mtime)),
+                    libstela::time::offset_text(offset)
+                )
+            },
+        ];
+        // P14 K2: the comment and the lock, and how to change them.
+        if !item.volume && info.is_some() {
+            lines.push(format!("comment: {comment}"));
+            let locked = info.as_ref().is_some_and(|i| abi::finder::locked(i));
+            lines.push(format!("locked: {}", if locked { "yes" } else { "no" }));
+            lines.push(String::new());
+            lines.push(String::from("N: name  T: type  C: comment  L: lock"));
+        }
+        lines
+    }
+
+    /// File > Get Info: a note about item `i` of pane `p`, editable with
+    /// keys while it is in front (P14 K2).
+    fn get_info(&mut self, p: usize, i: usize) {
+        let item = self.panes[p].items[i].clone();
+        let where_ = match &self.panes[p].place {
+            Place::Folder { path, .. } => path.clone(),
+            _ => String::from("the desktop"),
+        };
+        // A handle of the note's own to the folder (the folder's window
+        // may close first).
+        let dir = match &self.panes[p].place {
+            Place::Folder { path, .. } => open_folder_path(path).ok(),
+            _ => None,
+        };
+        let lines = self.info_lines(dir.as_ref().map(|d| d.0), &item, &where_);
+        let title = format!("{} Info", display_name(&item.name, item.is_dir));
+        println!("mouseion: info for {}", item.name);
+        self.note(&title, lines);
+        if let Some(dir) = dir
+            && let Some(n) = self.panes.len().checked_sub(1)
+            && self.panes[n].place == Place::Note
+        {
+            self.panes[n].about = Some((dir, item, where_));
+        }
+    }
+
+    /// A key in a Get Info window (P14 K2): N renames, T sets the type and
+    /// creator, C the comment, L locks or unlocks. True if it was one.
+    fn info_key(&mut self, p: usize, c: char) -> bool {
+        let Some((dir, item, where_)) = self.panes[p]
+            .about
+            .as_ref()
+            .map(|(d, i, w)| (d.0, i.clone(), w.clone()))
+        else {
+            return false;
+        };
+        let name = item.name.clone();
+        let file = || open_named(dir, &name);
+        let mut item = item;
+        match c.to_ascii_lowercase() {
+            'n' => {
+                println!("mouseion: asking for a new name of {name}");
+                let Some(new) = dialog::ask_text(&mut self.conn, "Rename", "New name:", &name)
+                else {
+                    return true;
+                };
+                let new = new.trim();
+                if new.is_empty() || new == name {
+                    return true;
+                }
+                match fs::rename(dir, &name, dir, new) {
+                    Ok(()) => {
+                        println!("mouseion: renamed {name} to {new}");
+                        item.name = String::from(new);
+                    }
+                    Err(e) => println!("mouseion: rename {name}: {}", describe(e)),
+                }
+            }
+            't' if !item.is_dir => {
+                let Ok(f) = file() else { return true };
+                let old = fs::get_info(f.0)
+                    .map(|i| model::format_type_creator(&i))
+                    .unwrap_or_default();
+                let prompt = format!("Type and creator of {name}:");
+                let Some(text) = dialog::ask_text(&mut self.conn, "Set Type", &prompt, &old) else {
+                    return true;
+                };
+                let Some((t, cr)) = model::parse_type_creator(&text) else {
+                    println!("mouseion: set type {name}: not two four-letter words");
+                    return true;
+                };
+                let r = fs::get_info(f.0).and_then(|mut info| {
+                    info[0..4].copy_from_slice(&t);
+                    info[4..8].copy_from_slice(&cr);
+                    fs::set_info(f.0, &info)
+                });
+                match r {
+                    Ok(()) => println!("mouseion: {name} is now {text}"),
+                    Err(e) => println!("mouseion: set type {name}: {}", describe(e)),
+                }
+            }
+            'c' => {
+                let Ok(f) = file() else { return true };
+                let old = fs::get_attr(f.0, COMMENT_ATTR)
+                    .map(|v| String::from_utf8_lossy(&v).into_owned())
+                    .unwrap_or_default();
+                let prompt = format!("Comment on {name}:");
+                println!("mouseion: asking for a comment on {name}");
+                let Some(text) = dialog::ask_text(&mut self.conn, "Comment", &prompt, &old) else {
+                    return true;
+                };
+                let text = text.trim();
+                let bytes = &text.as_bytes()[..text.len().min(abi::ATTR_VALUE_MAX)];
+                match fs::set_attr(f.0, COMMENT_ATTR, bytes) {
+                    Ok(()) => println!("mouseion: comment on {name}: {} bytes", bytes.len()),
+                    Err(e) => println!("mouseion: comment on {name}: {}", describe(e)),
+                }
+            }
+            'l' => {
+                let Ok(f) = file() else { return true };
+                let r = fs::get_info(f.0).and_then(|mut info| {
+                    let on = !abi::finder::locked(&info);
+                    abi::finder::set_locked(&mut info, on);
+                    fs::set_info(f.0, &info).map(|()| on)
+                });
+                match r {
+                    Ok(on) => println!(
+                        "mouseion: {name} {}",
+                        if on { "locked" } else { "unlocked" }
+                    ),
+                    Err(e) => println!("mouseion: lock {name}: {}", describe(e)),
+                }
+            }
+            _ => return false,
+        }
+        // The note and the folder windows show the change.
+        let lines = self.info_lines(Some(dir), &item, &where_);
+        self.panes[p].note = lines;
+        if let Some((_, it, _)) = self.panes[p].about.as_mut() {
+            *it = item;
+        }
+        self.draw(p);
+        for q in 0..self.panes.len() {
+            if matches!(&self.panes[q].place, Place::Folder { path, .. } if *path == where_) {
+                self.reload(q);
+            }
+        }
+        true
     }
 
     fn menu(&mut self, menu: u32, item: u32) {
@@ -1864,39 +2128,7 @@ impl Mouseion {
                 if let Some(p) = self.order.first().and_then(|&w| self.pane(w))
                     && let Some(&i) = self.panes[p].selected.first()
                 {
-                    let item = self.panes[p].items[i].clone();
-                    let where_ = match &self.panes[p].place {
-                        Place::Folder { path, .. } => path.clone(),
-                        _ => String::from("the desktop"),
-                    };
-                    let kind = if item.volume {
-                        "volume"
-                    } else {
-                        item.kind.word()
-                    };
-                    self.note(
-                        &format!("{} Info", display_name(&item.name, item.is_dir)),
-                        vec![
-                            format!("name:  {}", item.name),
-                            format!("kind:  {kind}"),
-                            format!("size:  {} bytes", item.size),
-                            format!("where: {where_}"),
-                            format!("id:    {}", item.id),
-                            // P13 K20: the Mac's type and creator.
-                            format!("type:  {}", self.type_creator(p, i).unwrap_or_default()),
-                            if item.mtime == 0 {
-                                String::from("changed: -")
-                            } else {
-                                // Local time (P11 K40).
-                                let offset = libstela::time::offset_minutes();
-                                format!(
-                                    "changed: {} {}",
-                                    libstela::time::format(libstela::time::to_local(item.mtime)),
-                                    libstela::time::offset_text(offset)
-                                )
-                            },
-                        ],
-                    );
+                    self.get_info(p, i);
                 }
             }
             Some("Close") => {
@@ -2016,6 +2248,14 @@ impl Mouseion {
                         }
                         _ => {}
                     }
+                    return;
+                }
+                // P14 K2: N, T, C, L in a Get Info window.
+                if let Some(c) = c
+                    && let Some(p) = self.order.first().and_then(|&w| self.pane(w))
+                    && self.panes[p].about.is_some()
+                    && self.info_key(p, c)
+                {
                     return;
                 }
                 if key.code == KeyCode::Delete {
@@ -2193,6 +2433,7 @@ fn main() -> i64 {
         band: None,
         editing: None,
         backdrop: (abi::window::backdrop::PLAIN, color::DESKTOP),
+        pictures: BTreeMap::new(),
     };
     let id = desktop.id;
     m.panes.push(Pane {
@@ -2207,6 +2448,7 @@ fn main() -> i64 {
         note: Vec::new(),
         found: Vec::new(),
         sort: model::SortBy::Name,
+        about: None,
     });
     m.order.push(id);
     if let Ok(text) = fs::read_path("Data:/.stela/desktop") {

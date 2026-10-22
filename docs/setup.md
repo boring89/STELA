@@ -2,7 +2,7 @@
 
 > P12 由自動排程一次做完，使用者已於 2026-10-22 審核。
 
-第一次開機時，在 Mouseion 之前先出現 Setup.app，一頁一頁問：語言、時區、Data 卷宗、網路、套件、Classic，最後寫下「設定過了」並啟動 Mouseion。程式碼：`user/setup`（Setup.app）、`user/toolbox/src/i18n.rs`（兩種語言的字串）、`user/init`（決定要不要跑）、`kernel/src/vfs/mount.rs` 的 `format_candidates`／`format_data` 與 syscall 65 `VolumeFormat`。
+第一次開機時，在 Mouseion 之前先出現 Setup.app，一頁一頁問：語言、時區、Data 卷宗、網路、套件、Classic、顯示（P14 K2），最後寫下「設定過了」並啟動 Mouseion。程式碼：`user/setup`（Setup.app）、`user/toolbox/src/i18n.rs`（兩種語言的字串）、`user/init`（決定要不要跑）、`kernel/src/vfs/mount.rs` 的 `format_candidates`／`format_data` 與 syscall 65 `VolumeFormat`。
 
 ## 1. 比喻：新家的入住手續
 
@@ -41,7 +41,8 @@
 | network | DHCP 的位址、DNS；`pkg.conf` 有伺服器時跑一次 `pkg update`（HTTPS + 驗簽），顯示結果 |
 | packages | index 的套件（`pkgcore::ops::index`），空白鍵勾選、Enter 安裝（和 `pkg install` 同一段程式，進度印在主控台） |
 | classic | 其他卷宗（不是 Data、Initrd、Tmp）最上層的 `*.rom`、`*.img`、`*.dsk`、`*.hfs`，勾選後複製到 `Data:/Classic/`（`docs/classic.md`） |
-| done | 寫 `language`、`timezone`、`setup-done`，關視窗，啟動 Mouseion |
+| display（P14 K2） | 三行，上下選、左右改：介面倍數（自動／1x／2x，下次開機起）、熄屏時間（永不、1、5、10、30、60 分鐘，預設 10）、桌面圖樣（素色、回紋、波浪）；Enter 印 `setup: display scale=… blank=… pattern=…` |
+| done | 寫 `language`、`timezone`、`display`（`scale=auto\|1\|2`、`blank=分鐘`）、`desktop`（`pattern=…`）、`setup-done`，關視窗，啟動 Mouseion |
 
 ### 4.1 格式化：`VolumeFormat`（syscall 65）
 
@@ -62,7 +63,7 @@
 | 測試 | 內容 |
 |---|---|
 | host `toolbox::i18n` | 語言代碼、`tr`、`tr_menu` 保留快捷鍵、沒有翻譯的回原文 |
-| `make test-setup` | `boot.cfg` = `setup`、只有 `setup.img`：init 印 `first start: Setup.app`；QMP 按鍵：↓ Enter（繁體中文）、Enter（時區 +08:00）、打 `ahci0p1.1` Enter（格式化：`vfs: ahci0p1.1 formatted as Data`、掛上）、Enter、network 顯示「套件伺服器：沒有設定」（中文）、Enter（沒有套件）、Enter（沒有 Classic 映像）、Enter → `setup: done`、`mouseion: ready`；host 的 fsck、讀出 `.stela/language` = `zh-TW` 與 `setup-done` |
+| `make test-setup` | `boot.cfg` = `setup`、只有 `setup.img`：init 印 `first start: Setup.app`；QMP 按鍵：↓ Enter（繁體中文）、Enter（時區 +08:00）、打 `ahci0p1.1` Enter（格式化：`vfs: ahci0p1.1 formatted as Data`、掛上）、Enter、network 顯示「套件伺服器：沒有設定」（中文）、Enter（沒有套件）、Enter（沒有 Classic 映像）、Enter → display 頁：Right、Down、Right、Down、Right、Enter（`scale=1 blank=30 pattern=meander`）→ Enter → `setup: done`、`mouseion: ready`；host 的 fsck、讀出 `.stela/language` = `zh-TW`、`setup-done`、`display`、`desktop`；P14 K2：同一顆磁碟用一般的 ESP 再開機，`windowserver: scale 1`（設定檔生效；2560 寬本來是 2） |
 
 套件頁的安裝和 `pkg install` 是同一段程式（`make test-pkg`）；新格式化的 Data 沒有 `pkg.conf`，所以 test-setup 的套件頁是空的（計畫外的簡化）。
 

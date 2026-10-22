@@ -6,11 +6,13 @@
 //! has no `.stela/setup-done` (or with the boot option `setup`).
 //!
 //! ```text
-//!  Language ─► Time zone ─► Data volume ─► Network ─► Packages ─► Classic ─► Done
+//!  Language ─► Time zone ─► Data volume ─► Network ─► Packages ─► Classic ─► Display ─► Done
 //!  English/繁體中文  +08:00     found, or format an     DHCP, DNS,   from the    ROM and     setup-done,
 //!                              empty place (type its   the package  signed      System      language,
 //!                              name to confirm)        server       index       images      timezone;
 //!                                                                                           Mouseion
+//!  Display (P14 K2): the interface scale, when the screen sleeps, the
+//!  desktop's pattern (Data:/.stela/display, Data:/.stela/desktop).
 //! ```
 //!
 //! Everything is done with the keyboard: arrows choose, Space marks,
@@ -49,6 +51,7 @@ enum Page {
     Network,
     Packages,
     Classic,
+    Display,
     Done,
 }
 
@@ -61,6 +64,7 @@ impl Page {
             Page::Network => "network",
             Page::Packages => "packages",
             Page::Classic => "classic",
+            Page::Display => "display",
             Page::Done => "done",
         }
     }
@@ -72,7 +76,8 @@ impl Page {
             Page::Data => Page::Network,
             Page::Network => Page::Packages,
             Page::Packages => Page::Classic,
-            Page::Classic | Page::Done => Page::Done,
+            Page::Classic => Page::Display,
+            Page::Display | Page::Done => Page::Done,
         }
     }
 
@@ -83,7 +88,8 @@ impl Page {
             Page::Network => Page::Data,
             Page::Packages => Page::Network,
             Page::Classic => Page::Packages,
-            Page::Done => Page::Classic,
+            Page::Display => Page::Classic,
+            Page::Done => Page::Display,
         }
     }
 }
@@ -107,7 +113,23 @@ struct Setup {
     cursor: usize,
     /// The last thing that happened (a result or an error).
     status: String,
+    /// The display page (P14 K2): the scale (0 automatic, 1, 2), the
+    /// index in [`BLANK_MINUTES`], the desktop's pattern.
+    scale: u32,
+    blank: usize,
+    pattern: u32,
 }
+
+/// The choices of "sleep after" (0: never); 10 is the window server's
+/// default.
+const BLANK_MINUTES: [u32; 6] = [0, 1, 5, 10, 30, 60];
+
+/// The patterns, in the page's order.
+const PATTERNS: [u32; 3] = [
+    abi::window::backdrop::PLAIN,
+    abi::window::backdrop::MEANDER,
+    abi::window::backdrop::WAVES,
+];
 
 impl Setup {
     fn new() -> Setup {
@@ -126,6 +148,9 @@ impl Setup {
             images: Vec::new(),
             cursor: 0,
             status: String::new(),
+            scale: 0,
+            blank: 3,
+            pattern: abi::window::backdrop::PLAIN,
         }
     }
 
@@ -286,6 +311,35 @@ impl Setup {
                 }
                 tr("Classic")
             }
+            Page::Display => {
+                out.push(String::from(tr(
+                    "Up and down choose a line, left and right change it.",
+                )));
+                out.push(String::new());
+                let scale = match self.scale {
+                    0 => String::from(tr("automatic")),
+                    n => format!("{n}x"),
+                };
+                let blank = match BLANK_MINUTES[self.blank] {
+                    0 => String::from(tr("never")),
+                    m => format!("{m} {}", tr("minutes")),
+                };
+                let pattern = tr(abi::window::backdrop::name(self.pattern));
+                let rows = [
+                    format!(
+                        "{}: < {scale} > {}",
+                        tr("Interface scale"),
+                        tr("(from the next start)")
+                    ),
+                    format!("{}: < {blank} >", tr("Sleep after")),
+                    format!("{}: < {pattern} >", tr("Desktop pattern")),
+                ];
+                for (i, row) in rows.into_iter().enumerate() {
+                    let mark = if i == self.cursor { ">" } else { " " };
+                    out.push(format!("{mark} {row}"));
+                }
+                tr("Display")
+            }
             Page::Done => {
                 out.push(String::from(tr("STELA is ready. Press Enter to start.")));
                 tr("Done")
@@ -305,7 +359,30 @@ impl Setup {
             Page::Data => self.candidates.len(),
             Page::Packages => self.packages.len(),
             Page::Classic => self.images.len(),
+            Page::Display => 3,
             _ => 0,
+        }
+    }
+
+    /// Left (`forward` false) or Right on the display page.
+    fn change(&mut self, forward: bool) {
+        let step = |at: usize, n: usize| {
+            if forward {
+                (at + 1) % n
+            } else {
+                (at + n - 1) % n
+            }
+        };
+        match self.cursor {
+            0 => self.scale = step(self.scale as usize, 3) as u32,
+            1 => self.blank = step(self.blank, BLANK_MINUTES.len()),
+            _ => {
+                let at = PATTERNS
+                    .iter()
+                    .position(|&p| p == self.pattern)
+                    .unwrap_or(0);
+                self.pattern = PATTERNS[step(at, PATTERNS.len())];
+            }
         }
     }
 
@@ -394,6 +471,17 @@ impl Setup {
                 }
                 return false;
             }
+            Page::Display => {
+                let scale = match self.scale {
+                    0 => String::from("auto"),
+                    n => format!("{n}"),
+                };
+                println!(
+                    "setup: display scale={scale} blank={} pattern={}",
+                    BLANK_MINUTES[self.blank],
+                    abi::window::backdrop::name(self.pattern)
+                );
+            }
             Page::Done => return true,
             _ => {}
         }
@@ -465,6 +553,15 @@ fn finish(s: &Setup) -> Result<(), abi::Error> {
     let sign = if m < 0 { '-' } else { '+' };
     let zone = format!("{sign}{:02}:{:02}\n", m.abs() / 60, m.abs() % 60);
     ops::write_file("Data:/.stela/timezone", zone.as_bytes())?;
+    // P14 K2: the display page; the window server reads these at start.
+    let scale = match s.scale {
+        0 => String::from("auto"),
+        n => format!("{n}"),
+    };
+    let display = format!("scale={scale}\nblank={}\n", BLANK_MINUTES[s.blank]);
+    ops::write_file("Data:/.stela/display", display.as_bytes())?;
+    let desktop = format!("pattern={}\n", abi::window::backdrop::name(s.pattern));
+    ops::write_file("Data:/.stela/desktop", desktop.as_bytes())?;
     ops::write_file("Data:/.stela/setup-done", b"1\n")
 }
 
@@ -571,6 +668,9 @@ fn main() -> i64 {
                 if setup.cursor + 1 < setup.list_len() {
                     setup.cursor += 1;
                 }
+            }
+            KeyCode::Left | KeyCode::Right if setup.page == Page::Display => {
+                setup.change(key.code == KeyCode::Right);
             }
             KeyCode::Space if setup.page == Page::Packages => {
                 if let Some(p) = setup.packages.get_mut(setup.cursor) {

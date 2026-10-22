@@ -609,10 +609,38 @@ pub fn parse_display(text: &str) -> Option<u64> {
     after
 }
 
+/// The interface scale `Data:/.stela/display` asks for (P14 K2:
+/// `scale=1`, `scale=2`; `auto` or nothing: `None`). The boot option
+/// `scale=` wins over it.
+pub fn parse_display_scale(text: &str) -> Option<u32> {
+    let mut scale = None;
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once('=')
+            && k.trim() == "scale"
+        {
+            scale = match v.trim() {
+                "1" => Some(1),
+                "2" => Some(2),
+                _ => None,
+            };
+        }
+    }
+    scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn display_scale_setting() {
+        assert_eq!(parse_display_scale("scale=1\nblank=5\n"), Some(1));
+        assert_eq!(parse_display_scale("blank=5\nscale = 2"), Some(2));
+        assert_eq!(parse_display_scale("scale=auto"), None);
+        assert_eq!(parse_display_scale("scale=3"), None);
+        assert_eq!(parse_display("scale=1\nblank=5\n"), Some(300_000_000_000));
+    }
 
     const M: Metrics = Metrics::for_font(16);
 

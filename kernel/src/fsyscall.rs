@@ -223,6 +223,7 @@ pub fn dir_remove(process: &Process, dir: u64, ptr: u64, len: u64) -> Result<u64
     let (node, _) = dir_of(process, dir, Rights::WRITE)?;
     let name = user_bytes(process, ptr, len, abi::NAME_MAX as u64)?;
     let name = single(&name).map_err(|_| Error::InvalidArgument)?;
+    node.volume.fs.check_unlocked(node.id, name)?;
     node.volume.fs.remove(node.id, name)?;
     Ok(0)
 }
@@ -239,6 +240,7 @@ pub fn dir_rename(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
     let new = user_bytes(process, new_ptr, new_len, abi::NAME_MAX as u64)?;
     let old = single(&old).map_err(|_| Error::InvalidArgument)?;
     let new = single(&new).map_err(|_| Error::InvalidArgument)?;
+    from.volume.fs.check_unlocked(from.id, old)?;
     from.volume.fs.rename(from.id, old, to.id, new)?;
     Ok(0)
 }

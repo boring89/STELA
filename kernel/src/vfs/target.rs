@@ -70,6 +70,18 @@ pub trait FileSystem: Send + Sync {
     fn get_info(&self, _id: u64) -> Result<[u8; 32], Error> {
         Err(Error::NotSupported)
     }
+    /// P14 K2: `AccessDenied` when item `name` of `dir` is locked (the
+    /// Finder flag `kNameLocked`, `abi::finder`): it is not deleted,
+    /// renamed or moved. A missing item passes (the operation says so).
+    fn check_unlocked(&self, dir: u64, name: &str) -> Result<(), Error> {
+        let Ok(item) = self.lookup(dir, name) else {
+            return Ok(());
+        };
+        match self.get_info(item.id) {
+            Ok(info) if abi::finder::locked(&info) => Err(Error::AccessDenied),
+            _ => Ok(()),
+        }
+    }
     /// Stores the item's Finder information.
     fn set_info(&self, _id: u64, _info: &[u8; 32]) -> Result<(), Error> {
         Err(Error::NotSupported)

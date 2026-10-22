@@ -126,6 +126,14 @@ Mouseion 啟動的程式（bundle、單一程式、Linux 程式，雙擊文件�
 - **Mouseion > Preferences...**：桌面圖樣（Plain、Meander 回紋、Waves 波浪；`toolbox::backdrop`，草稿）存到 `Data:/.stela/desktop`（`pattern=…`，`color=RRGGBB` 可以手改），送 `SET_BACKDROP` 讓視窗伺服器換；Mouseion 自己的圖示直條用同一個圖樣、對齊同一個螢幕格線。
 - **Special > Sleep Display**：送 `BLANK`，視窗伺服器立刻把螢幕變黑（`docs/window.md` §12）。
 
+### 5.w P14 K2：Get Info 的編輯、鎖定、備註、bundle 的圖示（自動排程一次做完，**使用者尚未審核**）
+
+- **Get Info**（Alt-I）的資訊視窗多三行：`comment:`（延伸屬性 `stela.mouseion.comment`，UTF-8，最多 3 KiB）、`locked: yes/no`、提示 `N: name  T: type  C: comment  L: lock`。視窗在前面時按 **N** 改名、**T** 改 type／creator、**C** 改備註（都是 `dialog::ask_text`，出現前印 `mouseion: asking for …`）、**L** 鎖定／解鎖（`mouseion: NAME locked`／`unlocked`）；改完資訊視窗重畫、顯示那個資料夾的視窗重新列出。計畫寫「Get Info 可編輯」——工具箱沒有多欄位的編輯視窗，所以用按鍵叫出對話框（**計畫外的簡化**）。資訊視窗自己留一個資料夾的 handle（從卷宗的根依路徑打開，所以帶 `MANAGE`；`VolumeOpenById` 給的 handle 永遠沒有 `MANAGE`），資料夾視窗先關掉也能改。
+- **鎖定**：Finder 資訊的 `fdFlags`（bytes 8–9，大端序）的 `kNameLocked` 0x1000（`abi::finder`）。HFS 真正的「locked」是目錄記錄的 `filFlags` bit 0，eHFS 沒有那一欄，所以借用 Finder 旗標（Classic 的 FSM 卷宗看得到同一個位元）。**kernel 擋**：`DirRemove`、`DirRename`（含搬進垃圾桶）與 Linux 的 `unlinkat`、`renameat`（來源與被取代的目標）遇到鎖定的項目回 `AccessDenied`（`FileSystem::check_unlocked`）；內容照樣可以寫（計畫只要求不能刪與改名）。
+- **P13 的 File > Set Type... 修正**：它用 `VolumeOpenById` 打開檔案，沒有 `MANAGE`，`FileSetInfo` 一定失敗（沒有測試所以沒發現）；P14 K2 改成從卷宗的根依名字打開（`open_folder_path` + `open_named`）。
+- **bundle 的圖示**：`Name.app/icon-32.ppm`（1x）與 `icon-64.ppm`（2x）——小螢幕（圖示 32 以下）是 `icon-16`／`icon-32`，也就是邏輯大小與兩倍。binary PPM（P6，8 位元，`#FF00FF` 透明，和 `assets/` 一樣；`toolbox::icons::parse_ppm`，host 測試），大小不對就不用。2x 沒有時把 1x 放大兩倍。每個 bundle 讀一次、記在記憶體（`Mouseion::pictures`，以資料夾路徑 + id 為鍵；換了圖要重開 Mouseion），印 `mouseion: NAME has its own icon`。只在圖示檢視；清單檢視仍是 16 的 `app`。Initrd 的 Echo.app 用 stela 的草稿圖當例子（Makefile 的 `BUNDLE_ICONS`）。
+- 測試：`fstest`（鎖定的檔案刪不掉、改不了名，解鎖後可以）；`make test-mouseion` 的第三次開機（乾淨的磁碟）：Data → 點 welcome.txt → Alt-I → L → C（打 `hello note`）→ N（改名被拒 `access denied`）→ L；第一次開機打開 Initrd 時印 `Echo.app has its own icon`；host `toolbox::icons` 的 PPM 解析與透明。
+
 ## 6. Viewer（`Viewer.app`，暫名）
 
 `Viewer 路徑`：`Volume:/path` 或相對工作資料夾；最多 1 MiB；80 欄折行（Tab 到 8 的倍數、控制字元略過、壞 UTF-8 顯示 U+FFFD）；視窗標題 = 檔名；方向鍵、Page Up／Down、Home／End、捲軸捲動；File > Close 或關閉鈕結束。開檔時在 serial 印 `viewer: <路徑>: N lines`。
@@ -154,7 +162,8 @@ P11：host `model`——開著的視窗清單的格式往返與壞行、框選�
 - P11 起有拖曳影子（只是外框，只在來源視窗內）、多選、刪除（沒有垃圾桶，直接刪）、改名；沒有複製／貼上、復原。
 - 視窗內的捲動只有垂直。
 - 開機重開視窗在 Terminal 之後開，所以 Terminal 的視窗可能蓋在它們上面。
-- bundle 的自訂圖示（`icon-*.ppm`）還沒讀。
+- bundle 的自訂圖示（P14 K2）只在圖示檢視、讀一次就記住（換圖要重開 Mouseion）。
+- Get Info 的編輯是按鍵叫出對話框（不是可直接編輯的欄位）；鎖定只擋刪除、改名與搬移，不擋寫入。
 - 跨卷宗複製把整個檔案讀進記憶體；同名檔案已存在時失敗（`Exists`）。
 - 前後順序是 Mouseion 自己記的（`FOCUS` 事件），可能和視窗伺服器的不同（例如別的程式的視窗）。
 - P13：Find 只找名字（不找內容）、一次一個卷宗、結果不會自己更新；Set Type 沒有選單式的 type 清單；桌面圖樣只有三種（草稿）、顏色只能手改檔案。

@@ -119,6 +119,10 @@ user: $(CHEWING_DATA)
 # test programs in its linux/ folder, the bundles as Name.app/ folders),
 # with fixed owners and times so that the same programs give the same
 # bytes.
+# P14 K2 (docs/mouseion.md §4.2): bundles with their own icon (NAME:the
+# images' prefix; -32.ppm for 1x, -64.ppm for 2x). Echo.app shows the
+# stela (a draft, to tell it from the usual app icon).
+BUNDLE_ICONS := Echo:assets/stela
 initrd: user linux-tests
 	rm -rf $(INITRD_ROOT)
 	mkdir -p $(INITRD_ROOT)
@@ -138,6 +142,8 @@ initrd: user linux-tests
 	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
 		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
 		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
+	for b in $(BUNDLE_ICONS); do n=$${b%%:*}; f=$${b#*:}; \
+		cp $$f-32.ppm $(INITRD_ROOT)/$$n.app/icon-32.ppm; cp $$f-64.ppm $(INITRD_ROOT)/$$n.app/icon-64.ppm; done
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
 		-cf $(INITRD) -C $(INITRD_ROOT) .
 
@@ -622,13 +628,16 @@ test-setup: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--send-keys "setup: page network" "ret" \
 		--send-keys "setup: page packages" "ret" \
 		--send-keys "setup: page classic" "ret" \
+		--send-keys "setup: page display" "right down right down right ret" \
 		--send-keys "setup: page done" "ret" \
 		--expect "init: first start: Setup.app" --expect "setup: page language" \
 		--expect "setup: language zh-TW" --expect "setup: time zone +08:00" \
 		--expect "setup: page data" --expect "setup: formatting ahci0p1.1" \
 		--expect "vfs: ahci0p1.1 formatted as Data" --expect "setup: ahci0p1.1 is the Data volume" \
 		--expect "setup: 套件伺服器: 沒有設定" --expect "setup: page network" --expect "setup: page packages" \
-		--expect "setup: page classic" --expect "setup: page done" --expect "setup: done" \
+		--expect "setup: page classic" --expect "setup: page display" \
+		--expect "setup: display scale=1 blank=30 pattern=meander" \
+		--expect "setup: page done" --expect "setup: done" \
 		--expect "mouseion: ready" \
 		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SETUP) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/setup.img -device ide-hd,drive=sata1,bus=ide.1
@@ -636,6 +645,16 @@ test-setup: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	$(EHFS_TOOLS)/ehfs-cp --offset 2048 $(IMAGES)/setup.img out /.stela/language $(BUILD)/setup-language
 	grep -q zh-TW $(BUILD)/setup-language
 	$(EHFS_TOOLS)/ehfs-cp --offset 2048 $(IMAGES)/setup.img out /.stela/setup-done $(BUILD)/setup-done
+	# P14 K2: the display page's files; the window server uses the scale
+	# from the next start (the boot option scale= would win).
+	$(EHFS_TOOLS)/ehfs-cp --offset 2048 $(IMAGES)/setup.img out /.stela/display $(BUILD)/setup-display
+	printf 'scale=1\nblank=30\n' | cmp - $(BUILD)/setup-display
+	$(EHFS_TOOLS)/ehfs-cp --offset 2048 $(IMAGES)/setup.img out /.stela/desktop $(BUILD)/setup-desktop
+	printf 'pattern=meander\n' | cmp - $(BUILD)/setup-desktop
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-setup-2.log \
+		--expect "windowserver: scale 1" --expect "mouseion: ready" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/setup.img -device ide-hd,drive=sata1,bus=ide.1
 
 # Measurements (P11, docs/bench.md): the normal kernel with the AHCI test
 # disk and user networking, no KVM; the shell runs bench (memory on the
@@ -1103,7 +1122,8 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "mouseion: asking" "\n" \
 		--click "mouseion: delete Classic.app" 512 600 2 \
 		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
-		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
+		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: Echo.app has its own icon" \
+		--expect "mouseion: opened Initrd:/" \
 		--expect "mouseion: asking: Delete \"Classic.app\"?" \
 		--expect "mouseion: delete Classic.app: read-only volume" \
 		--expect "mouseion: started Terminal" --expect "STELA shell" \
@@ -1132,6 +1152,27 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "mouseion: opened Data:/" --expect "mouseion: opened Initrd:/" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	# P14 K2: Get Info's keys on welcome.txt: L locks it, C sets a
+	# comment, N cannot rename it while locked, L unlocks it.
+	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-mouseion-info.img
+	python3 tools/qemu_test.py --timeout 150 --log $(BUILD)/test-mouseion-info.log \
+		--click "mouseion: started Terminal" 2448 240 2 \
+		--click "mouseion: opened Data:/" 432 392 1 \
+		--send-keys "mouseion: selected welcome.txt" "alt-i" \
+		--send-keys "mouseion: info for welcome.txt" "l" \
+		--send-keys "mouseion: welcome.txt locked" "c" \
+		--type "mouseion: asking for a comment on welcome.txt" "hello note\n" \
+		--send-keys "mouseion: comment on welcome.txt" "n" \
+		--type "mouseion: asking for a new name of welcome.txt" "2\n" \
+		--send-keys "mouseion: rename welcome.txt" "l" \
+		--expect "mouseion: opened Data:/" --expect "mouseion: selected welcome.txt" \
+		--expect "mouseion: info for welcome.txt" --expect "mouseion: welcome.txt locked" \
+		--expect "mouseion: comment on welcome.txt: 10 bytes" \
+		--expect "mouseion: rename welcome.txt: access denied" \
+		--expect "mouseion: welcome.txt unlocked" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion-info.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 
 # The sandbox (P13 K17, docs/sandbox.md): Mouseion starts Data:/Sandbox.app

@@ -151,6 +151,22 @@ const ZH_TW: &[(&str, &str)] = &[
         "空白鍵選擇，Enter 把它們複製到 Data:/Classic/（或繼續）。",
     ),
     ("None found. Press Enter.", "沒有找到。按 Enter。"),
+    // P14 K2: the display page.
+    ("Display", "顯示"),
+    (
+        "Up and down choose a line, left and right change it.",
+        "上下選一行，左右改變它。",
+    ),
+    ("Interface scale", "介面倍數"),
+    ("automatic", "自動"),
+    ("Sleep after", "熄屏時間"),
+    ("never", "永不"),
+    ("minutes", "分鐘"),
+    ("Desktop pattern", "桌面圖樣"),
+    ("plain", "素色"),
+    ("meander", "回紋"),
+    ("waves", "波浪"),
+    ("(from the next start)", "（下次開機起）"),
     ("Done", "完成"),
     (
         "STELA is ready. Press Enter to start.",

@@ -903,6 +903,44 @@ pub mod spawn {
 /// layout is in `docs/mouseion.md`.
 pub const FINDER_INFO_SIZE: usize = 32;
 
+/// The Finder flags in Finder information (P14 K2): as the Mac's `FInfo`
+/// (Inside Macintosh: Macintosh Toolbox Essentials, "Finder Interface"):
+/// type 0..4, creator 4..8, `fdFlags` 8..10 (big-endian).
+pub mod finder {
+    /// Where `fdFlags` is.
+    pub const FLAGS: usize = 8;
+    /// `kNameLocked`: the kernel refuses to delete, rename or move the
+    /// item (`docs/vfs.md` §4.2; HFS's own lock bit is in the catalog
+    /// record, which STELA does not have).
+    pub const NAME_LOCKED: u16 = 0x1000;
+
+    /// The flags of `info`.
+    pub fn flags(info: &[u8]) -> u16 {
+        match info.get(FLAGS..FLAGS + 2) {
+            Some(b) => u16::from_be_bytes([b[0], b[1]]),
+            None => 0,
+        }
+    }
+
+    /// Whether `info` says locked.
+    pub fn locked(info: &[u8]) -> bool {
+        flags(info) & NAME_LOCKED != 0
+    }
+
+    /// Sets or clears the lock in `info`.
+    pub fn set_locked(info: &mut [u8], on: bool) {
+        let f = flags(info);
+        let f = if on {
+            f | NAME_LOCKED
+        } else {
+            f & !NAME_LOCKED
+        };
+        if let Some(b) = info.get_mut(FLAGS..FLAGS + 2) {
+            b.copy_from_slice(&f.to_be_bytes());
+        }
+    }
+}
+
 /// Longest extended attribute name and value (`FileSetAttr`; eHFS's
 /// limits).
 pub const ATTR_NAME_MAX: usize = 255;
@@ -1879,6 +1917,15 @@ mod tests {
         assert_eq!(Syscall::FileGetInfo.raw(), 37);
         assert_eq!(Syscall::FileSetInfo.raw(), 38);
         assert_eq!(FINDER_INFO_SIZE, 32);
+        let mut info = [0u8; 32];
+        info[8] = 0x01;
+        assert!(!finder::locked(&info));
+        finder::set_locked(&mut info, true);
+        assert_eq!(&info[8..10], &[0x11, 0x00]);
+        assert!(finder::locked(&info));
+        finder::set_locked(&mut info, false);
+        assert_eq!(&info[8..10], &[0x01, 0x00]);
+        assert!(!finder::locked(&[]));
         assert_eq!(Syscall::from_raw(999), None);
         assert_eq!(Syscall::from_raw(u64::MAX), None);
     }

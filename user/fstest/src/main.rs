@@ -89,6 +89,30 @@ fn run() -> Result<(), i64> {
     check(31, fs::set_info(file, &info).is_ok(), "set Finder info")?;
     check(32, fs::get_info(file) == Ok(info), "Finder info back")?;
     check(33, fs::set_info(dir, &info).is_ok(), "folder Finder info")?;
+    // P14 K2: a locked item (Finder flag kNameLocked) is not deleted or
+    // renamed until it is unlocked.
+    let locked =
+        fs::open(dir, "locked.txt", open::READ | open::WRITE | open::CREATE).map_err(|_| 39i64)?;
+    let mut flags = [0u8; 32];
+    libstela::abi::finder::set_locked(&mut flags, true);
+    check(39, fs::set_info(locked, &flags).is_ok(), "lock")?;
+    check(
+        39,
+        fs::remove(dir, "locked.txt") == Err(Error::AccessDenied),
+        "a locked file stays",
+    )?;
+    check(
+        39,
+        fs::rename(dir, "locked.txt", dir, "moved.txt") == Err(Error::AccessDenied),
+        "a locked file keeps its name",
+    )?;
+    check(39, fs::set_info(locked, &[0; 32]).is_ok(), "unlock")?;
+    let _ = libstela::ipc::handle_close(locked);
+    check(
+        39,
+        fs::remove(dir, "locked.txt").is_ok(),
+        "unlocked, it goes",
+    )?;
     // Extended attributes (P11).
     check(
         38,

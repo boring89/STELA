@@ -86,7 +86,7 @@ abi/src/lib.rs                   sysinfo::FramebufferInfo、object_kind::FRAMEBU
 
 介面有一個 **scale**（1 或 2）：一個邏輯像素是 scale × scale 個實體像素。
 
-- **來源**（`abi::sysinfo::ui_scale`，kernel 的 `SysInfo(FRAMEBUFFER)` 放進 `FramebufferInfo::scale`）：`boot.cfg` 的 `scale=1`／`scale=2`；沒有就看寬度：2560 以上是 2，否則 1。QEMU 的 OVMF 給 2560×1600，所以測試預設是 2。
+- **來源**（`abi::sysinfo::ui_scale`，kernel 的 `SysInfo(FRAMEBUFFER)` 放進 `FramebufferInfo::scale`）：`boot.cfg` 的 `scale=1`／`scale=2`；沒有就看寬度：2560 以上是 2，否則 1。QEMU 的 OVMF 給 2560×1600，所以測試預設是 2。P14 K2：`boot.cfg` 沒有 `scale=` 時，視窗伺服器開機讀 `Data:/.stela/display` 的 `scale=1|2|auto`（Setup 的顯示頁寫；`auto` 或沒有就用 kernel 的），印 `windowserver: scale N`。kernel 的主控台與 panic 畫面不看這個檔。
 - **視窗協定 v3**（`docs/window.md` §3）：程式看到的一切座標與大小都是邏輯像素；伺服器在協定的邊界換算（收到請求 ×scale、送出事件 ÷scale），裡面全是實體像素；視窗的 Memory 是邏輯大小 × scale。
 - **toolbox**（`docs/toolbox.md` §7）：`Canvas` 帶 scale，方法吃邏輯座標；8x16 的字在 2x 時用 16x32 的字型畫（清楚，不是放大的點陣），圖示用兩倍大的那張（`icons::find(name, size * 2)`），其他（線、填色、點陣、影像）放大成 scale × scale 的方塊。程式的版面全用邏輯像素：`font_for(conn.screen.0)` 在邏輯 1280 寬時給 8x16，2x 畫出來就是以前直接用 16x32 的樣子。
 - 伺服器自己的字（選單列、標題列）在 scale 2 時是 16x32。游標 2 倍。

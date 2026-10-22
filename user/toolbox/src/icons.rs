@@ -94,7 +94,101 @@ impl Canvas<'_> {
 }
 
 /// A value no icon colour has (they are 24-bit): the transparent pixel.
-const TRANSPARENT: Color = 0xFF00_0000;
+pub const TRANSPARENT: Color = 0xFF00_0000;
+
+/// A program's own icon (P14 K6: `Name.app/icon-32.ppm`, `icon-64.ppm`):
+/// a square image, [`TRANSPARENT`] where the file had `#FF00FF` (as the
+/// files in `assets/`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Picture {
+    /// Width and height in pixels.
+    pub size: u32,
+    /// `0x00RRGGBB` or [`TRANSPARENT`], row by row.
+    pub pixels: alloc::vec::Vec<u32>,
+}
+
+/// A binary PPM (`P6`, 8 bits a channel, `#` comments) that is square
+/// and `size` pixels wide.
+pub fn parse_ppm(data: &[u8], size: u32) -> Option<Picture> {
+    // The header: magic, width, height, maxval, then one whitespace byte.
+    let mut fields = [0u32; 3];
+    let mut at = 2;
+    if data.get(..2)? != b"P6" {
+        return None;
+    }
+    for f in fields.iter_mut() {
+        loop {
+            match *data.get(at)? {
+                b'#' => {
+                    while *data.get(at)? != b'\n' {
+                        at += 1;
+                    }
+                }
+                c if c.is_ascii_whitespace() => at += 1,
+                _ => break,
+            }
+        }
+        let start = at;
+        while data.get(at).is_some_and(u8::is_ascii_digit) {
+            at += 1;
+        }
+        *f = core::str::from_utf8(&data[start..at]).ok()?.parse().ok()?;
+    }
+    let [w, h, max] = fields;
+    if w != size || h != size || max != 255 || !data.get(at)?.is_ascii_whitespace() {
+        return None;
+    }
+    let body = data.get(at + 1..)?;
+    let n = (size * size) as usize;
+    if body.len() < n * 3 {
+        return None;
+    }
+    let pixels = body[..n * 3]
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|p| match p {
+            [0xFF, 0x00, 0xFF] => TRANSPARENT,
+            _ => u32::from(p[0]) << 16 | u32::from(p[1]) << 8 | u32::from(p[2]),
+        })
+        .collect();
+    Some(Picture { size, pixels })
+}
+
+impl Canvas<'_> {
+    /// Draws a program's own icon at (x, y): `big` (twice the size) at
+    /// scale 2 when there is one, else `small` (doubled at scale 2).
+    pub fn picture(
+        &mut self,
+        x: i32,
+        y: i32,
+        small: &Picture,
+        big: Option<&Picture>,
+        selected: bool,
+    ) {
+        let dark = |p: &Picture| -> alloc::vec::Vec<u32> {
+            p.pixels
+                .iter()
+                .map(|&c| {
+                    if selected && c != TRANSPARENT {
+                        darken(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect()
+        };
+        if self.scale() == 2
+            && let Some(big) = big.filter(|b| b.size == small.size * 2)
+        {
+            let s = big.size as i32;
+            self.image_phys(x * 2, y * 2, s, s, &dark(big), Some(TRANSPARENT));
+            return;
+        }
+        let s = small.size as i32;
+        self.image(x, y, s, s, &dark(small), Some(TRANSPARENT));
+    }
+}
 
 /// A colour at half brightness.
 fn darken(c: Color) -> Color {
@@ -142,5 +236,27 @@ mod tests {
         c.icon(0, 0, icon, true);
         assert!(!c.pixels().contains(&color::TERRACOTTA));
         assert_eq!(size_for(2560), 64);
+    }
+
+    #[test]
+    fn program_pictures() {
+        // A 2x2 picture with a comment and a transparent corner.
+        let mut ppm = b"P6\n# made by hand\n2 2\n255\n".to_vec();
+        ppm.extend_from_slice(&[0xFF, 0x00, 0xFF, 1, 2, 3, 0, 0, 0, 0xFF, 0xFF, 0xFF]);
+        let p = parse_ppm(&ppm, 2).expect("parses");
+        assert_eq!(p.pixels, vec![TRANSPARENT, 0x010203, 0, 0xFFFFFF]);
+        assert_eq!(parse_ppm(&ppm, 4), None, "wrong size");
+        assert_eq!(parse_ppm(&ppm[..ppm.len() - 1], 2), None, "short");
+        assert_eq!(parse_ppm(b"P3\n2 2\n255\n", 2), None);
+        // The draft app icon of assets/ is one too.
+        let app = include_bytes!("../../../assets/app-32.ppm");
+        let p = parse_ppm(app, 32).expect("assets/app-32.ppm");
+        assert!(p.pixels.contains(&TRANSPARENT));
+        // Drawn: the transparent pixels leave the background.
+        let mut px = vec![color::WHITE; 32 * 32];
+        let mut c = Canvas::new(&mut px, 32, 32, 32);
+        c.picture(0, 0, &p, None, false);
+        assert_eq!(c.pixels()[0], color::WHITE);
+        assert!(c.pixels().iter().any(|&x| x != color::WHITE));
     }
 }

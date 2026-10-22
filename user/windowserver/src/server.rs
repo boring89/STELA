@@ -21,8 +21,8 @@ use libstela::{Error, Handle, Message, Rights, bootstrap, println, tag};
 use toolbox::draw::{Canvas, Font, Rect, color, font_for};
 use windowserver::compose::{
     Clicks, Damage, Menu, Metrics, Part, Stack, Window, backdrop_rows, find_shortcut, ime_boxes,
-    menu_box, menu_item_at, menu_titles, parse_audio, parse_display, parse_menus, shortcut,
-    visible_parts, volume_at, volume_panel,
+    menu_box, menu_item_at, menu_titles, parse_audio, parse_display, parse_display_scale,
+    parse_menus, shortcut, visible_parts, volume_at, volume_panel,
 };
 
 /// The pointer: `X` outline, `.` fill, space transparent (STELA's own
@@ -2528,7 +2528,6 @@ pub fn main() -> i64 {
         size,
         ..
     } = info;
-    println!("windowserver: scale {}", info.scale.clamp(1, 2));
     let fb = match Mapping::new(bootstrap::BOOTSTRAP, u64::from(size), true) {
         Ok(fb) => fb,
         Err(e) => {
@@ -2553,7 +2552,17 @@ pub fn main() -> i64 {
     // P13 K13: the scale the kernel chose (boot option scale=, or 2 from
     // 2560 pixels wide); at 2 the server's own text is the 16x32 font,
     // as the clients' is.
-    let ui = info.scale.clamp(1, 2) as i32;
+    // P14 K2: without the boot option, Data:/.stela/display may choose.
+    let display = fs::read_path("Data:/.stela/display")
+        .ok()
+        .map(|t| String::from_utf8_lossy(&t).into_owned());
+    let chosen = display.as_deref().and_then(parse_display_scale);
+    let ui = match chosen {
+        Some(s) if abi::sysinfo::cmdline_option(&process::cmdline(), "scale").is_none() => s,
+        _ => info.scale,
+    }
+    .clamp(1, 2) as i32;
+    println!("windowserver: scale {ui}");
     let font = if ui == 2 {
         &toolbox::draw::LARGE
     } else {
@@ -2602,8 +2611,8 @@ pub fn main() -> i64 {
         switcher: None,
     };
     // P13 K21: the display's sleep (blank=MINUTES, or Ns for seconds).
-    if let Ok(text) = fs::read_path("Data:/.stela/display")
-        && let Some(after) = parse_display(&String::from_utf8_lossy(&text))
+    if let Some(text) = &display
+        && let Some(after) = parse_display(text)
     {
         server.blank_after = after;
     }

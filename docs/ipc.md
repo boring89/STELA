@@ -310,7 +310,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 
 ## 13. WaitSet：同時等多個物件（P11）
 
-> P11 由自動排程一次做完，**使用者尚未審核**。
+> P11 由自動排程一次做完，使用者已於 2026-10-22 審核。
 
 ### 13.1 比喻：總機的燈板
 
@@ -371,7 +371,7 @@ P5 加了 `[3]`（`CWD`，工作目錄，`docs/vfs.md` §5）；P6 起 `ProcessS
 | host `net` | `Stack::readiness`：連線中、已連線可寫、listener 有連線、有資料可讀、對方關閉後 `readable + closed`、UDP 可寫 |
 | selftest（`proctest` 的第 15–22 步；P11 K23 加第 29–30 步：Thread handle 進 WaitSet 等到 `EXITED`） | port + tty master（`READABLE`）+ 子行程一起等：不等 → `TimedOut`；送信 → key 1；印到 tty → key 2；kill 子行程 → key 3 `EXITED`；移除兩次 → `NotFound`；另一個執行緒 5 ms 後送信叫醒正在等的主執行緒（至少等了 4 ms）；關掉的 port 自動移出；WaitSet 放進自己 → `WrongType`；未定義的 mask → `InvalidArgument` |
 
-## 14. Pipe（P11，使用者尚未審核）
+## 14. Pipe（P11，使用者已於 2026-10-22 審核）
 
 **比喻**：一條 64 KiB 的水管，一頭灌、一頭接。灌的人在水管滿時等；接的人在水管空時等；灌的人全走了，接的人把剩下的接完就知道「沒了」（讀到 0）；接的人全走了，灌的人會被告知「沒人要」（`PeerClosed`）。
 

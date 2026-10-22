@@ -43,7 +43,7 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 | `test-stress` | 本機 | §4：壓力測試與資源洩漏檢查（`-smp 4`） |
 | `test-ports` | 本機 | P12：`~/stela-ports` 的每個 port 建置、打包、在 QEMU 跑它的 `test.sh`，最後 `index`（`docs/ports.md`） |
 
-## 3. fuzz（`make test-fuzz`，P11 K45，使用者尚未審核）
+## 3. fuzz（`make test-fuzz`，P11 K45，使用者已於 2026-10-22 審核）
 
 ```text
  種子（合法的輸入） ──► 變異 1–8 次：翻一個位元、亂數位元組、邊界值（0、0x7F、0x80、
@@ -80,7 +80,7 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 1. `abi::time::parse_offset`：`+` 後面接一個 3 位元組的字（`+中a`）時，`&rest[..2]` 切在字元中間而 panic。時區檔 `Data:/.stela/timezone` 是使用者可寫的，kernel 的 Linux 人格（`TZ`）也讀它——這會讓 kernel panic。修法：不是 ASCII 就回 `None`（abi 的 host 測試加了這個例子）。
 2. eHFS 的 B-tree：節點的 CRC 對，但 count／offset 表／記錄長度指到節點外面時，`key_of`、`value_of` 越界 panic（一顆壞掉的磁碟就能讓 kernel panic）。修法：`read_node` 在 CRC 之後檢查節點**結構完整**（`btree::well_formed`：記錄都在 `DATA`..`FREE` 之間且不重疊、offset 表放得下、index 節點的值至少 8 位元組放得下子節點編號），不完整就是 `Corrupt`。
 
-## 4. 壓力測試（`make test-stress`，本機，P11 K46，使用者尚未審核）
+## 4. 壓力測試（`make test-stress`，本機，P11 K46，使用者已於 2026-10-22 審核）
 
 一般 kernel、`-smp 4`、AHCI 測試磁碟、user 網路（host 的 `tools/with_http.py` serve `build/www/stress.bin`，256 KiB 亂數）；桌面的 shell 打 `stress http://10.0.2.2:PORT/stress.bin`。`user/stress` 每一輪：
 
@@ -107,7 +107,7 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 | `windows` | +11 KB／連線、handle 槽 +1 | toolbox 的 `Connection` 沒有 `Drop`：伺服器只在程式結束時才清 client，同一個程式反覆連線就每次留下一個（port、佇列、紀錄）。新的請求 `DISCONNECT`（0x10B，`docs/window.md`），`Connection` 被 drop 時送 | +16 bytes、handle 不變 |
 | `files`、`pipe`、`tcp` | 幾十 bytes 以內 | — | — |
 
-## 5. 平行測試（`make test -jN`，P13 K23，使用者尚未審核）
+## 5. 平行測試（`make test -jN`，P13 K23，使用者已於 2026-10-22 審核）
 
 **比喻**：原本一間考場一次只考一科；現在同時開好幾間考場。前提是考生不能共用同一份考卷、同一支電話：每個 QEMU 測試要有自己的東西。
 

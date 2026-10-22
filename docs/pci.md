@@ -62,7 +62,7 @@ pci: 0000:00:03.0 1b36:0010 class 01/08/02 NVMe controller
 pci: 0000:00:1f.2 8086:2922 class 01/06/01 AHCI controller
 ```
 
-### 4.1 每一個 bus（P12，使用者尚未審核）
+### 4.1 每一個 bus（P12，使用者已於 2026-10-22 審核）
 
 遞迴掃描只找得到「從 bus 0 經過橋」接到的 bus。有好幾個根 complex 的機器（P520：NVMe 在 bus 0x17、GTX 在 bus 0x65，`docs/p520.md` §6.5）有沒有橋指向的 bus。所以遞迴之後，0–255 每個還沒看過的 bus 再掃一次（OSDev Wiki "PCI" 的 Brute Force Scan；`visited` 避免重複）。先用 `ConfigSpace::present` 問 32 個裝置的 function 0 有沒有回應——`Access` 經舊式的 CF8h/CFCh port 問（ECAM 的視窗一個 bus 要映射 1 MiB、而且映射不回收，空的 bus 不值得）；有回應才 `scan_bus`。host 測試：沒有橋指向的 bus 0x17、0x65 上的裝置也找得到，橋後面的 bus 只掃一次。
 

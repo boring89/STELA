@@ -66,7 +66,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 - 新 handle 的權限 = 要求的（沒有指定 READ/WRITE 時給 READ）∩ 父資料夾 handle 的；**唯讀卷宗上要 WRITE → `ReadOnly`**。另外一律有 `DUPLICATE|TRANSFER`（可以交給別的程式）。
 - 存在的是資料夾就給 Directory handle（不論有沒有 `DIRECTORY` 旗標）；有 `DIRECTORY` 旗標但是檔案 → `NotDir`。
 - `CREATE|EXCLUSIVE` 遇到已存在 → `Exists`；`TRUNCATE` 要 WRITE。
-- `DirRead` 以 **cookie** 列舉（P11，使用者尚未審核）：0 = 從頭，每次回傳下一個的 cookie，0 = 到底；cookie 對程式是不透明的。eHFS：cookie = 上一個項目的 CNID，kernel 記著它的名字（`EhfsFs::cursors`，最多 256 個），下一次從 B-tree 的下界（parent, 名字）往後走一個（`Volume::list_after`）——整個資料夾列完是 O(n)（以前每次重列整個資料夾，O(n²)）；上一個項目被刪掉了也能接下去。其他後端（FAT、Initrd、Tmp）用預設實作：cookie = 位置 + 1，每次仍重列（它們的資料夾小）。libstela：`fs::read_dir(dir, cookie) -> Option<(DirEntry, next)>`、`fs::entries(dir)`。
+- `DirRead` 以 **cookie** 列舉（P11，使用者已於 2026-10-22 審核）：0 = 從頭，每次回傳下一個的 cookie，0 = 到底；cookie 對程式是不透明的。eHFS：cookie = 上一個項目的 CNID，kernel 記著它的名字（`EhfsFs::cursors`，最多 256 個），下一次從 B-tree 的下界（parent, 名字）往後走一個（`Volume::list_after`）——整個資料夾列完是 O(n)（以前每次重列整個資料夾，O(n²)）；上一個項目被刪掉了也能接下去。其他後端（FAT、Initrd、Tmp）用預設實作：cookie = 位置 + 1，每次仍重列（它們的資料夾小）。libstela：`fs::read_dir(dir, cookie) -> Option<(DirEntry, next)>`、`fs::entries(dir)`。
 - 名稱與資料一律經 `AddressSpace::read/write` 複製（`FileRead`／`FileWrite` 每次 64 KiB）。
 
 錯誤（接 P4 的 13）：14 `NotFound`、15 `Exists`、16 `NotDir`、17 `IsDir`、18 `NotEmpty`、19 `ReadOnly`、20 `NoSpace`、21 `IoError`（裝置錯誤或卷宗損壞）。
@@ -90,7 +90,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 
 每個項目 32 bytes 的 Finder 資訊（`abi::FINDER_INFO_SIZE`），kernel 不解讀：eHFS 存在目錄記錄裡（格式本來就有，`docs/ehfs.md`），`Tmp` 存在記憶體；FAT 與 Initrd 回 `NotSupported`。後端：`FileSystem::get_info`／`set_info`（預設 `NotSupported`）。Mouseion 的配置（視窗矩形、圖示位置）見 `docs/mouseion.md`。
 
-### 4.4 `FilePath`（P11，使用者尚未審核）
+### 4.4 `FilePath`（P11，使用者已於 2026-10-22 審核）
 
 | 編號 | 名稱 | 參數 | 回傳 | 權限 |
 |---|---|---|---|---|
@@ -98,7 +98,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 
 回傳卷宗**裡面**的路徑：根是 `/`，其他是 `/a/b`（UTF-8，沒有 NUL）。kernel 從項目往上走：`FileSystem::parent(id)`——eHFS 用目錄記錄裡的父 CNID（`Entry::parent`）；其他後端（FAT、Initrd、Tmp）用預設實作，從根做廣度優先搜尋（最多看 10 萬個資料夾）。`vfs::path_of(volume, id)` 也給 Linux 人格算 cwd（`docs/linux.md` §7）。libstela `fs::path_of(h)`（buf 不夠時放大重試）。注意：有某個資料夾的 handle 就能知道它上面各層的名字（不能打開它們）。
 
-### 4.5 延伸屬性（P11，使用者尚未審核）
+### 4.5 延伸屬性（P11，使用者已於 2026-10-22 審核）
 
 | 編號 | 名稱 | 參數 | 回傳 | 權限 |
 |---|---|---|---|---|

@@ -334,7 +334,7 @@ kernel **從不直接解參考使用者位址**：壞指標在檢查時就變成
 
 就算 kernel 寫錯、提早 drop 了 A 的 TCB，per-CPU 的那份 `Arc` 也讓堆疊撐到切換完成——記憶體安全不依賴 kernel 的政策正確。selftest：16 個執行緒結束後 PMM 的 free 數與 heap 用量都回到原值。
 
-### 8.1 Thread 物件與 join（P11，使用者尚未審核）
+### 8.1 Thread 物件與 join（P11，使用者已於 2026-10-22 審核）
 
 `ThreadCreate` 回的是一個 **Thread handle**（`WAIT | DUPLICATE | TRANSFER`，`object_kind::THREAD` = 15），不再是執行緒 id。handle 指的不是 TCB 本身，而是一份「結束紀錄」（`kernel/src/object/thread.rs` 的 `ThreadExit`）：TCB 在回收時就消失了，紀錄要活到最後一個 handle 關掉。
 
@@ -450,7 +450,7 @@ PerCpu 新增的欄位（`frame/src/cpu.rs`）：
 
 這幾個點 kernel 堆疊上已經沒有 kernel 的物件，frame 呼叫 kernel 註冊的 `user_return`（`frame::task::set_user_return_hook`），被標記就 `exit()`。selftest：一個不斷 `SleepNs(1 ms)` 的程式在睡著時被 `kill`，以 77 結束，記憶體全部回來。
 
-P12（使用者尚未審核）：使用者例外的 handler 可以返回——Linux 執行緒有那個訊號的 handler 時，kernel 改寫 `TrapFrame` 轉去 handler（`docs/linux.md` §12.4），之後照樣經 user_return hook 回 ring 3；Linux 程式被例外結束時的 exit code 是 128 + 訊號（SIGSEGV 139）而不是 128 + 向量。
+P12（使用者已於 2026-10-22 審核）：使用者例外的 handler 可以返回——Linux 執行緒有那個訊號的 handler 時，kernel 改寫 `TrapFrame` 轉去 handler（`docs/linux.md` §12.4），之後照樣經 user_return hook 回 ring 3；Linux 程式被例外結束時的 exit code 是 128 + 訊號（SIGSEGV 139）而不是 128 + 向量。
 
 ring 0 的例外照舊 panic。exit code 的慣例：`128 + 向量`（#UD 134、#GP 141、#PF 142），`ProcessExit(code)` 自己給，使用者程式 panic 是 101，執行緒全部自己結束是 0，載入失敗（從沒跑過）是 −1。
 

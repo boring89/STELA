@@ -115,7 +115,7 @@ VIRTIO 1.1 的 **modern** 介面（§4.1.4 PCI capabilities、§2.6 split virtqu
 - 序號比較都是模 2³² 的（`lt`／`le`）。
 - **重傳**：逾時加倍到 8 秒、最多 8 次（之後 `TimedOut`）；逾時時 go-back-N：退回最舊未確認的位元組重送；FIN 也會重送。
 
-### 4.3 P11：RTT、壅塞控制、快速重傳、延遲 ACK、重組（使用者尚未審核）
+### 4.3 P11：RTT、壅塞控制、快速重傳、延遲 ACK、重組（使用者已於 2026-10-22 審核）
 
 **比喻**：寄包裹時先估計郵差來回要多久（RTT），等太久才補寄（RTO）；一開始只寄幾個試試路況，順了就越寄越多（慢啟動），掉件就減半（壅塞避免）；對方說「我一直在等第 N 號」三次，就馬上補寄第 N 號，不必等逾時（快速重傳）；收件方不必每收一件就回條，每兩件或等一下再回（延遲 ACK）；先到的後面幾號先收著，等前面的到了一起交出去（重組）。
 
@@ -224,6 +224,6 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 - e1000 輪詢：P11 起沒有 socket（或沒有 link）時每 100 ms 才看一次——DHCP、ARP 照常（慢一點），開了 socket 的程式第一個封包最多晚 100 ms。
 - I219（P520）只依資料手冊與 68k_HAL 的經驗實作，**沒有在實機驗證**（PHY、ULP、Management Engine 都可能讓 link 起不來）。
 
-## P13：USB 網卡與換卡（K10，使用者尚未審核）
+## P13：USB 網卡與換卡（K10，使用者已於 2026-10-22 審核）
 
 網卡不再只在開機時決定：PCI 有線網卡優先；沒有時 USB 乙太網卡（CDC-ECM、CDC-NCM、RNDIS、AX88179，`docs/usb.md` §13）來了就用、走了就沒有網卡。每次換卡是一個新的 `Stack`（generation +1，DHCP 重來），舊的 socket 一律 `NetworkDown`。網路執行緒在沒有網卡時照樣跑（每 100 ms 看一次有沒有新的網卡）。

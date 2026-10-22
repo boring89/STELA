@@ -40,7 +40,7 @@ tools/qemu_test.py           --type：經 QMP 打字
 - `ProcessKill` 自己 → 等於 `ProcessExit(137)`。
 - `SysInfo`：`PROCESSES`（每筆 48 bytes：pid、執行緒數、狀態 1 執行中／2 已結束、exit code、名稱 24 bytes；回傳總筆數，可能多於放得下的）、`MEMORY`（PMM 總數／空閒頁框、kernel heap 大小／已用）、`UPTIME`（奈秒、tick）、`FRAMEBUFFER`（`docs/display.md`）、`TIME`（6，P10：牆上時鐘，1970 年起的奈秒，libstela `process::wall_clock_ns`）、`CMDLINE`（5，P10：開機選項的位元組，回傳長度；`abi::sysinfo::cmdline_flag` 查選項，libstela 的 `process::boot_flag`；`docs/p520.md` §3）、`CPUS`（7）與 `PROCESS_CPUS`（8）（`docs/smp.md`）、`HARDWARE`（9，P11：硬體報告的文字，回傳整份長度；libstela `process::hardware`，`hwinfo` 程式與 Mouseion 的 About STELA；`docs/hwinfo.md`）。
 
-### 2.3 能力（capability，P11，使用者尚未審核）
+### 2.3 能力（capability，P11，使用者已於 2026-10-22 審核）
 
 **比喻**：大樓的總電源開關、對講機總機、對外電話線各有一把專用鑰匙。管理員（init）一開始就拿到全部三把（kernel 給的），只把需要的那幾把**複製**給該用的人；沒拿到鑰匙的人就算知道開關在哪也打不開（`AccessDenied`）。
 
@@ -181,7 +181,7 @@ Data:/> ps
 (1 ended)
 ```
 
-### 6.1 管線、重新導向、背景工作（P11，使用者尚未審核）
+### 6.1 管線、重新導向、背景工作（P11，使用者已於 2026-10-22 審核）
 
 **比喻**：以前櫃台一次只叫一個人辦事；現在可以排一條生產線，前一個人做完的東西直接用輸送帶（pipe）交給下一個人；原料可以從倉庫（檔案）搬來，成品可以直接入庫；不急的工作可以叫人在後面慢慢做（背景），櫃台繼續接下一位。
 
@@ -201,7 +201,7 @@ Data:/> ps
 - 背景：不能有 `<`／`>`（shell 不在旁邊灌與倒）；輸出照樣到 terminal；背景工作拿不到鍵盤。
 - 新程式 `wc`：數 `[5]` 的行、字、位元組（`wc: L lines, W words, B bytes`）；沒有輸入就說明後結束（1）。
 
-### 6.2 行編輯與歷史（P11，使用者尚未審核）
+### 6.2 行編輯與歷史（P11，使用者已於 2026-10-22 審核）
 
 `libstela::line::LineEditor`（純邏輯，host 測試）：游標可以在行中間——打字插入、Left／Right、Home／End（Ctrl-A／Ctrl-E）、Backspace 與 Delete、Ctrl-K（刪到行尾）、Ctrl-U（整行）；Up／Down 翻歷史（翻的時候正在打的那行記著，Down 翻過最新的就回來）。編輯器回傳**要印的字串**，只用 Backspace（游標左移一格、不擦）與空白：例如在中間插入 `x` 印 `x` + 後面的字 + 同樣多個 Backspace——任何 terminal（STELA 的文字格、kernel 的主控台、serial）都顯示得對，不需要 ANSI 的游標控制。
 
@@ -209,7 +209,7 @@ Data:/> ps
 - shell 把 `KeyCode::Left/Right/Up/Down/Home/End/Delete` 對到 `Key`，其他鍵經 `key_to_char`；只看按下。
 - 測試：`tools/qemu_test.py` 的 `--type` 文字可以寫 `{up}`、`{left}`、`{home}`、`{end}` 等鍵（P11）；`make test-shell` 最後 `{up}{up}`（再跑一次 `mem`）與 `vls{left}{left}o{end}`（變成 `vols`）。
 
-### 6.3 Tab 補全與萬用字元（P11 K44，使用者尚未審核）
+### 6.3 Tab 補全與萬用字元（P11 K44，使用者已於 2026-10-22 審核）
 
 ```text
  Data:/t> cat /welc<Tab>     →  cat /welcome.txt ␣      （唯一：補完，檔案加空白、資料夾加 /）

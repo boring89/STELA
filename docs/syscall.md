@@ -60,7 +60,7 @@
 | 37–38 | `FileGetInfo`、`FileSetInfo` | 檔案或資料夾, 32 bytes | 0 | Finder 資訊，見 `docs/vfs.md` §4.2（P9，使用者已於 2026-10-20 審核） |
 | 39–46 | `SocketCreate`、`SocketBind`、`SocketConnect`、`SocketListen`、`SocketAccept`、`SocketSend`、`SocketRecv`、`NetInfo` | | | 網路，見 `docs/net.md` §6（P10，使用者已於 2026-10-21 審核） |
 | 47–48 | `AudioOpen`、`AudioClose` | | | 音效，見 `docs/sound.md` §4（P10，使用者已於 2026-10-21 審核） |
-| 49–52 | `WaitSetCreate`、`WaitSetAdd`、`WaitSetRemove`、`WaitSetWait` | | | 同時等多個物件，見 `docs/ipc.md` §13（P11，使用者尚未審核） |
+| 49–52 | `WaitSetCreate`、`WaitSetAdd`、`WaitSetRemove`、`WaitSetWait` | | | 同時等多個物件，見 `docs/ipc.md` §13（P11，使用者已於 2026-10-22 審核） |
 | 53 | `FilePath` | 檔案或資料夾, buf, len | 路徑長度 | 卷宗內的路徑，見 `docs/vfs.md` §4.4（P11） |
 | 54–56 | `PipeCreate`、`PipeRead`、`PipeWrite` | | | pipe，見 `docs/ipc.md` §14（P11） |
 | 58–60 | `FileGetAttr`、`FileSetAttr`、`FileListAttr` | | | 延伸屬性，見 `docs/vfs.md` §4.5（P11） |
@@ -166,7 +166,7 @@ stela_syscall_entry:
 - `gs:[24]`、`gs:[32]` 是 `PerCpu` 的固定 offset，`cpu.rs` 用 `offset_of!` 在編譯期檢查。
 - 使用者的 callee-saved 暫存器（rbx、rbp、r12–r15）由 Rust 程式碼本身保留（System V 規則），切換執行緒時也由 `switch_to` 保存。其他參數暫存器從 frame 還原成使用者原本的值，所以 kernel 的值不會漏出去。selftest 檢查 rbx 跨過 `SleepNs`（會切換執行緒）仍保留。
 - handler 執行時中斷開著：syscall 可以被搶佔、可以睡、可以切換；`ProcessExit`／`ThreadExit` 不返回（這個 kernel 堆疊之後被回收）。
-- **P12 的改動（使用者尚未審核）**：上面的 10 個字之後再推 rcx、r11 的另一份（`user_rcx`、`user_r11`）與 rbx、rbp、r12–r15，最後兩個 0（「完整還原」旗標與補齊），共 20 個字（160 bytes，仍 16 對齊）。`SyscallFrame::regs()` 給出整組使用者暫存器（`frame::trap::UserRegs`），`set_regs()` 換掉整組（經 `UserRegs::sanitized()`：RIP、RSP 在使用者半部，RFLAGS 只留使用者位元）並設旗標；旗標設了，stub 改走 `iretq`：在框架下面推 SS、RSP、RFLAGS、CS、RIP，從框架載入全部暫存器（包括 `sysret` 不能還原的 RCX、R11），`swapgs`、`iretq`。Linux 的訊號、`fork`、`clone`、`execve` 用它（`docs/linux.md` §11.0）。user_return hook 改成收到 `UserFrame`（這個框架，或中斷／例外的 `TrapFrame`），可以讀、可以換暫存器。
+- **P12 的改動（使用者已於 2026-10-22 審核）**：上面的 10 個字之後再推 rcx、r11 的另一份（`user_rcx`、`user_r11`）與 rbx、rbp、r12–r15，最後兩個 0（「完整還原」旗標與補齊），共 20 個字（160 bytes，仍 16 對齊）。`SyscallFrame::regs()` 給出整組使用者暫存器（`frame::trap::UserRegs`），`set_regs()` 換掉整組（經 `UserRegs::sanitized()`：RIP、RSP 在使用者半部，RFLAGS 只留使用者位元）並設旗標；旗標設了，stub 改走 `iretq`：在框架下面推 SS、RSP、RFLAGS、CS、RIP，從框架載入全部暫存器（包括 `sysret` 不能還原的 RCX、R11），`swapgs`、`iretq`。Linux 的訊號、`fork`、`clone`、`execve` 用它（`docs/linux.md` §11.0）。user_return hook 改成收到 `UserFrame`（這個框架，或中斷／例外的 `TrapFrame`），可以讀、可以換暫存器。
 - `rip`／`rsp`／`rflags` 是私有欄位：kernel 不能把使用者送去任意的地方。`sysret` 回到非 canonical 的 RCX 會在 **ring 0、使用者 RSP 已載入**時 #GP（Intel 的行為，著名的漏洞來源）；RCX 只會是使用者 `syscall` 的下一條指令，唯一的情況是 `syscall` 放在使用者半部的最後兩個 bytes——`dispatch` 檢查 `rip >= USER_END` 就當成 #GP 殺掉行程。
 
 ### 4.4 kernel 端（`kernel/src/syscall.rs`）

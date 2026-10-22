@@ -144,7 +144,7 @@ usb: 7: hub (0409:55aa, full speed)
 - endpoint stall 不復原；控制傳輸一次 4 KiB 以內；裝置路徑最多 5 層。
 - 沒有在實機上驗證。
 
-## 12. 隨身碟：Bulk-Only 大量儲存（P11 K41，使用者尚未審核）
+## 12. 隨身碟：Bulk-Only 大量儲存（P11 K41，使用者已於 2026-10-22 審核）
 
 **比喻**：隨身碟是一個只會聽 SCSI 指令的小倉庫。USB 只是把「信封」送過去：每個指令裝在一個 31 bytes 的信封（CBW）裡從 bulk OUT 送出，貨物（資料）走 bulk IN 或 OUT，最後倉庫回一張 13 bytes 的收據（CSW）說成功沒有（USB Mass Storage Class Bulk-Only Transport 1.0 §5）。
 
@@ -157,7 +157,7 @@ usb: 7: hub (0409:55aa, full speed)
 - 測試：`make test-usb` 的 QEMU 多一個 `usb-storage`（接在 hub 的 port 2，全速；K42 加：QMP `device_del` 拔掉 → `vfs: unmounted STICK (usb1 went away)`、Mouseion `volume STICK went` → `device_add` 插一支複本（第二個映像，`-blockdev`）→ 掛成 `usb2`、shell `echo written by STELA > STICK:/new.txt` 再 `cat` 回來，結束後 host 的 `mtype` 找到那個檔），映像是 `build/images/usb-stick.img`（64 MiB，MBR 一個 FAT32 分割區、卷標 STICK、`HELLO.TXT`；mtools 只寫這個檔）；看到 `vfs: mounted STICK (FAT, 62 MiB) from usb1`，shell `cat STICK:/hello.txt` 印出內容。
 - 限制：只有 Bulk-Only（沒有 UAS）；只看 LUN 0；STALL 不復原（指令失敗就算失敗）；READ CAPACITY (16)（2 TiB 以上）沒有做；寫入時沒有 SYNCHRONIZE CACHE；一次 4 KiB。
 
-## 13. USB 乙太網路（P13 K10，使用者尚未審核）
+## 13. USB 乙太網路（P13 K10，使用者已於 2026-10-22 審核）
 
 **比喻**：USB 網卡是一台「把網路封包裝進 USB 信封」的機器，各家信封樣式不同：ECM 不加任何東西（一個傳輸一個 frame）；NCM 把好幾個 frame 裝進一個有目錄的大箱子（NTB16：`NCMH` 標頭、`NCM0` 目錄）；RNDIS 每個 frame 前面一張 44 bytes 的單子，控制命令走 endpoint 0 的「封裝命令」；AX88179 是 ASIX 自己的格式（送：8 bytes 標頭；收：一串 frame 後面接每個 frame 的 4 bytes 標頭與一個說明在哪裡的尾巴）。
 

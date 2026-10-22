@@ -55,7 +55,7 @@ loop {
 | `ScrollBar` | rect、value、total、page | `click(x, y)`：箭頭 ±1、軌道 ±1 頁；`scroll(delta)` | 兩個箭頭、軌道、滑塊（大小依比例） |
 | `List` | rect、items、selected、top | `click(x, y, line) -> Option<index>` | 白底、選取反白 |
 
-### 6.1 `text`：多行文字（P11 K32，使用者尚未審核）
+### 6.1 `text`：多行文字（P11 K32，使用者已於 2026-10-22 審核）
 
 **比喻**：`TextField` 是一張便條，`TextView` 是一本筆記本——可以很多行、會自動換行、可以選一段、可以捲。Classic Mac OS 的 TextEdit 也是這個角色。
 
@@ -80,7 +80,7 @@ loop {
 
 Mouseion 的刪除確認改用 `alert`（`Keep`／`Delete`，Delete 是預設），以前是自己的資訊視窗加 Enter／Escape。
 
-### 6.3 `cjk`：ASCII 以外的字（P11 K39，使用者尚未審核）
+### 6.3 `cjk`：ASCII 以外的字（P11 K39，使用者已於 2026-10-22 審核）
 
 **比喻**：Spleen 是一本只有英文字母的字帖；Fusion Pixel 是一本厚厚的中日韓字典，平常放在書架上（`Initrd:/fonts/`），第一次遇到不認識的字才翻開。
 
@@ -109,21 +109,21 @@ host `toolbox`：`draw`（矩形運算、填色與裁切、stride 外的像素�
 - 剪貼簿只有純文字；`TextField` 沒有選取（貼上要程式自己做）。
 - `Connection` 等回覆時其他事件存在記憶體裡沒有上限。
 
-## P13：輸入法（使用者尚未審核）
+## P13：輸入法（使用者已於 2026-10-22 審核）
 
 - `Event::Text { window, text }`：IME 送出的字（`TEXT_INPUT`），當作打字插入。
 - `TextField::insert_text`、`TextView::insert_text`：插入一串字（唯讀的 TextView 不收）；`TextField::caret(font)`、`TextView::caret()`：游標在視窗座標的位置與高度（中文字算兩格）。
 - `Connection::set_caret(window, x, y, h)`：告訴伺服器文字游標在哪裡，組字區畫在它下面。Kalamos 每次重畫、terminal 在游標移動時送。
 - 細節見 `docs/ime.md`。
 
-## 7. P13：scale（HiDPI 2x，使用者尚未審核）
+## 7. P13：scale（HiDPI 2x，使用者已於 2026-10-22 審核）
 
 - `Connection::scale`（`CONNECTED` 給的 1 或 2）；`Connection::screen`、`menubar` 是邏輯像素。
 - `Window::scale`：緩衝是 `width * scale` × `height * scale`；`Window::canvas()` 給一個 `Canvas::scaled`。
 - `Canvas` 的方法都吃邏輯座標；`size`、`bounds`、`clip` 傳回邏輯值；`pixels`、`stride` 是實體緩衝。scale 2 時：8x16 的字改用 16x32 的字型畫在 2 倍的位置（`char_phys`）；`Canvas::icon` 用兩倍大的圖（沒有就放大）；其他一律放大成 2×2 的方塊。`Canvas::image_phys` 不放大（圖示用）。
 - 程式不用改：版面用 `font.width`／`font.height` 與邏輯座標排，`font_for(conn.screen.0)` 在 2x 的 2560 螢幕（邏輯 1280）給 8x16。
 
-## 8. P13：powerbox、拖放、桌面圖樣（使用者尚未審核）
+## 8. P13：powerbox、拖放、桌面圖樣（使用者已於 2026-10-22 審核）
 
 - `dialog::pick_open`／`pick_save` 回傳 `Picked { location, file }`：有 `VOLUMES` 的程式用自己的對話框再開檔，沒有的經視窗伺服器的 powerbox（`docs/sandbox.md` §5）；`dialog::file_dialog`、`ask_text_shown` 多一個「對話框出現了」的回呼（測試等它才打字）；`open_location`。
 - `Event::Dropped { window, x, y, file, path }`：Mouseion 拖過來的檔案（`docs/sandbox.md` §6）；`Connection::wait_message(tag, request, timeout)` 等某一則訊息、其他的留著。

@@ -1,4 +1,4 @@
-# 硬體報告：`SysInfo(HARDWARE)` 與 `hwinfo`（P11 K28，使用者尚未審核）
+# 硬體報告：`SysInfo(HARDWARE)` 與 `hwinfo`（P11 K28，使用者已於 2026-10-22 審核）
 
 **比喻**：實機測試時最常問的是「STELA 到底看到了什麼？」——哪顆 CPU、多少記憶體、哪些 PCI 裝置、磁碟怎麼分割、網卡有沒有 link。以前要翻開機時捲過去的 serial 訊息；現在 kernel 把它看到的整理成一份「體檢報告」，任何程式都能要，`hwinfo > Data:/hwinfo.txt` 就能存下來帶回去看。
 

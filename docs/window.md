@@ -44,9 +44,9 @@ P9 起 init 啟動的是 `windowserver mouseion`：Mouseion 畫桌面（`DESKTOP
 
 ## 3. 協定（`abi::window`，經 port 的訊息）
 
-**版本 3（P13 K13，使用者尚未審核）**：所有座標與大小都是**邏輯像素**；`CONNECTED` 的螢幕寬高、選單列高度是邏輯的，scale 是 1 或 2（`docs/display.md` §6）；伺服器收到 `CREATE_WINDOW`、`DAMAGE`、`MOVE_WINDOW`、`RESIZE_WINDOW`、`SET_CARET` 時 ×scale，送出 `MOUSE`、`WINDOW_EVENT`、`WINDOW_CREATED`／`WINDOW_RESIZED` 時 ÷scale（`Server::to_physical`／`to_logical`），裡面全用實體像素；視窗的 Memory 是邏輯寬 × scale × 邏輯高 × scale × 4 bytes。版本不符的 `CONNECT` 得到 `NotSupported`。
+**版本 3（P13 K13，使用者已於 2026-10-22 審核）**：所有座標與大小都是**邏輯像素**；`CONNECTED` 的螢幕寬高、選單列高度是邏輯的，scale 是 1 或 2（`docs/display.md` §6）；伺服器收到 `CREATE_WINDOW`、`DAMAGE`、`MOVE_WINDOW`、`RESIZE_WINDOW`、`SET_CARET` 時 ×scale，送出 `MOUSE`、`WINDOW_EVENT`、`WINDOW_CREATED`／`WINDOW_RESIZED` 時 ÷scale（`Server::to_physical`／`to_logical`），裡面全用實體像素；視窗的 Memory 是邏輯寬 × scale × 邏輯高 × scale × 4 bytes。版本不符的 `CONNECT` 得到 `NotSupported`。
 
-**版本 2（P11，使用者尚未審核）**：每個 client 有自己的請求 port，伺服器**從訊息來的 port 認出 client**，不再看訊息內容（版本 1 的 client id 可以被冒用）。
+**版本 2（P11，使用者已於 2026-10-22 審核）**：每個 client 有自己的請求 port，伺服器**從訊息來的 port 認出 client**，不再看訊息內容（版本 1 的 client id 可以被冒用）。
 
 ```
  client                                     server
@@ -90,17 +90,17 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `TEXT_INPUT` 0x18A（P13 K2） | window、長度、UTF-8：IME 送出的字（toolbox `Event::Text`） |
 | `IME_RESET` 0x18B（P13 K2，給 IME） | 焦點換了，丟掉組字 |
 
-**輸入法（P13，使用者尚未審核）**：伺服器開機時建一個 IME port、啟動 `Initrd:/ime`；IME 登記後，中文模式（或組字中）的按鍵先給它，它回答之後伺服器才把鍵或送出的字（`TEXT_INPUT`）給焦點視窗；伺服器畫組字區、候選窗與選單列的「注／英」。英文模式的鍵照舊直送。細節見 `docs/ime.md`。
+**輸入法（P13，使用者已於 2026-10-22 審核）**：伺服器開機時建一個 IME port、啟動 `Initrd:/ime`；IME 登記後，中文模式（或組字中）的按鍵先給它，它回答之後伺服器才把鍵或送出的字（`TEXT_INPUT`）給焦點視窗；伺服器畫組字區、候選窗與選單列的「注／英」。英文模式的鍵照舊直送。細節見 `docs/ime.md`。
 
-**音量（P13 K19，使用者尚未審核）**：有音效卡時選單列右邊（注／英或時鐘的左邊）有喇叭圖示；點開是主音量的滑桿與 Mute（伺服器用 `POWER` 呼叫 `AudioMaster`，存到 `Data:/.stela/audio`）。細節見 `docs/sound.md` §4.1。
+**音量（P13 K19，使用者已於 2026-10-22 審核）**：有音效卡時選單列右邊（注／英或時鐘的左邊）有喇叭圖示；點開是主音量的滑桿與 Mute（伺服器用 `POWER` 呼叫 `AudioMaster`，存到 `Data:/.stela/audio`）。細節見 `docs/sound.md` §4.1。
 
-**powerbox 與拖放（P13 K16，使用者尚未審核）**：請求 `POWERBOX`（0x10F：mode、"title\0name\0start"，夾帶 client 主 port 的 SEND）讓伺服器啟動 `Initrd:/powerbox` 畫開檔／存檔對話框，選好的檔案以 `POWERBOX_RESULT`（0x18C）送給 client；`DROP_FILE`（0x110，Mouseion：螢幕座標、路徑，夾帶檔案）→ 那一點的視窗的 client 收到 `DROPPED`（0x18D：視窗、內容座標、路徑，夾帶檔案）。座標照樣是邏輯像素。細節見 `docs/sandbox.md`。
+**powerbox 與拖放（P13 K16，使用者已於 2026-10-22 審核）**：請求 `POWERBOX`（0x10F：mode、"title\0name\0start"，夾帶 client 主 port 的 SEND）讓伺服器啟動 `Initrd:/powerbox` 畫開檔／存檔對話框，選好的檔案以 `POWERBOX_RESULT`（0x18C）送給 client；`DROP_FILE`（0x110，Mouseion：螢幕座標、路徑，夾帶檔案）→ 那一點的視窗的 client 收到 `DROPPED`（0x18D：視窗、內容座標、路徑，夾帶檔案）。座標照樣是邏輯像素。細節見 `docs/sandbox.md`。
 
 **選單快捷鍵（P11 K43）**：`SET_MENUBAR` 的項目文字結尾 `^K`（字母或數字）表示 Alt-K（Alt 當 Command）。伺服器在選單右邊畫 `Alt-K`；焦點 client 的選單有這個快捷鍵時，Alt+字母（沒有 Ctrl）不送給程式，改送 `MENU_SELECTED`。其他 Alt 組合照樣送（Classic.app 的 Mac 用 Alt 當 Command 不受影響，它的選單沒有快捷鍵）。toolbox：`MenuBar::item` 傳回去掉 `^K` 的標籤、`menu::shortcut`。標準：New^N、Open^O、Save^S、Close^W、Quit^Q、Undo^Z、Cut^X、Copy^C、Paste^V、Select All^A（Kalamos、Mouseion、Echo、Terminal、Monitor、Periplus、Viewer 都加了）。
 
 **zoom box（P11 K43）**：可改大小的視窗（`RESIZABLE`）標題列右端多一個框中框。按下去：伺服器記住內容區原來的位置與大小、把視窗搬到選單列下的左上角，送 `WINDOW_EVENT` `ZOOM_REQUESTED`（6，x、y、w、h = 整個螢幕減去選單列與框）；再按一次搬回原處、要回原大小。client 跟 `RESIZE_REQUESTED` 一樣回 `RESIZE_WINDOW`（toolbox 把 `ZOOM_REQUESTED` 也解成 `Event::ResizeRequested`，所以程式不用改）；client 可以給不一樣的大小（terminal 對齊格子）。
 
-**系統剪貼簿（P11 K32，使用者尚未審核）**：伺服器自己存一份文字（`Vec<u8>`）；`SET_CLIPBOARD` 從 client 的 Memory 複製進來，`GET_CLIPBOARD` 每次做一塊新的 Memory 放一份給它。只有純文字，沒有「誰擁有」的概念（最後設的贏），伺服器重啟就沒了。toolbox：`Connection::set_clipboard(text)`、`clipboard() -> String`（等 `CLIPBOARD` 時其他事件照樣先存起來）。0x188 以前是 `PING`（P11 K2 拿掉了），現在重新用在 `CLIPBOARD`。
+**系統剪貼簿（P11 K32，使用者已於 2026-10-22 審核）**：伺服器自己存一份文字（`Vec<u8>`）；`SET_CLIPBOARD` 從 client 的 Memory 複製進來，`GET_CLIPBOARD` 每次做一塊新的 Memory 放一份給它。只有純文字，沒有「誰擁有」的概念（最後設的贏），伺服器重啟就沒了。toolbox：`Connection::set_clipboard(text)`、`clipboard() -> String`（等 `CLIPBOARD` 時其他事件照樣先存起來）。0x188 以前是 `PING`（P11 K2 拿掉了），現在重新用在 `CLIPBOARD`。
 
 旗標：`TITLE_BAR` 1、`CLOSE_BOX` 2、`RESIZABLE` 4、`DESKTOP` 8（沒有框、永遠在最後面、蓋滿選單列以下的整個畫面：給 P9 的 Mouseion 畫桌面圖示）；`DOCUMENT` = 1|2|4。P11：`WANT_MOTION` 16（沒按按鈕時指標在內容上移動也送 `MOUSE`／`MOVE`，給指標在它下面的那個視窗）、`HIDE_CURSOR_INSIDE` 32（指標在內容上時伺服器不畫箭頭；拖曳中照畫）——Classic.app 兩個都設（Mac 自己畫游標）。
 
@@ -119,7 +119,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
  present(r)：back buffer 的 r 複製到 framebuffer（RGBX 時交換 R、B），再把游標畫在上面
 ```
 
-- **遮擋剔除**（P11，使用者尚未審核）：視窗都是不透明的矩形（框 + 內容），所以每個髒矩形先算出每個視窗**看得到的部分**——它的框 ∩ 髒矩形，再減掉所有比它前面的視窗的框（`compose::subtract`：一個矩形減一個矩形最多剩 4 塊；`visible_parts`）——只畫那些部分；桌面色只填沒有任何視窗的部分。被蓋住的視窗不再整個複製一次內容（以前每個髒矩形都從後往前把每個重疊的視窗畫一遍）。
+- **遮擋剔除**（P11，使用者已於 2026-10-22 審核）：視窗都是不透明的矩形（框 + 內容），所以每個髒矩形先算出每個視窗**看得到的部分**——它的框 ∩ 髒矩形，再減掉所有比它前面的視窗的框（`compose::subtract`：一個矩形減一個矩形最多剩 4 塊；`visible_parts`）——只畫那些部分；桌面色只填沒有任何視窗的部分。被蓋住的視窗不再整個複製一次內容（以前每個髒矩形都從後往前把每個重疊的視窗畫一遍）。
 - **髒矩形**（`Damage`）：新的矩形和重疊或相鄰、而且合併後面積不超過兩者和的兩倍的舊矩形合併；超過 16 個就全部合成一個。
 - 不讀 framebuffer（WC 讀很慢）：back buffer 就是「存底圖」，游標移動只要把舊位置與新位置當髒矩形。
 - 游標：11×17 的箭頭（自己畫的 1-bit 圖，黑框白底），16x32 字型時放大 2 倍。
@@ -180,7 +180,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 - `TtyCreate(MASTER)`：slave 給 shell 當 `[1]`；master 和主 port 放在同一個 WaitSet（P11；P8 時沒有同時等兩個東西的 syscall，用一個輸出執行緒把 tty 輸出轉成主 port 的訊息，現在拿掉了）。toolbox 等回覆時先收下的事件（`Connection::has_pending()`）在每次等待前處理掉。shell 行程也在集合裡（`EXITED`），不再每 500 ms 檢查一次；行程成員以 id 記，換新 shell 前先 `remove`。
 - **serial 鏡像**：輸出也送到 terminal 自己的 `[1]`（console 服務 → serial），所以 `make test-shell`、`test-linux`、`test-shutdown` 在桌面模式下照樣從 serial 檢查 shell 的輸出（鍵盤經 QMP → PS/2 → 視窗伺服器 → terminal → shell）。
 - 文字格（`grid.rs`）：UTF-8 可以在任何地方被切開；`\n` 換行（底部捲動）、`\r`、Backspace、Tab（8 的倍數）；記錄改過的列。游標是反白的格子（失去焦點時不畫）。
-- **P11（使用者尚未審核）**：每格是 `Cell { c, fg, bg }`；`ESC [ … m`（SGR）設顏色：30–37／90–97 前景、40–47／100–107 背景、1 粗體（前景用亮色）、22、39、49、0 或空的重設；其他 `ESC [ …` 照舊略過。16 色的調色盤配羊皮紙底色調過（`PALETTE`，0 是釉黑、15 是羊皮紙）；預設前景釉黑、背景羊皮紙。
+- **P11（使用者已於 2026-10-22 審核）**：每格是 `Cell { c, fg, bg }`；`ESC [ … m`（SGR）設顏色：30–37／90–97 前景、40–47／100–107 背景、1 粗體（前景用亮色）、22、39、49、0 或空的重設；其他 `ESC [ …` 照舊略過。16 色的調色盤配羊皮紙底色調過（`PALETTE`，0 是釉黑、15 是羊皮紙）；預設前景釉黑、背景羊皮紙。
 - **捲回**：捲出上緣的行存起來（`SCROLLBACK` = 1000 行）；Shift+PgUp／PgDn 一次一頁，捲回時不畫游標；有新的輸出就跳回最下面。改大小時歷史保留（截斷或補空白到新寬度）。
 - **視窗大小**：terminal 開始時與每次改大小後 `TtySetSize(master, 欄, 列)`（syscall 57），Linux 程式的 `TIOCGWINSZ` 拿到的就是它（以前固定 25×80）。
 - shell 結束時印 `[shell exited with code N]` 並啟動新的；關閉鈕：kill shell、結束 terminal。
@@ -215,7 +215,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 - terminal 只有 SGR 顏色（P11），沒有游標移動、清除畫面等其他 ANSI 序列；捲回不能用滑鼠滾輪；選字複製沒有。
 - P11 起有遮擋剔除，但沒有「只有游標動」的特別處理（游標的舊位置仍從 back buffer 重新合成那一小塊）。
 
-## 11. 桌面視窗只蓋圖示的直條（P12，使用者尚未審核）
+## 11. 桌面視窗只蓋圖示的直條（P12，使用者已於 2026-10-22 審核）
 
 P11 的桌面視窗（`DESKTOP` 旗標）蓋滿整個螢幕：Mouseion 為了在右邊畫幾個卷宗圖示，拿了一張全螢幕的畫布（2560×1600 時 16 MiB 的共享記憶體），其中絕大部分只是填滿桌面色。P12 起：
 
@@ -225,7 +225,7 @@ P11 的桌面視窗（`DESKTOP` 旗標）蓋滿整個螢幕：Mouseion 為了在
 - 計畫的兩個做法裡選了第二個（「退一步只覆蓋圖示直條」）：第一個（`SET_DESKTOP`，把圖示交給視窗伺服器畫）要把 Mouseion 的拖放、選取、改名搬到伺服器，改動太大。代價：在直條以外的桌面上拉框選取、把東西拖到「桌面」的空白處都沒有作用（P11 也沒有放東西到桌面這回事，只有拖到卷宗與垃圾桶）。
 - 記憶體：桌面閒置從 93.0 MiB 降到 57.0 MiB（另一半的功勞是 kernel heap 按需成長，`docs/frame.md` §8、`docs/bench.md`）。
 
-## 12. 桌面圖樣、閒置熄屏、Alt-Tab、鍵盤選單（P13 K20–K22，使用者尚未審核）
+## 12. 桌面圖樣、閒置熄屏、Alt-Tab、鍵盤選單（P13 K20–K22，使用者已於 2026-10-22 審核）
 
 **桌面圖樣**：伺服器開機時讀 `Data:/.stela/desktop`（`toolbox::backdrop::parse`：`pattern=plain|meander|waves`、`color=RRGGBB`），請求 `SET_BACKDROP`（0x111：pattern、顏色，0 = 預設的桌面色）隨時換。有圖樣時先算好一個週期（16 個邏輯列 × scale）的整列像素（`compose::backdrop_rows`），合成時沒有視窗的地方一列一列複製（不逐點算）；沒有圖樣時照舊 `fill`。圖樣的線是底色的 13/16（`backdrop::line_color`）。Mouseion 的圖示直條用 `backdrop::paint` 在同一個螢幕格線上畫同一個圖樣。
 

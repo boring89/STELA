@@ -119,7 +119,7 @@ drivers::sync::set_hooks(Hooks { current, block_until, wake, now_ns })
 - 鎖是 `SpinLock`，**I/O 時不持有**：miss 時放鎖、讀裝置、再拿鎖放進去（兩個執行緒同時 miss 會各讀一次，結果相同）。
 - 為了快取與 B-tree 的 16 KiB 節點，kernel heap 從 4 MiB 加到 16 MiB（計畫外的調整）；P11 快取加大後再加到 32 MiB（三個 eHFS 卷宗的快取最多 12 MiB）。
 
-### 8.1 P11：一次多個命令（K13，使用者尚未審核）
+### 8.1 P11：一次多個命令（K13，使用者已於 2026-10-22 審核）
 
 **比喻**：以前搬運工一次只拿一張單子，跑完一趟才拿下一張；現在一次發 32 張單子（AHCI 的每個 command slot 一張），倉庫自己決定先搬哪個，全部搬完才回報。
 

@@ -1,6 +1,6 @@
 # Ports：在 STELA 上跑的 Linux 程式（P12、P13）
 
-> P12 由自動排程一次做完，**使用者尚未審核**。P13 的 K7–K8（§6）同樣尚未審核。
+> P12 由自動排程一次做完，使用者已於 2026-10-22 審核。P13 的 K7–K8（§6）同日審核。
 
 ports repo（暫名 `stela-ports`，和 STELA 分開的 git repo，本機在 `~/stela-ports`，還沒有放上 GitHub）收集「把一個現成的 Linux 程式編成 STELA 能跑的樣子」的配方：在哪裡拿原始碼、怎麼編、怎麼打包、在 STELA 裡怎麼測。編出來的套件由 `pkg` 安裝（`docs/pkg.md`）。
 
@@ -72,7 +72,7 @@ Rust：  --target x86_64-unknown-linux-musl
 - `test` 用 STELA 的測試磁碟映像（128 MiB）；大的套件（tcc 的 libc.a）放得下，但不能太多個一起。
 - 原始碼大多從 68k_HAL 的下載目錄複製（計畫的授權事項）；之後要改成各自的官方網址（`source = ` + SHA-256）。
 
-## 6. P13：函式庫 port 與更多程式（K7–K8，使用者尚未審核）
+## 6. P13：函式庫 port 與更多程式（K7–K8，使用者已於 2026-10-22 審核）
 
 ### 6.1 建置期依賴
 

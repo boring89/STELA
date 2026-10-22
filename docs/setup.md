@@ -1,6 +1,6 @@
 # Setup.app：第一次開機（P12）
 
-> P12 由自動排程一次做完，**使用者尚未審核**。
+> P12 由自動排程一次做完，使用者已於 2026-10-22 審核。
 
 第一次開機時，在 Mouseion 之前先出現 Setup.app，一頁一頁問：語言、時區、Data 卷宗、網路、套件、Classic，最後寫下「設定過了」並啟動 Mouseion。程式碼：`user/setup`（Setup.app）、`user/toolbox/src/i18n.rs`（兩種語言的字串）、`user/init`（決定要不要跑）、`kernel/src/vfs/mount.rs` 的 `format_candidates`／`format_data` 與 syscall 65 `VolumeFormat`。
 

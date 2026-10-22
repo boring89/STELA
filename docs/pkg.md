@@ -1,6 +1,6 @@
 # pkg：套件（P12）
 
-> P12 由自動排程一次做完，**使用者尚未審核**。
+> P12 由自動排程一次做完，使用者已於 2026-10-22 審核。
 
 `pkg` 從套件伺服器安裝程式：ports repo（`docs/ports.md`）編好的 tar 檔，加上一份有簽章的清單（index）。程式碼：`user/pkgcore`（邏輯，也給 Setup.app 用）、`user/pkg`（命令列，`Initrd:/bin/pkg`）、`tools/pkgsign.py`、`tools/make_test_packages.py`。
 

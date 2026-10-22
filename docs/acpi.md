@@ -112,7 +112,7 @@ QEMU 用 `-no-reboot`（Makefile），重設會讓 QEMU 結束、exit status 0�
 |---|---|---|---|
 | 32 | `SystemPower` | kind（`abi::power::SHUTDOWN` 0、`REBOOT` 1）, power（P11：`capability::POWER` 的 handle） | 成功不返回；`AccessDenied`（不是 POWER 能力）、`NotSupported`（不能 ACPI 關機）、`IoError`（寫了但沒關掉）、`InvalidArgument`（kind 不對） |
 
-- **P11（使用者尚未審核）**：要持有 `POWER` 能力（`docs/userland.md` §2.3）。kernel 只給 init；init 給視窗伺服器，視窗伺服器給 Mouseion（特別選單的關機／重新開機）。
+- **P11（使用者已於 2026-10-22 審核）**：要持有 `POWER` 能力（`docs/userland.md` §2.3）。kernel 只給 init；init 給視窗伺服器，視窗伺服器給 Mouseion（特別選單的關機／重新開機）。
 - libstela：`process::shutdown()`、`process::reboot()`（只在失敗時返回 `Error`）：有 `POWER` 就直接呼叫，否則送 `POWER_REQUEST` 給 init（`INIT` 能力）由 init 執行。
 - shell：`shutdown`、`reboot`（沒有 `POWER`，經 init）；失敗時印 `shutdown: NotSupported` 之類。init 收到請求時印 `init: power request N`。
 

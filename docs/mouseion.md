@@ -50,7 +50,7 @@ abi、kernel、libstela         FileGetInfo／FileSetInfo（37、38）、Process
 - FAT 與 Initrd 不存（`NotSupported`，Mouseion 不理會）；`Tmp` 存在記憶體（關機就沒了）。
 - 數值超出 i16 會被夾住，不會繞回。
 
-### 3.1 P11：延伸屬性（使用者尚未審核）
+### 3.1 P11：延伸屬性（使用者已於 2026-10-22 審核）
 
 Mouseion 的資料不再放在 Finder 資訊（那 32 bytes 照 HFS 的原意留給 Mac 的 type/creator/flags/位置，Classic 環境的 FSM 卷宗用它，`docs/classic.md` §7），改放**延伸屬性**（`FileGetAttr`／`FileSetAttr`，`docs/vfs.md` §4.5）：
 
@@ -115,11 +115,11 @@ Mouseion 的資料不再放在 Finder 資訊（那 32 bytes 照 HFS 的原意留
 - **清單檢視的欄位**：第一列是 Name、Size、Kind、Date 的標題，點一個就依它排序（名稱不分大小寫、資料夾在前；大小大的在前；種類；日期新的在前；`model::compare`、`column_at`，host 測試），目前的欄位加底線；Date 欄是本地時間（`docs/time.md` §5.6）。印 `mouseion: sorted by Size`。
 - 都沒有自動測試（要拖放與點擊座標）；排序有 host 測試。
 
-### 5.y P13 K15–K16：程式在容器裡跑（使用者尚未審核）
+### 5.y P13 K15–K16：程式在容器裡跑（使用者已於 2026-10-22 審核）
 
 Mouseion 啟動的程式（bundle、單一程式、Linux 程式，雙擊文件開的 Kalamos／Viewer）沒有 `VOLUMES`：`[3]` 是 `Data:/Programs/NAME/container/`、`[4]` 唯讀（bundle 本身或所在的資料夾），印 `mouseion: started NAME (sandboxed)`；雙擊的文件以 `[6]` 交出去。`Initrd:/` 的 Terminal、Classic、Setup 例外（`TRUSTED`）。檔案拖到別的程式的視窗時，Mouseion 送 `DROP_FILE` 給視窗伺服器（`mouseion: dropped PATH at X,Y`），那個程式收到 `DROPPED`。細節見 `docs/sandbox.md`。
 
-### 5.z P13 K20–K21：Find、改名與 type／creator、桌面圖樣、Sleep Display（使用者尚未審核）
+### 5.z P13 K20–K21：Find、改名與 type／creator、桌面圖樣、Sleep Display（使用者已於 2026-10-22 審核）
 
 - **File > Find...**（Alt-F）：問一行字（`dialog::ask_text_shown`，對話框出現時印 `mouseion: find on VOLUME`），在**前面那個資料夾視窗的卷宗**（沒有就 `Data`）裡找名字含有它的項目（不分大小寫；廣度優先、跳過 `.` 開頭的、最多看 2000 個資料夾、最多 100 個結果），印 `mouseion: found N for "TEXT" on VOLUME`，結果放在一個資訊視窗：每行「路徑  大小  日期」；**雙擊一行打開它所在的資料夾**（`Pane::found`）。
 - **File > Rename...**：用對話框改選取項目的名字（原本「點選取項目的名字」的改名照舊）。**File > Set Type...**：檔案的 Mac type 與 creator（Finder 資訊的前 8 bytes，`TEXT ttxt` 這樣兩個四字元的字，`model::parse_type_creator`）；**Get Info** 多一行 `type:`。計畫寫「Get Info 可改名、改 type/creator」——Get Info 仍是唯讀的資訊視窗，改的動作放在 File 選單（工具箱沒有可編輯的資訊視窗）。
@@ -142,7 +142,7 @@ P11：host `model`——開著的視窗清單的格式往返與壞行、框選�
 | `fstest`（selftest 與 test-storage） | `FileGetInfo`／`FileSetInfo` 往返、資料夾、FAT 回 `NotSupported` |
 | `make test-mouseion` | 一般 kernel + AHCI 測試磁碟（乾淨的那份）：`--click`（先移到左上角，再以 100 像素一步移過去：QEMU 的 PS/2 滑鼠一個事件只送幾個封包）雙擊 Data → `mouseion: opened Data:/` → 雙擊 `welcome.txt` → `viewer: Data:/welcome.txt` → 雙擊 Initrd → 雙擊 Initrd 視窗裡的 `Terminal.app` → 第二個 `STELA shell`；截圖：卷宗圖示（Boot 的 terracotta）、桌面色、新 terminal 的作用中標題列 |
 
-### 7.x P12 的改動（使用者尚未審核）
+### 7.x P12 的改動（使用者已於 2026-10-22 審核）
 
 - 桌面視窗只是右邊放圖示的直條（`docs/window.md` §11）。
 - 名稱以 `.` 開頭的項目不顯示（`.Trash`、`.stela`、`.pkg` 是系統自己的資料夾）。

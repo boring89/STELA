@@ -82,7 +82,7 @@ abi/src/lib.rs                   sysinfo::FramebufferInfo、object_kind::FRAMEBU
 - 映射之後：只有映射它的行程（視窗伺服器）能 attach（其他 → `AccessDenied`）；它結束後恢復開放。
 - 計畫寫的是「持有 Framebuffer handle 的行程」；實作成「映射它的行程」，效果相同、不必掃 handle 表。
 
-## 6. HiDPI（D5；P13 K13–K14 實作，使用者尚未審核）
+## 6. HiDPI（D5；P13 K13–K14 實作，使用者已於 2026-10-22 審核）
 
 介面有一個 **scale**（1 或 2）：一個邏輯像素是 scale × scale 個實體像素。
 

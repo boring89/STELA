@@ -124,7 +124,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 - Classic.app 一次一個（C 的全域狀態是每個行程一份，所以兩個 Classic.app 行程其實可以同時跑，只是會用同一個 `System.img`——不要這樣做）。
 - P11 起設定在 `classic.cfg`（§9）；開機選項 `classic=off` 仍然有效。
 
-## 7. Data 卷宗：File System Manager 外掛（P11 K9，使用者尚未審核）
+## 7. Data 卷宗：File System Manager 外掛（P11 K9，使用者已於 2026-10-22 審核）
 
 **比喻**：玻璃櫃裡的舊電腦本來只有一顆自己的硬碟（`System.img`）。現在在它的背面接一條線到 STELA 的 Data 卷宗：舊電腦以為那是一顆「網路磁碟」，它的檔案櫃管理員（File Manager）每次要找檔案、讀寫，就經這條線問 STELA。
 
@@ -156,7 +156,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 - host：`hostfs` 的測試用記憶體裡的 `Store`：名字兩個方向（`:`／`/`、é ↔ 0x8E、中文 → `_` + `#ID`、超過 31 字元、壞名字）、根與列表（隱藏 `Classic` 與 `.` 開頭的、`TEXT`／`ttxt`、日期、讀、2 GB 上限）、`#ID` 的查詢、寫入（建立、重名、兩個 fork、改長度、Finder 資訊、搬移與改名、搬進自己、非空資料夾、刪除連同 resource fork）、Mouseion 的資訊不給 Mac。
 - `make test-classic`（本機）第三次開機：`run Classic.app --test-fs`：桌面出現三秒後由 Classic.app 自己送鍵盤事件給 Mac——打 `data`（Finder 依名字選取）、Command-O（打開 Data 的視窗）、約 3 秒後 Command-N（新資料夾）——要看到 `classic: fs: created untitled folder`；Classic.app 結束後 shell 的 `ls Data:/` 看得到 `untitled folder`，`shutdown` 後 host 的 `ehfs-ls` 也看得到、`fsck.ehfs` 乾淨。
 
-## 8. NuBus 顯示卡（P11 K11，使用者尚未審核）
+## 8. NuBus 顯示卡（P11 K11，使用者已於 2026-10-22 審核）
 
 **比喻**：IIci 主機板上的顯示晶片只能接 13 吋的 Apple 螢幕（640x480）。真的 Mac 要大螢幕就在 NuBus 插槽插一張顯示卡；卡上有一張「名片」（declaration ROM）告訴 Mac 自己有哪些模式。我們插的是一張**虛擬的卡**（68k_HAL 的 `c/mac/nubus_video.c`，已複製）：名片與驅動程式都在 C 裡，畫面記憶體是 Classic.app 的一塊 32 MiB。
 
@@ -171,7 +171,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 - host：`card_modes`（640x480 = 0、800x600 = 1、1024x768 = 2、1280x960 = 5、沒有的 → None；8 位元 = 3、32 位元 = 5）。
 - `make test-classic`（本機）的第三次開機：`classic.cfg` 寫 `ram=32`、`resolution=800x600`、`depth=1`、`scale=1`（K12、K24），要看到 `classic: screen 800x600 (scale 1)` 與 Finder 的桌面；截圖檢查 640 以右的選單列（白）與 480 以下的桌面格紋。
 
-## 9. `Data:/Classic/classic.cfg`（P11 K12，使用者尚未審核）
+## 9. `Data:/Classic/classic.cfg`（P11 K12，使用者已於 2026-10-22 審核）
 
 一行一個 `key=value`，`#` 之後是註解，前後空白不計；沒有檔案就是預設值。Classic.app 的同樣格式的參數（`run Classic.app resolution=800x600`）蓋過檔案。看不懂的行印出來（`classic: classic.cfg: line N: …（ignored）`）後略過。解析是純邏輯（`classic::config`，host 測試）。
 
@@ -191,7 +191,7 @@ resolution=1024x768
 depth=8
 ```
 
-## 10. 整數放大（P11 K24，使用者尚未審核）
+## 10. 整數放大（P11 K24，使用者已於 2026-10-22 審核）
 
 **比喻**：2560 寬的螢幕上，640x480 的 Mac 只有郵票大小。把每個 Mac 像素畫成 2x2 的方塊（像把照片放大到兩倍，不做平滑），視窗就變成 1280x960，字也看得清楚。
 
@@ -201,7 +201,7 @@ depth=8
 - Monitors 換解析度時重新算 scale（自動時可能從 2 變 1），視窗改成 Mac 解析度 × scale；印 `classic: screen WxH (scale N)`。
 - 測試：host 的 `rows_are_enlarged`（2x2 → 4x4、3 倍、1 倍不變、超出畫面的列略過）、`defaults`（2560x1600 → 2、1920x1080 上 1024x768 → 1、2560x1600 上 1280x800 → 1）。本機 `make test-classic` 的第一次開機沒有 cfg：QEMU 的 2560x1600 → `classic: screen 640x480 (scale 2)`，截圖檢查放大的選單列與 2x2 方格的桌面（`fb_check.py --expect-pattern …,2`）；第三次開機的 cfg 加 `scale=1`（800x600 的卡、原來的檢查）。
 
-## 11. 第二顆磁碟（P11 K25，使用者尚未審核）
+## 11. 第二顆磁碟（P11 K25，使用者已於 2026-10-22 審核）
 
 **比喻**：IIci 的機殼裡可以多裝一顆硬碟。`disk2=Applications.img` 就是把 `Data:/Classic/Applications.img` 當成第二顆硬碟接上，Mac 開機後桌面上多一個卷宗。
 
@@ -213,7 +213,7 @@ depth=8
 - 映像要是**整顆 HFS 卷宗**（沒有分割表，和 `System.img` 一樣；第 1024 byte 是 `BD`）。host 上可以用 hfsutils 做：`truncate -s 100M Applications.img; hformat -l Applications Applications.img`，再 `ehfs-cp` 進 `Data:/Classic/`。
 - 測試：本機 `make test-classic` 的第三次開機（800x600 卡）加 `disk2=Applications.img,ro`：host 用 `hformat` 在 `build/images/` 造 4 MiB 的空白 HFS（`HOME` 指到 `build/images`，hfsutils 的「目前卷宗」紀錄不碰真的家目錄），要看到 `classic: disk2 Applications.img (4096 KiB, read only)` 與 `classic: volume "Applications" (drive 9)`。需要 hfsutils（只有 `test-classic`）。
 
-## 12. Shut Down、Restart 與「拔插頭」（P11 K26，使用者尚未審核）
+## 12. Shut Down、Restart 與「拔插頭」（P11 K26，使用者已於 2026-10-22 審核）
 
 **比喻**：Mac 的 Special > Shut Down 是「正常關機」——Mac 自己把快取寫回磁碟、在卷宗上蓋「已正常卸載」的章，才切電源。Classic.app 的關閉框是「拔插頭」——Mac 來不及做這些事。
 

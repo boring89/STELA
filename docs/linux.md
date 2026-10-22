@@ -1,6 +1,6 @@
 # Linux 相容層（Linux 人格）
 
-> P7 由自動排程一次做完，使用者已於 2026-10-20 審核。P11 的部分（poll、pipe、`/etc`）與 **P12 的行程模型（執行緒、fork、execve、wait、訊號、pty、`/proc`、檔案 mmap，§11–§12）自動排程完成，使用者尚未審核**。
+> P7 由自動排程一次做完，使用者已於 2026-10-20 審核。P11 的部分（poll、pipe、`/etc`）與 **P12 的行程模型（執行緒、fork、execve、wait、訊號、pty、`/proc`、檔案 mmap，§11–§12）自動排程完成，使用者已於 2026-10-22 審核**。
 
 讓靜態連結的 x86-64 Linux 程式（musl）直接在 STELA 上跑：同一條 `syscall` 指令進 kernel，kernel 看行程的「人格」決定用哪一套號碼表。架構決定見 `docs/architecture.md` §4 的 H（Linux 只做 syscall 翻譯，先支援 musl 靜態程式）。STELA 自己的 ABI 見 `docs/syscall.md`。
 
@@ -133,7 +133,7 @@ errno（`linux/errno.rs`）與 `abi::Error` 的對應：`NotFound` → `ENOENT`�
 - `InputAttach` 的目標可以是 tty：input-router 把每個鍵的字元送進它（`kernel::input::Target::Tty`）。
 - libstela：`tty::create()`、`tty::create_with_master()`、`tty::read`、`tty::write`、`ipc::handle_kind`。
 
-### 5.3 `poll`／`select`（P11，使用者尚未審核）
+### 5.3 `poll`／`select`（P11，使用者已於 2026-10-22 審核）
 
 `kernel/src/linux/poll.rs`，用 kernel 的 WaitSet（`docs/ipc.md` §13）：
 
@@ -220,7 +220,7 @@ Linux 程式的 tty：kernel 在 `spawn_linux` 時看 `[1]`：是 Tty 就用它�
 - `/etc` 只有 `resolv.conf`（唯讀，`open` 時才產生內容；寫入 → `EROFS`）；其他名字 → `ENOENT`（musl 找 `/etc/hosts` 時就是這樣，然後走 DNS）。
 - P11：`socket()` 要行程啟動時拿到 `NETWORK` 能力（`docs/userland.md` §2.3），否則 `EACCES`。
 - Linux 程式在看得到的卷宗裡不受 handle 權限限制（P11 前看得到所有卷宗）；之後的沙箱可以再收緊到 `[3]` 那個資料夾以下（`docs/architecture.md` §4.1）。
-- **P13 K15（使用者尚未審核）**：沒有 `VOLUMES` 能力的 Linux 程式（Mouseion 啟動的）只到得了 `[3]`、`[4]` 那兩個資料夾以下（`linux::State::confined`、`path::within`），根目錄不列任何卷宗；fork、execve 保留限制（`docs/sandbox.md` §4）。shell 啟動的照舊。
+- **P13 K15（使用者已於 2026-10-22 審核）**：沒有 `VOLUMES` 能力的 Linux 程式（Mouseion 啟動的）只到得了 `[3]`、`[4]` 那兩個資料夾以下（`linux::State::confined`、`path::within`），根目錄不列任何卷宗；fork、execve 保留限制（`docs/sandbox.md` §4）。shell 啟動的照舊。
 
 ### 7.1 `Tmp`（`vfs/tmpfs.rs`）
 
@@ -256,7 +256,7 @@ kernel 記憶體裡的檔案系統，也是一個一般卷宗（`vols` 看得到
 ```
 
 - `brk(0)` 或範圍外 → 回目前的 break（失敗的表示法）；長大時逐頁映射清零頁框（配不到就不動），縮小時釋放。musl 的 `sbrk(n)` 只接受 n = 0（musl 的設計），malloc（mallocng）用 brk 與 mmap。
-- `mmap`：`MAP_PRIVATE|MAP_ANONYMOUS`；P12 起也接受檔案：`MAP_PRIVATE`（讀進新頁，寫入不回檔案）與沒有 `PROT_WRITE` 的 `MAP_SHARED`（一樣是複本，看不出差別）；可寫的 `MAP_SHARED` → `ENOSYS`；offset 要頁對齊；檔案結尾之後是 0。`MAP_FIXED` 不支援（`ENOSYS`），`PROT_EXEC` → `EACCES`；kernel 選位址，立刻映射全部頁（沒有需求分頁）；`PROT_NONE` 映射成唯讀（STELA 沒有「映射了但不能讀」的頁）。
+- `mmap`：`MAP_PRIVATE|MAP_ANONYMOUS`；P12 起也接受檔案：`MAP_PRIVATE`（讀進新頁，寫入不回檔案）與沒有 `PROT_WRITE` 的 `MAP_SHARED`（一樣是複本，看不出差別）；可寫的 `MAP_SHARED` → `ENOSYS`；offset 要頁對齊；檔案結尾之後是 0。`MAP_FIXED` 與 `PROT_EXEC`：P7 時都拒絕；P12／P13 起的規則見 §12（動態連結：`MAP_FIXED` 給直譯器用、`PROT_EXEC` 只給 lib 目錄或程式所在資料夾的檔案映射）；kernel 選位址，立刻映射全部頁（沒有需求分頁）；`PROT_NONE` 映射成唯讀（STELA 沒有「映射了但不能讀」的頁）。
 - `munmap`：只在映射區內；釋放範圍內的頁；整段都放掉時把位址範圍還給 Regions（部分 munmap 只釋放頁，位址範圍留著）。
 - `mprotect`：加執行權 → `EINVAL`；其他就改每一頁的可寫位元（`AddressSpace::protect`，新增）；沒映射的頁略過。
 
@@ -519,7 +519,7 @@ Rust std 程式的建置（`make linux-rust`，`make linux-tests` 會做）：`r
 - `PROT_NONE` 頁可以讀；部分 `munmap` 不歸還位址範圍。
 - 輸出到沒有 master 的 tty 是同步 `kprint!`；有 master 時超過 64 KiB 未讀的輸出會被丟掉。
 
-## 16. 動態連結（P13 K5，使用者尚未審核）
+## 16. 動態連結（P13 K5，使用者已於 2026-10-22 審核）
 
 ### 16.1 比喻
 

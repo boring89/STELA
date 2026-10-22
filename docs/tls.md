@@ -1,6 +1,6 @@
 # TLS：HTTPS（P12）
 
-> P12 由自動排程一次做完，**使用者尚未審核**。
+> P12 由自動排程一次做完，使用者已於 2026-10-22 審核。
 
 STELA 的程式現在可以用 `https://`：`fetch`、Periplus、`pkg`（`docs/pkg.md`）都經 libstela 的 `tls` 模組。TLS 1.3 的協定由 `embedded-tls`（crates.io，Apache-2.0）做，密碼學是 RustCrypto 的 crate；STELA 自己做的是：亂數的來源（kernel 的 `Random`）、socket 的轉接、從 Mozilla 的根憑證清單挑出對的那一張、以及資料怎麼放進 initrd。
 

@@ -59,7 +59,7 @@
 
 可量測目標：kernel 映像 ≤ 2 MiB；無 KVM 的 QEMU 開機到桌面 ≤ 5 秒；桌面閒置時 kernel + 視窗伺服器 + Mouseion ≤ 64 MiB；相依 crate 以「必要」為原則。`make test` 要加一條最小 CPU 模型（例如 QEMU `-cpu Conroe`）、不開 KVM、`-m 256M` 的開機測試。P11 起 `make bench` 量這些目標（`docs/bench.md`）。
 
-### 3.1 規模目標（P12，使用者 2026-10-21 決定，尚未審核實作）
+### 3.1 規模目標（P12，使用者 2026-10-21 決定，實作已於 2026-10-22 審核）
 
 | 項目 | 目標 | 怎麼確保 |
 |---|---|---|
@@ -80,7 +80,7 @@
 - **F 驅動**：kernel 內 safe Rust，只透過 frame 的 API 碰 MMIO／DMA；大型驅動（GPU）之後可例外放使用者空間。驅動永遠不開放第三方。
 - **G 圖形**：kernel 只提供 framebuffer／顯示模式與輸入事件；視窗伺服器與繪圖在使用者空間；髒矩形合成、不做全畫面 alpha、不做動畫與透明效果。
 - **H 相容層**：Linux 只做 syscall 翻譯，先支援 musl 靜態程式；Classic 環境以 Linux 相容層的程式形式存在，不另養 C 執行期。
-  - P12（使用者尚未審核）：Linux 相容層現在有完整的行程模型——執行緒（clone = STELA 的執行緒）、fork（全複製）、execve、wait、訊號、pty、`/proc`（`docs/linux.md` §11–§12）；ports（`docs/ports.md`）在它上面跑 dash、make、tcc、BusyBox 等。
+  - P12（使用者已於 2026-10-22 審核）：Linux 相容層現在有完整的行程模型——執行緒（clone = STELA 的執行緒）、fork（全複製）、execve、wait、訊號、pty、`/proc`（`docs/linux.md` §11–§12）；ports（`docs/ports.md`）在它上面跑 dash、make、tcc、BusyBox 等。
   - P10 偏離（使用者 2026-10-20 同意）：Classic 環境是 **STELA 原生程式**（`classic/`，Rust 包裝 + C 核心經 FFI，C 以 freestanding 的 gcc 編、只用最小的 libc 替身），不是 Linux 相容程式（`docs/classic.md`）。
 - **I 安全**：單使用者 + handle 式能力 + 應用程式沙箱。
 

@@ -1,6 +1,6 @@
 # STELA 使用手冊
 
-> P13 I（K24）由自動排程寫成，**使用者尚未審核**。英文版：`docs/guide.en.md`。STELA 裡也看得到：Periplus 的首頁有連結（`Initrd:/doc/guide.html`）。
+> P13 I（K24）由自動排程寫成，使用者已於 2026-10-22 審核。英文版：`docs/guide.en.md`。STELA 裡也看得到：Periplus 的首頁有連結（`Initrd:/doc/guide.html`）。
 
 STELA 是一套從零寫起的作業系統（x86-64、UEFI）：像 Classic Mac OS 一樣簡單、用空間的方式管檔案，同時有現代系統的功能。這份手冊說明怎麼用它。每一段最後的「試試看」都可以在 QEMU 裡重現：在原始碼目錄打 `make run`（沒有 Data 卷宗，提示符是 `Initrd:/>`），或用 `make disk-image` 做一顆有 Data 卷宗的映像（`docs/p520.md`）。
 

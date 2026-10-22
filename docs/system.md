@@ -130,7 +130,7 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Initrd (initrd, ro
 
 Setup 的 install 頁把 ESP、System A（掛著的槽的映像）、空的 System B、空的 Data 寫到一整顆空白的磁碟（`vfs::mount::install`，`docs/setup.md` §4.2）。所以「安裝」也只是複製簽好的 System 映像，和更新是同一套格式。
 
-## 7. 測試（K4 的部分）
+## 7. 測試
 
 | 測試 | 內容 |
 |---|---|
@@ -138,17 +138,22 @@ Setup 的 install 頁把 ESP、System A（掛著的槽的映像）、空的 Syst
 | host `sysimage`（K5） | 尾端的編碼往返、測試鑰匙的簽章（改一個簽過的 byte 就不對、改沒簽的部分沒關係、別的鑰匙不對）、壞的尾端、分段算 SHA-256；slot 檔的文字往返與壞的；`plan`：沒有檔 → A、`new` 或嘗試 > 0 → 整個算、`verify`、兩次失敗 → 另一槽、boot.cfg 指定；更新後的開機、兩次失敗、退回 A、`BootOk`、指定時不寫 |
 | host `pkgcore`（K6） | index 的 `system` 項 |
 | `make test-update`（K6–K7） | `make_disk_image.py`：System A = 這次的映像、B 空的；Data 放「下一版」（`VERSION` 最後一個數字 +1）、簽章壞掉的一份、這次的映像一份。四次開機，都經 Mouseion 的鍵盤選單（Alt-M → Special → Software Update…）：① apply 下一版 → `wrote 100%`、`the next start uses slot b`、Enter 重開；host 讀 slot 檔 = `b 0 new`。② `slot b (…, checked in full)`、`confirmed`；壞簽章 → `the signature is not STELA's`；rollback → `the next start uses slot a`（Esc：稍後）；再 apply 下一版到 A，`wrote 25%` 時殺掉 QEMU；host：slot 檔 = `b 0`。③ 仍是 `slot b`；rollback → 拒絕（A 只寫了一部分）；apply 這次的映像 → A、重開。④ `slot a (…, checked in full)`、`confirmed`；slot 檔 = `a 0` |
-| `make test-disk-image`（K5） | STELA System／Data 的 GUID 字串 |
+| host `block`（K5、K7） | STELA System／Data 的 GUID 字串；`gpt::write` 寫 512 與 4096 扇區的表再讀回、超出範圍的分割區被拒 |
 | `make test-disk-image`（K5） | 映像有 ESP + System A（`build/system.img`）+ 空的 System B + Data：`system: slot a (version …)`、`System (eHFS, ro, …)`、桌面起來後 `system: slot a confirmed`；關機後 host 讀 ESP 的 `STELA/slot` 是 `a 0`（mtools） |
 | 每個一般 kernel 的 QEMU 測試 | `QEMU_FLAGS` 多一顆 `build/system.img`（`SYSTEM_DRIVE`：`ide.2`、`snapshot=on`，所以並排的測試共用、從不寫入）；selftest kernel 的測試（`QEMU_TEST_FLAGS`）不接 |
 | `make test-mouseion` | 5 個卷宗；Initrd 視窗裡刪 `Setup.app` 被拒、雙擊 `Terminal.app`；第四次開機雙擊桌面的 System → `Programs` → `Echo.app has its own icon` |
 | `make test-sandbox` | 容器裡的程式 `VolumeOpen("System")` 可以 |
-| `make test-setup` | 第一次開機沒有 System：`mouseion: no System volume` |
+| `make test-setup` | 第一次開機沒有 System：`mouseion: no System volume`；K7：安裝到第二顆空白磁碟、從它開機（`docs/setup.md` §5） |
 | `make test-shell`、`test-linux`、`test-browser` 等 | 工具、`linux/dyn`（`System:/linux/lib`）、`System:/doc/guide.html` 都從 System 來 |
 
-## 9. 已知限制（K4）
+## 8. 已知限制
 
 - System 映像每次 `make` 都重做（`mkfs` 的 UUID 與時間是新的，內容相同時位元組也不同）。
 - 整顆磁碟形式的 System 看卷宗名與簽章（K5）。
 - 簽章用的是**測試鑰匙**（`tools/pkg.pub`）：任何人都能做出 kernel 接受的 System 映像，正式發布前一定要換（§3）。
 - slot 檔放在 ESP（FAT），kernel 寫它時沒有日誌：寫到一半斷電可能留下壞的 slot 檔——壞的或讀不到就當 `a 0`。
+- 槽只有兩個、大小固定（`make disk-image` 的 `SYSTEM_MIB`，預設 64 MiB；映像 16 MiB，`SYSTEM_IMG_MIB`）；映像比槽大就裝不進去（`make_disk_image.py` 拒絕、`PartitionWrite` 回 `InvalidArgument`）。
+- 更新是整個映像（16 MiB）重寫，沒有差分；從套件伺服器下載時整個放在記憶體裡。
+- 「開到桌面」= Mouseion 呼叫 `BootOk`；文字模式（`textmode`）或沒有 Mouseion 的開機永遠不會確認，兩次後就換槽——要用文字模式時請在 `boot.cfg` 寫 `system=a|b`（指定時不計次）。
+- 只有 Mouseion（有 `POWER`）能更新；沒有「自動檢查更新」。
+- 實機未驗證（OVMF 從新磁碟開機、slot 檔寫在 ESP 上都只在 QEMU）。

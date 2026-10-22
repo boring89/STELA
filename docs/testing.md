@@ -106,3 +106,33 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 | `procs` | +59 KB／100 個行程 | 行程表的紀錄用 `Weak<Process>`：`Weak` 讓整個 `Process` 的配置在最後一個 `Arc` 之後還留著。`process::finish` 時把它換成空的 `Weak` | +13.7 KB（每個約 137 bytes：名字與 exit code，已知問題「Exited 紀錄永遠不清」，process handle 只記 id，要回收得先改 handle） |
 | `windows` | +11 KB／連線、handle 槽 +1 | toolbox 的 `Connection` 沒有 `Drop`：伺服器只在程式結束時才清 client，同一個程式反覆連線就每次留下一個（port、佇列、紀錄）。新的請求 `DISCONNECT`（0x10B，`docs/window.md`），`Connection` 被 drop 時送 | +16 bytes、handle 不變 |
 | `files`、`pipe`、`tcp` | 幾十 bytes 以內 | — | — |
+
+## 5. 平行測試（`make test -jN`，P13 K23，使用者尚未審核）
+
+**比喻**：原本一間考場一次只考一科；現在同時開好幾間考場。前提是考生不能共用同一份考卷、同一支電話：每個 QEMU 測試要有自己的東西。
+
+`make test` 先跑 `test-host` 與 `test-fuzz`，再用一個子 make 跑 `test-qemu-all`（= `QEMU_TESTS` 的每一個）。沒有 `-j` 時順序和以前一樣；`make -j6 test` 時 QEMU 測試並排跑（子 make 繼承 jobserver）。為了能並排，P13 改了這些共用的東西：
+
+| 共用的 | 問題 | 改成 |
+|---|---|---|
+| `build/OVMF_VARS.fd`（pflash，可寫） | QEMU 鎖住檔案，第二個 QEMU 打不開 | `snapshot=on`：寫入進暫存檔，同一個檔案可以同時給很多個 QEMU（測試不需要留下 UEFI 變數） |
+| HTTP／HTTPS 的 port | test-net 與 test-browser 都用 8642；test-tls 與 test-pkg 都用 8643–8646 | 各自的 port：`NET_PORT` 8642、`TLS_PORT` 8643（+1..+3 由它算出來）、`BROWSER_PORT` 8647、`USERNET_PORT` 8650、`PKG_PORT` 8653；都能在命令列改（`make test NET_PORT=9642 …`，兩個 worktree 同時測時用） |
+| `build/www` | 幾個測試同時寫 `hello.txt` 等檔案 | `build/www-user`、`www-tls`、`www-pkg`、`www-browser`；test-pkg 的憑證在 `build/tls-pkg` |
+| `build/images/ahci.img` | test-storage 直接寫它，其他測試同時在複製它 | test-storage 用自己的 `ahci-storage.img`、`nvme-storage.img`；`ahci.img` 保持剛做好的樣子 |
+| `build/esp-scale1` | test-window 與 test-mouseion 都 `rm -rf` 再複製 | test-mouseion 用 `build/esp-scale1-m` |
+
+已經各自分開的：每個測試的 log、截圖（monitor socket 跟著截圖的名字）、QMP socket（`build/qmp-PID.sock`）、其他 ESP 副本與磁碟複本。ESP 本身（`fat:rw:build/esp`）可以同時給很多個 QEMU 讀（STELA 不寫 Boot）。
+
+**CI**（`.github/workflows/ci.yml`）：`host` job 跑 fmt、clippy、`make test-host test-fuzz`；`qemu` job 是三個 shard 的 matrix，各跑 `make -j2 test-qemu-shard N=… SHARDS=3`（測試名稱的 `cksum` 模 3；分組不平均：9／5／10 個）。
+
+**時間**（本機 12 核、TCG，`make clean` 之後，含建置）：`make clean && make -j6 test` 249 秒（約 4 分鐘，24 個 QEMU 目標、37 次開機全過；那時另一個 worktree 同時在跑序列的 `make test`，所以單獨跑會更快）；序列的 `make clean && make test` 約 15 分鐘（這次的 worktree 執行）。計畫的目標「總 wall time ≤ 6 分鐘」在本機達成；CI（4 核的 runner、每個 shard `-j2`）沒有量到。
+
+計畫外的決定：
+
+- port 用**每個目標固定、不同的號碼**，不是計畫寫的 `--port 0` 自動選 + `{HTTP_PORT}` 替換：測試打的網址與預期的輸出都直接用 make 變數，比讓 `qemu_test.py` 讀 port 檔、替換字串簡單；代價是 host 上那些 port 被別的程式佔住時會失敗（可以在命令列換）。
+- 沒有把每個目標的東西都搬進 `build/run/<目標>/`：只把真的共用的（上表）分開，其他本來就各自的名字不動（改動小，log 與截圖的位置不變）。
+- `test` 改成先跑 host 的測試、再用子 make 跑 QEMU 的（計畫「test-host 先」）。
+- shard 用名稱的 cksum（計畫「依名稱 hash 分組」），沒有依時間平衡。
+
+已知限制：CI 的設定沒有在 GitHub 上跑過（這次不能 push）；`-j` 太大時 TCG 變慢，逾時（多數 90–180 秒）可能不夠；本機專用的目標（test-classic、test-ports、test-stress、bench）沒有改（它們不在 `make test` 裡，彼此也不並排跑）。
+

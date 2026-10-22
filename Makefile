@@ -70,9 +70,12 @@ LINUX_RUSTFLAGS := -C relocation-model=static -C target-feature=+crt-static \
 OVMF_CODE   := /usr/share/OVMF/OVMF_CODE_4M.fd
 OVMF_VARS   := /usr/share/OVMF/OVMF_VARS_4M.fd
 QEMU        := qemu-system-x86_64
+# P13 K23 (docs/testing.md §5): the firmware's variables as a snapshot
+# (snapshot=on: writes go to a temporary file), so that several QEMUs can
+# use the same file at once (make test -jN).
 QEMU_BASE   := -machine q35 -m 512M -no-reboot -rtc base=utc \
                -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
-               -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd
+               -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd,snapshot=on
 QEMU_FLAGS  := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP)
 # The self-test kernel leaves QEMU through isa-debug-exit: writing v to port
 # 0xF4 exits with status (v << 1) | 1, so 0x10 (success) gives 33.
@@ -94,6 +97,7 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 # dependency, P12), so the workspace's is named with its version.
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
+.PHONY: test-qemu-all test-qemu-shard
 .PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
@@ -259,7 +263,25 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-net-user test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-browser
+# The tests that boot STELA in QEMU. P13 K23 (docs/testing.md §5): they
+# share no port, disk image, ESP copy or file the others write, so
+# `make test -jN` runs them side by side.
+QEMU_TESTS := test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-net-user test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-browser
+
+# The host's tests first, then the QEMU ones (in this order, or side by
+# side with -jN).
+test: test-host test-fuzz
+	$(MAKE) --no-print-directory test-qemu-all
+
+test-qemu-all: $(QEMU_TESTS)
+
+# CI's QEMU shards (P13 K23): the QEMU tests whose name's checksum is N
+# modulo SHARDS (`make test-qemu-shard N=0 SHARDS=3`).
+SHARDS ?= 3
+N ?= 0
+test-qemu-shard:
+	$(MAKE) --no-print-directory $$(for t in $(QEMU_TESTS); do \
+		[ $$(( $$(printf %s $$t | cksum | cut -d' ' -f1) % $(SHARDS) )) -eq $(N) ] && echo $$t; done)
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -508,24 +530,29 @@ test-net: esp $(BUILD)/OVMF_VARS.fd
 # another name, an expired one, a self-signed one and (with the system's
 # Mozilla roots) the test root's.
 TLS_PORT := 8643
+# The other three servers of with_https.py (P13 K23: from TLS_PORT, so
+# that all the ports can be moved: make test TLS_PORT=...).
+TLS_WRONG   = $(shell echo $$(($(TLS_PORT) + 1)))
+TLS_EXPIRED = $(shell echo $$(($(TLS_PORT) + 2)))
+TLS_OTHER   = $(shell echo $$(($(TLS_PORT) + 3)))
 test-tls: esp test-images $(BUILD)/OVMF_VARS.fd
 	python3 tools/make_test_certs.py $(BUILD)/tls
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-tls.img
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-tls.img in $(BUILD)/tls/ca.der /test-ca.der
-	mkdir -p $(BUILD)/www
-	printf 'hello over TLS\n' > $(BUILD)/www/tls.txt
-	python3 tools/with_https.py $(BUILD)/www $(BUILD)/tls $(TLS_PORT) -- \
+	mkdir -p $(BUILD)/www-tls
+	printf 'hello over TLS\n' > $(BUILD)/www-tls/tls.txt
+	python3 tools/with_https.py $(BUILD)/www-tls $(BUILD)/tls $(TLS_PORT) -- \
 		python3 tools/qemu_test.py --timeout 180 --log $(BUILD)/test-tls.log \
 		--type "STELA shell" "run fetch --ca test-ca.der https://10.0.2.2:$(TLS_PORT)/tls.txt\n" \
-		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:8644/tls.txt\n" \
-		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:8645/tls.txt\n" \
-		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:8646/tls.txt\n" \
+		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:$(TLS_WRONG)/tls.txt\n" \
+		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:$(TLS_EXPIRED)/tls.txt\n" \
+		--type "fetch exited with code" "run fetch --ca test-ca.der https://10.0.2.2:$(TLS_OTHER)/tls.txt\n" \
 		--type "fetch exited with code" "run fetch https://10.0.2.2:$(TLS_PORT)/tls.txt\n" \
 		--expect "fetch: https://10.0.2.2:$(TLS_PORT)/tls.txt: HTTP 200, 15 bytes" \
 		--expect "hello over TLS" --expect "fetch exited with code 0" \
-		--expect "fetch: https://10.0.2.2:8644/tls.txt: access denied" \
-		--expect "fetch: https://10.0.2.2:8645/tls.txt: access denied" \
-		--expect "fetch: https://10.0.2.2:8646/tls.txt: access denied" \
+		--expect "fetch: https://10.0.2.2:$(TLS_WRONG)/tls.txt: access denied" \
+		--expect "fetch: https://10.0.2.2:$(TLS_EXPIRED)/tls.txt: access denied" \
+		--expect "fetch: https://10.0.2.2:$(TLS_OTHER)/tls.txt: access denied" \
 		--expect "fetch: https://10.0.2.2:$(TLS_PORT)/tls.txt: access denied" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-tls.img \
@@ -537,18 +564,21 @@ test-tls: esp test-images $(BUILD)/OVMF_VARS.fd
 # Initrd:/certs/pkg.pub), served over HTTPS with the test root trusted
 # through Data:/.stela/pkg.conf. pkg updates, searches, installs with the
 # dependency, the shell runs the installed program, pkg removes one.
+# P13 K23: its own port, certificates and folder (make -j runs it next to
+# test-tls).
+PKG_PORT := 8653
 test-pkg: esp test-images $(BUILD)/OVMF_VARS.fd
-	python3 tools/make_test_certs.py $(BUILD)/tls
+	python3 tools/make_test_certs.py $(BUILD)/tls-pkg
 	python3 tools/pkgsign.py keygen $(BUILD)/pkg-signing.key $(BUILD)/pkg.pub
 	cmp $(BUILD)/pkg.pub tools/pkg.pub
-	rm -rf $(BUILD)/www/pkg
-	python3 tools/make_test_packages.py $(USER_DIR)/linux/hello $(BUILD)/www/pkg
-	python3 tools/pkgsign.py index $(BUILD)/pkg-signing.key $(BUILD)/www/pkg https://10.0.2.2:$(TLS_PORT)/pkg/
+	rm -rf $(BUILD)/www-pkg
+	python3 tools/make_test_packages.py $(USER_DIR)/linux/hello $(BUILD)/www-pkg/pkg
+	python3 tools/pkgsign.py index $(BUILD)/pkg-signing.key $(BUILD)/www-pkg/pkg https://10.0.2.2:$(PKG_PORT)/pkg/
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-pkg.img
-	printf 'server = https://10.0.2.2:$(TLS_PORT)/pkg/\nca = Data:/test-ca.der\n' > $(BUILD)/pkg.conf
-	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-pkg.img in $(BUILD)/tls/ca.der /test-ca.der
+	printf 'server = https://10.0.2.2:$(PKG_PORT)/pkg/\nca = Data:/test-ca.der\n' > $(BUILD)/pkg.conf
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-pkg.img in $(BUILD)/tls-pkg/ca.der /test-ca.der
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-pkg.img in $(BUILD)/pkg.conf /.stela/pkg.conf
-	python3 tools/with_https.py $(BUILD)/www $(BUILD)/tls $(TLS_PORT) -- \
+	python3 tools/with_https.py $(BUILD)/www-pkg $(BUILD)/tls-pkg $(PKG_PORT) -- \
 		python3 tools/qemu_test.py --timeout 240 --log $(BUILD)/test-pkg.log \
 		--type "STELA shell" "run pkg update\n" \
 		--type "pkg exited with code" "run pkg search greet\n" \
@@ -695,10 +725,10 @@ test-net-user: esp $(BUILD)/OVMF_VARS.fd
 	rm -rf $(ESP_USERNET)
 	cp -r $(ESP) $(ESP_USERNET)
 	printf 'usernet\n' > $(ESP_USERNET)/STELA/boot.cfg
-	mkdir -p $(BUILD)/www
-	printf 'hello from the host over TCP\n' > $(BUILD)/www/hello.txt
+	mkdir -p $(BUILD)/www-user
+	printf 'hello from the host over TCP\n' > $(BUILD)/www-user/hello.txt
 	for card in e1000e:MSI e1000:polled; do dev=$${card%%:*}; how=$${card#*:}; \
-		python3 tools/with_http.py $(BUILD)/www $(USERNET_PORT) -- \
+		python3 tools/with_http.py $(BUILD)/www-user $(USERNET_PORT) -- \
 		python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-net-user-$$dev.log \
 			--type "STELA shell" "ifconfig\n" \
 			--type "inet 10.0.2.15" "ping 10.0.2.2 2\n" \
@@ -776,6 +806,8 @@ WINDOW_CHECKS_1X := --expect-rect 1000,1100,300,300,\#5b7b86 --expect-rect 1300,
 	--expect-rect 300,72,100,10,\#d8cdb8 --expect-text 44,112,1280,800,\#f2e8d5,4 \
 	--expect-rect 1864,104,80,8,\#c8763c --expect-text 1848,144,648,440,\#f2e8d5,3
 ESP_SCALE1 := $(BUILD)/esp-scale1
+# test-mouseion's (P13 K23: not shared, make -j).
+ESP_SCALE1M := $(BUILD)/esp-scale1-m
 test-window: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --timeout 90 --screendump $(BUILD)/screen.ppm --log $(BUILD)/test-window.log \
 		--type "STELA shell" "uptime\n" --type "uptime:" "run Echo.app\n" \
@@ -1081,9 +1113,9 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 	python3 tools/fb_check.py $(BUILD)/mouseion.ppm $(MOUSEION_CHECKS)
 	# P13 K14: the same clicks at scale 1 (boot.cfg scale=1), where the
 	# layout is the old one (icons 64, 16x32 font, physical pixels).
-	rm -rf $(ESP_SCALE1)
-	cp -r $(ESP) $(ESP_SCALE1)
-	printf 'scale=1\n' > $(ESP_SCALE1)/STELA/boot.cfg
+	rm -rf $(ESP_SCALE1M)
+	cp -r $(ESP) $(ESP_SCALE1M)
+	printf 'scale=1\n' > $(ESP_SCALE1M)/STELA/boot.cfg
 	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-mouseion-1x.img
 	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-mouseion-1x.log \
 		--click "mouseion: started Terminal" 2464 204 2 \
@@ -1093,7 +1125,7 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "windowserver: scale 1" --expect "mouseion: opened Data:/" \
 		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
 		--expect "mouseion: selected Classic.app" \
-		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SCALE1) -display none -serial stdio \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SCALE1M) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion-1x.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-mouseion-2.log \
@@ -1216,21 +1248,23 @@ test-ime: esp test-images $(BUILD)/OVMF_VARS.fd
 # with_http.py). /sub redirects to /sub/ (the host's server does that for
 # folders); Tab and Enter follow its link to page2.html; Alt-Left goes
 # back.
+# P13 K23: its own port and folder (make -j runs it next to test-net).
+BROWSER_PORT := 8647
 test-browser: esp $(BUILD)/OVMF_VARS.fd
-	mkdir -p $(BUILD)/www/sub
-	printf '<!DOCTYPE html>\n<html><head><title>Sub page</title></head>\n<body><h1>Sub page</h1><p>Go to <a href="../page2.html">the second page</a>.</p></body></html>\n' > $(BUILD)/www/sub/index.html
-	printf '<html><head><title>Second page</title></head><body><p>Back to <a href="sub/">the sub page</a>.</p></body></html>\n' > $(BUILD)/www/page2.html
-	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- \
+	mkdir -p $(BUILD)/www-browser/sub
+	printf '<!DOCTYPE html>\n<html><head><title>Sub page</title></head>\n<body><h1>Sub page</h1><p>Go to <a href="../page2.html">the second page</a>.</p></body></html>\n' > $(BUILD)/www-browser/sub/index.html
+	printf '<html><head><title>Second page</title></head><body><p>Back to <a href="sub/">the sub page</a>.</p></body></html>\n' > $(BUILD)/www-browser/page2.html
+	python3 tools/with_http.py $(BUILD)/www-browser $(BROWSER_PORT) -- \
 		python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-browser.log \
 		--type "STELA shell" "run Periplus.app\n" \
-		--type "periplus: loaded stela:home" "http://10.0.2.2:$(NET_PORT)/sub\n" \
+		--type "periplus: loaded stela:home" "http://10.0.2.2:$(BROWSER_PORT)/sub\n" \
 		--send-keys "Sub page" "tab ret" \
 		--send-keys "Second page" "alt-left" \
 		--send-keys "Sub page" "ctrl-l shift-i n i t r d shift-semicolon slash d o c slash g u i d e dot h t m l ret" \
 		--expect "periplus: loaded stela:home" \
-		--expect 'periplus: loaded http://10.0.2.2:$(NET_PORT)/sub/ (title "Sub page")' \
-		--expect 'periplus: loaded http://10.0.2.2:$(NET_PORT)/page2.html (title "Second page")' \
-		--expect 'periplus: loaded http://10.0.2.2:$(NET_PORT)/sub/ (title "Sub page")' \
+		--expect 'periplus: loaded http://10.0.2.2:$(BROWSER_PORT)/sub/ (title "Sub page")' \
+		--expect 'periplus: loaded http://10.0.2.2:$(BROWSER_PORT)/page2.html (title "Second page")' \
+		--expect 'periplus: loaded http://10.0.2.2:$(BROWSER_PORT)/sub/ (title "Sub page")' \
 		--expect 'periplus: loaded Initrd:/doc/guide.html (title "STELA 使用手冊")' \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 
@@ -1256,9 +1290,9 @@ test-ehfs-compat: ehfs-tools
 # writes them): an AHCI disk (512-byte sectors) and an NVMe namespace
 # (4096-byte blocks), 64 MiB each, starting with the test-disk magic.
 IMAGES      := $(BUILD)/images
-STORAGE_FLAGS = -drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci.img \
+STORAGE_FLAGS = -drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-storage.img \
 	-device ide-hd,drive=sata1,bus=ide.1 \
-	-drive if=none,id=nvm1,format=raw,file=$(IMAGES)/nvme.img \
+	-drive if=none,id=nvm1,format=raw,file=$(IMAGES)/nvme-storage.img \
 	-device nvme,serial=stela-nvme,drive=nvm1,logical_block_size=4096,physical_block_size=4096
 
 test-images: ehfs-tools
@@ -1270,6 +1304,9 @@ test-images: ehfs-tools
 # host's fsck.ehfs checks both eHFS volumes.
 STORAGE_EXPECT := --expect "vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Archive (eHFS, rw, 62 MiB)"
 test-storage: esp-test test-images $(BUILD)/OVMF_VARS.fd
+	# P13 K23: on copies (the others copy ahci.img while this runs, make -j).
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-storage.img
+	cp $(IMAGES)/nvme.img $(IMAGES)/nvme-storage.img
 	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) $(STORAGE_EXPECT) \
 		--expect "storage: ahci0p1 boot 1" --expect "storage: nvme0n1 boot 1" \
 		--expect "fstest: boot 1" --expect "fstest: OK" \
@@ -1278,9 +1315,9 @@ test-storage: esp-test test-images $(BUILD)/OVMF_VARS.fd
 		--expect "storage: ahci0p1 boot 2" --expect "storage: nvme0n1 boot 2" \
 		--expect "fstest: boot 2" --expect "fstest: OK" \
 		--expect "selftest: OK" -- $(QEMU) $(QEMU_TEST_FLAGS) $(STORAGE_FLAGS)
-	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci.img
-	$(EHFS_TOOLS)/fsck.ehfs --offset 2048 $(IMAGES)/nvme.img
-	$(EHFS_TOOLS)/ehfs-ls --offset 83968 $(IMAGES)/ahci.img /
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-storage.img
+	$(EHFS_TOOLS)/fsck.ehfs --offset 2048 $(IMAGES)/nvme-storage.img
+	$(EHFS_TOOLS)/ehfs-ls --offset 83968 $(IMAGES)/ahci-storage.img /
 
 # The ports (P12, docs/ports.md): build, package and test every port of
 # the ports repository (PORTS_DIR, default ~/stela-ports) in QEMU. Local

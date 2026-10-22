@@ -148,6 +148,7 @@ Mouseion 的 **Mouseion > About STELA**（K28）：版本、CPU、處理器數�
 ### 4.1 測試
 
 - host：`libstela::http`（標頭、chunked、HTML 判斷、連結解析）、`periplus`（實體與 tokenizer、整頁的區塊與連結、換行與連結位置、清單／pre／表格、太長的字）。
+- P13 K24：首頁多了使用手冊的連結（`Initrd:/doc/guide.html`、`guide.en.html`，`tools/md_to_html.py` 從 `docs/guide.md`、`guide.en.md` 轉出來）；「HTTP only」的說明改成 HTTP 與 HTTPS（P12 起就有）。`make test-browser` 最後打開中文手冊（`title "STELA 使用手冊"`）。
 - `make test-browser`（加進 `make test`）：host 的 `with_http.py` 提供 `build/www`（`sub/index.html` 與 `page2.html`）；shell `run Periplus.app` → 首頁 → 打 `http://10.0.2.2:8642/sub`（host 的伺服器把資料夾轉址到 `/sub/`）→ `loaded …/sub/ (title "Sub page")` → Tab Enter 跟著 `../page2.html` → `(title "Second page")` → Alt-Left 回到 `…/sub/`。
 
 ### 4.2 限制

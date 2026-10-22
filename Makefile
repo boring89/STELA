@@ -128,6 +128,9 @@ initrd: user linux-tests
 	cp tools/pkg.pub $(INITRD_ROOT)/certs/pkg.pub
 	mkdir -p $(INITRD_ROOT)/chewing
 	cp $(CHEWING_DIR)/data/* $(INITRD_ROOT)/chewing/
+	mkdir -p $(INITRD_ROOT)/doc
+	python3 tools/md_to_html.py docs/guide.md $(INITRD_ROOT)/doc/guide.html
+	python3 tools/md_to_html.py docs/guide.en.md $(INITRD_ROOT)/doc/guide.en.html
 	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
 		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
 		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
@@ -267,6 +270,7 @@ test-host: initrd host-images $(CHEWING_DATA)
 	diff -r $(BUILD)/assets-check assets/generated
 	cargo test $(addprefix -p ,$(HOST_CRATES))
 	cargo test --lib $(addprefix -p ,$(HOST_LIB_CRATES))
+	python3 tools/md_to_html.py --test
 
 # Fuzzing on the host (P11 K45, docs/testing.md §3): the parsers of
 # disks (eHFS, FAT, GPT, MBR), the initrd, network frames (and two stacks
@@ -1222,10 +1226,12 @@ test-browser: esp $(BUILD)/OVMF_VARS.fd
 		--type "periplus: loaded stela:home" "http://10.0.2.2:$(NET_PORT)/sub\n" \
 		--send-keys "Sub page" "tab ret" \
 		--send-keys "Second page" "alt-left" \
+		--send-keys "Sub page" "ctrl-l shift-i n i t r d shift-semicolon slash d o c slash g u i d e dot h t m l ret" \
 		--expect "periplus: loaded stela:home" \
 		--expect 'periplus: loaded http://10.0.2.2:$(NET_PORT)/sub/ (title "Sub page")' \
 		--expect 'periplus: loaded http://10.0.2.2:$(NET_PORT)/page2.html (title "Second page")' \
 		--expect 'periplus: loaded http://10.0.2.2:$(NET_PORT)/sub/ (title "Sub page")' \
+		--expect 'periplus: loaded Initrd:/doc/guide.html (title "STELA 使用手冊")' \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.

@@ -92,6 +92,39 @@ pub mod request {
     /// P13 K16, from Mouseion: x, y (on the screen), then the file's path;
     /// carries the file. The window there gets it as `DROPPED`.
     pub const DROP_FILE: u32 = 0x110;
+    /// P13 K20, from Mouseion's Preferences: the desktop's pattern
+    /// (`backdrop::*`) and colour (`0x00RRGGBB`; 0: the usual one).
+    pub const SET_BACKDROP: u32 = 0x111;
+    /// P13 K21, Mouseion's Special > Sleep Display: blank the screen now
+    /// (the next key or mouse event wakes it).
+    pub const BLANK: u32 = 0x112;
+}
+
+/// The desktop's patterns (P13 K20; `Data:/.stela/desktop`:
+/// `pattern=plain|meander|waves`, `color=RRGGBB`).
+pub mod backdrop {
+    /// One colour.
+    pub const PLAIN: u32 = 0;
+    /// The Greek key.
+    pub const MEANDER: u32 = 1;
+    /// Waves.
+    pub const WAVES: u32 = 2;
+    /// The word for `pattern` in the settings file.
+    pub fn name(pattern: u32) -> &'static str {
+        match pattern {
+            MEANDER => "meander",
+            WAVES => "waves",
+            _ => "plain",
+        }
+    }
+    /// The pattern a word names.
+    pub fn from_name(word: &str) -> u32 {
+        match word {
+            "meander" => MEANDER,
+            "waves" => WAVES,
+            _ => PLAIN,
+        }
+    }
 }
 
 /// `POWERBOX` modes and `POWERBOX_RESULT` statuses (P13 K16).
@@ -523,6 +556,16 @@ pub fn powerbox_result(status: u32, path: &str) -> Message {
     build(event::POWERBOX_RESULT, &[status], path.as_bytes())
 }
 
+/// `SET_BACKDROP` (P13 K20).
+pub fn set_backdrop(pattern: u32, color: u32) -> Message {
+    build(request::SET_BACKDROP, &[0, pattern, color], &[])
+}
+
+/// `BLANK` (P13 K21).
+pub fn blank() -> Message {
+    build(request::BLANK, &[0], &[])
+}
+
 /// `DROP_FILE` (the file is carried).
 pub fn drop_file(x: i32, y: i32, path: &str) -> Message {
     build(
@@ -580,6 +623,14 @@ mod tests {
             ),
             (0x10F, 0x110, 0x18C, 0x18D)
         );
+        let m = set_backdrop(backdrop::WAVES, 0x123456);
+        assert_eq!(
+            (m.tag, word(&m, 1), word(&m, 2)),
+            (request::SET_BACKDROP, 2, 0x123456)
+        );
+        for p in [backdrop::PLAIN, backdrop::MEANDER, backdrop::WAVES] {
+            assert_eq!(backdrop::from_name(backdrop::name(p)), p);
+        }
     }
     use crate::key::{KeyCode, Modifiers};
     extern crate std;

@@ -28,6 +28,7 @@
 
 extern crate alloc;
 
+pub mod backdrop;
 pub mod cjk;
 pub mod control;
 pub mod dialog;

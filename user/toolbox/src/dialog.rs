@@ -73,7 +73,8 @@ pub fn sort_entries(entries: &mut [(String, bool)]) {
 
 #[cfg(not(test))]
 pub use modal::{
-    Picked, alert, ask_text, file_dialog, open_file, open_location, pick_open, pick_save, save_file,
+    Picked, alert, ask_text, ask_text_shown, file_dialog, open_file, open_location, pick_open,
+    pick_save, save_file,
 };
 
 #[cfg(not(test))]
@@ -237,6 +238,18 @@ mod modal {
         prompt: &str,
         default: &str,
     ) -> Option<String> {
+        ask_text_shown(conn, title, prompt, default, &|| {})
+    }
+
+    /// [`ask_text`], calling `shown` once the dialog is on the screen
+    /// (P13 K20: for the tests).
+    pub fn ask_text_shown(
+        conn: &mut Connection,
+        title: &str,
+        prompt: &str,
+        default: &str,
+        shown: &dyn Fn(),
+    ) -> Option<String> {
         let font = font_for(conn.screen.0);
         let lh = line(font);
         let lines = wrap(prompt, COLS);
@@ -286,6 +299,7 @@ mod modal {
                 let _ = conn.damage_all(window);
             };
         draw(&mut window, &field, &buttons, conn);
+        shown();
         let answer = run(conn, &mut window, |event, window, conn| {
             let answer = match *event {
                 Event::Key { key, .. } => match field.key(&key) {

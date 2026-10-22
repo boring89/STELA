@@ -3,7 +3,7 @@
 
 //! The window server proper: the screen, the clients, the event loop.
 
-use abi::key::{KeyEvent, MouseEvent, button};
+use abi::key::{KeyCode, KeyEvent, MouseEvent, button};
 use abi::sysinfo::{FORMAT_RGBX, FramebufferInfo};
 use abi::window::{self as proto, event, flags, mouse, request, window_event};
 use alloc::collections::{BTreeMap, VecDeque};
@@ -20,9 +20,9 @@ use libstela::wait::{self, WaitSet};
 use libstela::{Error, Handle, Message, Rights, bootstrap, println, tag};
 use toolbox::draw::{Canvas, Font, Rect, color, font_for};
 use windowserver::compose::{
-    Clicks, Damage, Menu, Metrics, Part, Stack, Window, find_shortcut, ime_boxes, menu_box,
-    menu_item_at, menu_titles, parse_audio, parse_menus, shortcut, visible_parts, volume_at,
-    volume_panel,
+    Clicks, Damage, Menu, Metrics, Part, Stack, Window, backdrop_rows, find_shortcut, ime_boxes,
+    menu_box, menu_item_at, menu_titles, parse_audio, parse_display, parse_menus, shortcut,
+    visible_parts, volume_at, volume_panel,
 };
 
 /// The pointer: `X` outline, `.` fill, space transparent (STELA's own
@@ -176,6 +176,19 @@ struct Server {
     speaker: Rect,
     volume_open: bool,
     volume_drag: bool,
+    /// The desktop (P13 K20): its colour, and one period of its rows when
+    /// it has a pattern (`compose::backdrop_rows`).
+    backdrop: u32,
+    backdrop_rows: Vec<Vec<u32>>,
+    /// P13 K21: when the last key or mouse event came (ns), how long
+    /// without one blanks the screen (0: never; `Data:/.stela/display`),
+    /// and whether it is blank now.
+    last_input: u64,
+    blank_after: u64,
+    blanked: bool,
+    /// P13 K22: Alt-Tab's list (the windows front first) and the one
+    /// chosen, while Alt is held.
+    switcher: Option<(Vec<u32>, usize)>,
 }
 
 fn screen_rect(s: &Server) -> Rect {
@@ -424,7 +437,21 @@ impl Server {
         for part in visible_parts(r, &frames, frames.len()) {
             let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
             canvas.set_clip(part);
-            canvas.fill(part, color::DESKTOP);
+            if self.backdrop_rows.is_empty() {
+                canvas.fill(part, self.backdrop);
+                continue;
+            }
+            // P13 K20: the pattern's rows.
+            let n = self.backdrop_rows.len();
+            for y in part.y.max(0)..part.bottom().min(self.height) {
+                let row = &self.backdrop_rows[y as usize % n];
+                let (x0, x1) = (
+                    part.x.max(0) as usize,
+                    part.right().min(self.width) as usize,
+                );
+                let at = y as usize * w as usize;
+                self.back[at + x0..at + x1].copy_from_slice(&row[x0..x1]);
+            }
         }
         for (i, win) in windows.iter().enumerate() {
             let active = self.focus == Some(win.id);
@@ -474,6 +501,19 @@ impl Server {
         };
         let clock = self.clock.clone();
         let (ime_text, ime_list) = self.ime_layout();
+        let switcher_area = self.switcher_box();
+        let switcher = self.switcher.as_ref().map(|(ids, at)| {
+            let titles: Vec<String> = ids
+                .iter()
+                .map(|&id| {
+                    self.stack
+                        .get(id)
+                        .map(|w| w.title.clone())
+                        .unwrap_or_default()
+                })
+                .collect();
+            (titles, *at)
+        });
         self.speaker = self.speaker_rect();
         let (volume, speaker, volume_open) = (self.volume, self.speaker, self.volume_open);
         let ime_status = self.ime.as_ref().map(|i| i.chinese);
@@ -616,6 +656,24 @@ impl Server {
         if let Some(outline) = outline {
             draw_outline(&mut canvas, outline);
         }
+        // P13 K22: Alt-Tab's list.
+        if let (Some(area), Some((ids, at))) = (switcher_area, switcher)
+            && area.overlaps(&r)
+        {
+            canvas.fill(area.offset(3, 3), color::BLACK);
+            canvas.fill(area, color::PARCHMENT);
+            canvas.frame(area, color::BLACK);
+            for (i, title) in ids.iter().enumerate() {
+                let row = Rect::new(area.x + 4, area.y + 8 + i as i32 * line, area.w - 8, line);
+                let (fg, bg) = if i == at {
+                    canvas.fill(row, color::HIGHLIGHT);
+                    (color::WHITE, Some(color::HIGHLIGHT))
+                } else {
+                    (color::BLACK, None)
+                };
+                canvas.text(row.x + 2 * font.width, row.y + 2, title, font, fg, bg);
+            }
+        }
     }
 
     /// Copies `r` of the back buffer to the screen, with the pointer.
@@ -670,15 +728,242 @@ impl Server {
 
     /// Redraws and shows everything dirty.
     fn flush(&mut self) {
+        if self.blanked {
+            // Drawn again whole when it wakes.
+            let _ = self.damage.take();
+            return;
+        }
         for r in self.damage.take() {
             self.compose(r);
             self.present(r);
         }
     }
 
+    /// Blanks the screen (P13 K21: no input for `blank_after`, or
+    /// `BLANK`): black until the next key or mouse event.
+    fn blank(&mut self) {
+        if self.blanked {
+            return;
+        }
+        self.blanked = true;
+        if let Ok(fb) = self.fb.words_mut() {
+            fb.fill(0);
+        }
+        println!("windowserver: display asleep");
+    }
+
+    /// A key or mouse event came: true if it only woke the screen (it is
+    /// not passed on, as on a Mac).
+    fn wake(&mut self) -> bool {
+        self.last_input = libstela::now_ns();
+        if !self.blanked {
+            return false;
+        }
+        self.blanked = false;
+        let all = self.screen();
+        self.mark(all);
+        println!("windowserver: display awake");
+        true
+    }
+
+    /// When the screen blanks if nothing comes (0: never).
+    fn blank_deadline(&self) -> u64 {
+        if self.blanked || self.blank_after == 0 {
+            0
+        } else {
+            self.last_input.saturating_add(self.blank_after)
+        }
+    }
+
     // ---- input ----
 
+    /// Alt-Tab (P13 K22): with Alt held, Tab (Shift-Tab back) goes through
+    /// the windows, front first (focusing raises, so that is the order
+    /// they were used in); letting go of Alt focuses the one chosen.
+    /// Whether the key was this.
+    fn switch_key(&mut self, key: &KeyEvent) -> bool {
+        let alt = matches!(key.code, KeyCode::LeftAlt | KeyCode::RightAlt);
+        if let Some((ids, at)) = self.switcher.clone() {
+            if alt && !key.pressed {
+                self.mark_switcher();
+                self.switcher = None;
+                if let Some(&id) = ids.get(at) {
+                    let title = self
+                        .stack
+                        .get(id)
+                        .map(|w| w.title.clone())
+                        .unwrap_or_default();
+                    println!("windowserver: switched to {title}");
+                    self.set_focus(Some(id));
+                }
+                return true;
+            }
+            if key.pressed && key.code == KeyCode::Tab {
+                let n = ids.len();
+                let at = if key.modifiers.shift {
+                    (at + n - 1) % n
+                } else {
+                    (at + 1) % n
+                };
+                self.switcher = Some((ids, at));
+                self.mark_switcher();
+                return true;
+            }
+            if key.pressed && key.code == KeyCode::Escape {
+                self.mark_switcher();
+                self.switcher = None;
+                return true;
+            }
+            return !alt;
+        }
+        if !(key.pressed && key.modifiers.alt && key.code == KeyCode::Tab) {
+            return false;
+        }
+        let mut ids: Vec<u32> = self
+            .stack
+            .iter()
+            .filter(|w| !w.is_desktop())
+            .map(|w| w.id)
+            .collect();
+        ids.reverse();
+        if ids.len() < 2 {
+            return true;
+        }
+        let at = if key.modifiers.shift {
+            ids.len() - 1
+        } else {
+            1
+        };
+        self.switcher = Some((ids, at));
+        self.mark_switcher();
+        true
+    }
+
+    /// Where Alt-Tab's list is drawn: the middle of the screen.
+    fn switcher_box(&self) -> Option<Rect> {
+        let (ids, _) = self.switcher.as_ref()?;
+        let font = self.font;
+        let line = self.line_height();
+        let widest = ids
+            .iter()
+            .filter_map(|&id| self.stack.get(id))
+            .map(|w| font.text_width(&w.title))
+            .max()
+            .unwrap_or(0)
+            .max(16 * font.width);
+        let (w, h) = (widest + 4 * font.width, ids.len() as i32 * line + 16);
+        Some(Rect::new((self.width - w) / 2, (self.height - h) / 2, w, h))
+    }
+
+    fn mark_switcher(&mut self) {
+        if let Some(r) = self.switcher_box() {
+            self.mark(r.inset(-4));
+        }
+    }
+
+    /// The menus from the keyboard (P13 K22): Alt-M pulls down the first
+    /// one; with a menu down the arrows move through
+    /// the menus and their items, Enter chooses, Escape puts it back.
+    /// Whether the key was this.
+    fn menu_key(&mut self, key: &KeyEvent) -> bool {
+        if !key.pressed {
+            return matches!(self.drag, Some(Drag::Menu { .. }));
+        }
+        let n = self.menus().len();
+        if n == 0 {
+            return false;
+        }
+        let Some(Drag::Menu { index, hover }) = self.drag else {
+            // Only Alt-M: Alt with the arrows belongs to the programs
+            // (Periplus goes back and forward with them).
+            let opens = key.modifiers.alt && !key.modifiers.ctrl && key.code == KeyCode::M;
+            if opens {
+                let first = self.first_item(0);
+                self.pull_down(0, first);
+            }
+            return opens;
+        };
+        match key.code {
+            KeyCode::Left | KeyCode::Right => {
+                let next = if key.code == KeyCode::Left {
+                    (index + n - 1) % n
+                } else {
+                    (index + 1) % n
+                };
+                let first = self.first_item(next);
+                self.pull_down(next, first);
+            }
+            KeyCode::Up | KeyCode::Down => {
+                let items = self.menus().get(index).map_or(0, |m| m.items.len());
+                let mut at = hover;
+                for _ in 0..items {
+                    let i = match (at, key.code) {
+                        (None, KeyCode::Up) => items.saturating_sub(1),
+                        (None, _) => 0,
+                        (Some(i), KeyCode::Up) => (i + items - 1) % items,
+                        (Some(i), _) => (i + 1) % items,
+                    };
+                    at = Some(i);
+                    if self.selectable(index, i) {
+                        break;
+                    }
+                }
+                self.pull_down(index, at);
+            }
+            KeyCode::Enter => {
+                self.put_back_menu();
+                if let (Some(item), Some(f)) = (hover, self.focus)
+                    && let Some(client) = self.window_owner(f)
+                {
+                    self.send(client, &proto::menu_selected(index as u32, item as u32));
+                }
+            }
+            KeyCode::Escape => self.put_back_menu(),
+            _ => {}
+        }
+        true
+    }
+
+    /// Whether item `i` of menu `index` may be chosen (not a line).
+    fn selectable(&self, index: usize, i: usize) -> bool {
+        self.menus()
+            .get(index)
+            .and_then(|m| m.items.get(i))
+            .is_some_and(|t| t != "-")
+    }
+
+    /// The first item of menu `index` that may be chosen.
+    fn first_item(&self, index: usize) -> Option<usize> {
+        let items = self.menus().get(index).map_or(0, |m| m.items.len());
+        (0..items).find(|&i| self.selectable(index, i))
+    }
+
+    /// Pulls menu `index` down with `hover` lit.
+    fn pull_down(&mut self, index: usize, hover: Option<usize>) {
+        if let Some(area) = self.open_menu_box() {
+            self.mark(area);
+        }
+        self.drag = Some(Drag::Menu { index, hover });
+        if let Some(area) = self.open_menu_box() {
+            self.mark(area);
+        }
+        self.mark_menubar();
+    }
+
+    /// Puts the pulled-down menu back.
+    fn put_back_menu(&mut self) {
+        if let Some(area) = self.open_menu_box() {
+            self.mark(area);
+        }
+        self.drag = None;
+        self.mark_menubar();
+    }
+
     fn key(&mut self, key: KeyEvent) {
+        // P13 K22: Alt-Tab, and the menus from the keyboard.
+        if self.switch_key(&key) || self.menu_key(&key) {
+            return;
+        }
         // Alt + a letter that one of the focused client's menu items has
         // as its shortcut chooses that item (P11 K43).
         if key.pressed
@@ -1403,6 +1688,8 @@ impl Server {
             return;
         }
         match msg.tag {
+            // P13 K21: the event that wakes the screen goes no further.
+            tag::INPUT_KEY | tag::INPUT_MOUSE if self.wake() => {}
             tag::INPUT_KEY => {
                 if let Some(key) = KeyEvent::decode(msg.payload()) {
                     self.key(key);
@@ -1441,6 +1728,14 @@ impl Server {
             request::IME_RESULT => self.ime_result(client, msg),
             request::SET_CARET => self.set_caret(client, msg),
             request::POWERBOX => self.powerbox(client, msg),
+            request::BLANK => {
+                self.blank();
+                Ok(())
+            }
+            request::SET_BACKDROP => {
+                self.set_backdrop(proto::word(msg, 1), proto::word(msg, 2));
+                Ok(())
+            }
             request::DROP_FILE => self.drop_file(client, msg),
             request::DISCONNECT => {
                 self.drop_client(client);
@@ -1731,6 +2026,18 @@ impl Server {
         }
         self.send(client, &reply);
         Ok(())
+    }
+
+    /// The desktop's pattern and colour (0: the usual one; P13 K20).
+    fn set_backdrop(&mut self, pattern: u32, colour: u32) {
+        self.backdrop = if colour == 0 { color::DESKTOP } else { colour };
+        self.backdrop_rows = backdrop_rows(pattern, self.backdrop, self.width as usize, self.ui);
+        println!(
+            "windowserver: desktop {}",
+            abi::window::backdrop::name(pattern)
+        );
+        let all = self.screen();
+        self.mark(all);
     }
 
     /// `POWERBOX` (P13 K16, `docs/sandbox.md`): the file dialog for a
@@ -2118,6 +2425,10 @@ fn start_programs(names: &[String]) {
     }
 }
 
+/// The display sleeps after 10 minutes without input unless
+/// `Data:/.stela/display` says otherwise (P13 K21).
+const DEFAULT_BLANK_NS: u64 = 10 * 60 * 1_000_000_000;
+
 /// The powerbox's program in `Initrd:/` (P13 K16).
 const POWERBOX_PROGRAM: &str = "powerbox";
 
@@ -2238,7 +2549,24 @@ pub fn main() -> i64 {
         speaker: Rect::new(0, 0, 0, 0),
         volume_open: false,
         volume_drag: false,
+        backdrop: color::DESKTOP,
+        backdrop_rows: Vec::new(),
+        last_input: libstela::now_ns(),
+        blank_after: DEFAULT_BLANK_NS,
+        blanked: false,
+        switcher: None,
     };
+    // P13 K21: the display's sleep (blank=MINUTES, or Ns for seconds).
+    if let Ok(text) = fs::read_path("Data:/.stela/display")
+        && let Some(after) = parse_display(&String::from_utf8_lossy(&text))
+    {
+        server.blank_after = after;
+    }
+    // P13 K20: the desktop's pattern.
+    if let Ok(text) = fs::read_path("Data:/.stela/desktop") {
+        let (pattern, colour) = toolbox::backdrop::parse(&String::from_utf8_lossy(&text));
+        server.set_backdrop(pattern, colour.unwrap_or(0));
+    }
     // P13 K19: the volume kept from last time.
     if server.volume.is_some()
         && let Ok(text) = fs::read_path("Data:/.stela/audio")
@@ -2291,6 +2619,15 @@ pub fn main() -> i64 {
         };
         if deadline != 0 {
             timeout = timeout.min(deadline.saturating_sub(now));
+        }
+        // P13 K21: the display's sleep.
+        let blank = server.blank_deadline();
+        if blank != 0 {
+            if now >= blank {
+                server.blank();
+            } else {
+                timeout = timeout.min(blank - now);
+            }
         }
         let n = match server.set.wait(&mut ready, timeout) {
             Ok(n) => n,

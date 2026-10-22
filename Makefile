@@ -778,8 +778,11 @@ test-window: esp $(BUILD)/OVMF_VARS.fd
 		--type "echo_win: ready" "hello\n" \
 		--send-keys "echo_win: hello" "ctrl-c" \
 		--send-keys "echo_win: copied hello" "ctrl-v ret" \
+		--send-keys "echo_win: hello" "alt-tab" \
+		--send-keys "windowserver: switched to Terminal" "alt-tab" \
 		--expect "windowserver: scale 2" --expect "STELA shell" --expect "uptime:" \
 		--expect "echo_win: hello" --expect "echo_win: copied hello" --expect "echo_win: hello" \
+		--expect "windowserver: switched to Terminal" --expect "windowserver: switched to Echo" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm $(WINDOW_CHECKS)
 	# P12 (docs/architecture.md §3.1): the same desktop in 128 MiB; P13
@@ -1100,10 +1103,16 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 # container, its bundle read only, Initrd, no other volume) and asks for a
 # file: the window server's powerbox shows the Open dialog in Data:/
 # (../, Programs/, Sandbox.app/, welcome.txt: Down four times, Enter) and
-# hands it Data:/welcome.txt.
+# hands it Data:/welcome.txt. P13 K20: the desktop's pattern from
+# Data:/.stela/desktop, and File > Find... in the Data window (in front
+# again once the powerbox's window closed), chosen from the keyboard
+# (K22: Alt-M pulls down the Mouseion menu, Right the File menu, Down
+# twice to Find..., Enter).
 test-sandbox: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-sandbox.img
 	printf 'Sandbox\n0.1.0\n' > $(BUILD)/sandbox-info.txt
+	printf 'pattern=meander\n' > $(BUILD)/sandbox-desktop.txt
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img in $(BUILD)/sandbox-desktop.txt /.stela/desktop
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img mkdir /Sandbox.app
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img in $(USER_DIR)/sandboxtest /Sandbox.app/exec
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img in $(BUILD)/sandbox-info.txt /Sandbox.app/info.txt
@@ -1111,6 +1120,9 @@ test-sandbox: esp test-images $(BUILD)/OVMF_VARS.fd
 		--click "mouseion: started Terminal" 2448 240 2 \
 		--click "mouseion: opened Data:/" 432 392 2 \
 		--type "powerbox: open dialog shown" "{down}{down}{down}{down}\n" \
+		--send-keys "sandbox: OK" "alt-m right down down ret" \
+		--type "mouseion: find on Data" "welcome\n" \
+		--expect "windowserver: desktop meander" \
 		--expect "mouseion: started Sandbox (sandboxed)" \
 		--expect "sandbox: working folder /Programs/Sandbox/container" \
 		--expect "sandbox: Data not allowed" --expect "sandbox: volume list not allowed" \
@@ -1119,10 +1131,26 @@ test-sandbox: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "sandbox: bundle read only" --expect "sandbox: asking" \
 		--expect "windowserver: powerbox (open)" --expect "powerbox: picked Data:/welcome.txt" \
 		--expect "sandbox: read Data:/welcome.txt (32 bytes): Welcome to STELA's Data volume." \
-		--expect "sandbox: OK" \
+		--expect "sandbox: OK" --expect "mouseion: find on Data" \
+		--expect "mouseion: found 1 for \"welcome\" on Data" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-sandbox.img \
 		-device ide-hd,drive=sata1,bus=ide.1
+	# P13 K21: Data:/.stela/display blank=2s: the screen goes black after
+	# two seconds without input (checked on a screenshot) and a key wakes
+	# it.
+	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-blank.img
+	printf 'blank=2s\n' > $(BUILD)/blank-display.txt
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-blank.img in $(BUILD)/blank-display.txt /.stela/display
+	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-blank.log \
+		--screenshot "windowserver: display asleep" $(BUILD)/blank.ppm \
+		--send-keys "windowserver: display asleep" "shift" \
+		--expect "mouseion: ready" --expect "windowserver: display asleep" \
+		--expect "windowserver: display awake" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-blank.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	python3 tools/fb_check.py $(BUILD)/blank.ppm --expect-rect 0,0,2560,1600,\#000000
 
 # The editor (P11, docs/apps.md §2): Kalamos.app opens a file that does
 # not exist yet, the text is typed over QMP and saved with Alt-S (the

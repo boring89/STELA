@@ -210,7 +210,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 ## 10. 已知限制
 
 - 只有拖外框，不即時移動；沒有視窗最小化、縮放動畫、透明、陰影（選單除外）。
-- 選單只有一層，沒有快捷鍵；STELA 字樣不是選單。
+- 選單只有一層；STELA 字樣不是選單（P11 起有 Alt 快捷鍵，P13 起可以用鍵盤操作，§12）。
 - 只有單一滑鼠按鍵（左鍵）有意義；滾輪不處理；沒有加速度。
 - terminal 只有 SGR 顏色（P11），沒有游標移動、清除畫面等其他 ANSI 序列；捲回不能用滑鼠滾輪；選字複製沒有。
 - P11 起有遮擋剔除，但沒有「只有游標動」的特別處理（游標的舊位置仍從 back buffer 重新合成那一小塊）。
@@ -224,3 +224,18 @@ P11 的桌面視窗（`DESKTOP` 旗標）蓋滿整個螢幕：Mouseion 為了在
 - 其他的桌面面積沒有視窗：視窗伺服器的合成本來就會把沒有視窗的地方填成桌面色（§4 的遮擋剔除）。
 - 計畫的兩個做法裡選了第二個（「退一步只覆蓋圖示直條」）：第一個（`SET_DESKTOP`，把圖示交給視窗伺服器畫）要把 Mouseion 的拖放、選取、改名搬到伺服器，改動太大。代價：在直條以外的桌面上拉框選取、把東西拖到「桌面」的空白處都沒有作用（P11 也沒有放東西到桌面這回事，只有拖到卷宗與垃圾桶）。
 - 記憶體：桌面閒置從 93.0 MiB 降到 57.0 MiB（另一半的功勞是 kernel heap 按需成長，`docs/frame.md` §8、`docs/bench.md`）。
+
+## 12. 桌面圖樣、閒置熄屏、Alt-Tab、鍵盤選單（P13 K20–K22，使用者尚未審核）
+
+**桌面圖樣**：伺服器開機時讀 `Data:/.stela/desktop`（`toolbox::backdrop::parse`：`pattern=plain|meander|waves`、`color=RRGGBB`），請求 `SET_BACKDROP`（0x111：pattern、顏色，0 = 預設的桌面色）隨時換。有圖樣時先算好一個週期（16 個邏輯列 × scale）的整列像素（`compose::backdrop_rows`），合成時沒有視窗的地方一列一列複製（不逐點算）；沒有圖樣時照舊 `fill`。圖樣的線是底色的 13/16（`backdrop::line_color`）。Mouseion 的圖示直條用 `backdrop::paint` 在同一個螢幕格線上畫同一個圖樣。
+
+**閒置熄屏**：伺服器記著最後一個鍵盤或滑鼠事件的時間；`blank_after`（`Data:/.stela/display` 的 `blank=分鐘`，0 = 不熄；`Ns` 是秒，給測試用；預設 10 分鐘）沒有輸入就把 framebuffer 填 0、停止合成（`flush` 只丟掉 damage），印 `windowserver: display asleep`；請求 `BLANK`（0x112，Mouseion 的 Special > Sleep Display）立刻熄。下一個鍵或滑鼠事件叫醒它（整個畫面重畫，印 `windowserver: display awake`），**那個事件不再往下送**（不會變成一次點擊或打字）。主迴圈的等待逾時算進熄屏的時間。計畫寫「Setup 顯示頁可設」——Setup 沒有顯示頁（`docs/display.md` §6），設定只能改檔案。
+
+**Alt-Tab**：按著 Alt 時 Tab（Shift-Tab 反向）在視窗之間走，順序是 stack 從前到後（聚焦會把視窗 raise，所以就是最近使用的順序；桌面視窗不算），螢幕中間畫一個清單（標題，選到的反白）；放開 Alt 時聚焦並 raise 選到的那個，印 `windowserver: switched to TITLE`；Escape 取消。只有一個視窗時不動。
+
+**鍵盤選單**：Alt-M 拉下焦點程式的第一個選單、亮第一個可選的項目；拉下時左右換選單、上下換項目（跳過 `-`）、Enter 選（和放開滑鼠一樣送 `MENU_SELECTED`）、Escape 收回；拉下時其他鍵都不往下送。用的是滑鼠拉選單的同一個狀態（`Drag::Menu`），所以畫法一樣。計畫寫「Alt+方向鍵／Alt-M」——Alt+方向鍵是程式自己的（Periplus 的上一頁、下一頁），所以只有 Alt-M。
+
+測試：`make test-window` 在 Echo 之後 Alt-Tab 兩次（到 Terminal、回到 Echo，畫面檢查不變）；`make test-sandbox` 用 Alt-M、右、下、下、Enter 選 Mouseion 的 File > Find...，桌面 `pattern=meander` 印 `windowserver: desktop meander`；第二次開機 `blank=2s`：熄屏後截圖全黑、按 Shift 叫醒。
+
+限制：Alt-Tab 的清單只有標題（沒有圖示、縮圖）；鍵盤選單沒有「STELA」選單、沒有快捷鍵提示以外的助記字；熄屏不關背光（沒有 DPMS）、沒有螢幕保護程式。
+

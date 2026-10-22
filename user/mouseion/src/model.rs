@@ -430,6 +430,41 @@ pub fn drop_target(
     DropTarget::Nowhere
 }
 
+/// The type and creator in Finder information (its first eight bytes)
+/// as `TYPE CREA` (P13 K20); bytes that are not printable ASCII show as
+/// `?`.
+pub fn format_type_creator(info: &[u8]) -> String {
+    let word = |b: &[u8]| -> String {
+        b.iter()
+            .map(|&c| {
+                if (0x20..0x7F).contains(&c) {
+                    c as char
+                } else {
+                    '?'
+                }
+            })
+            .collect()
+    };
+    match (info.get(0..4), info.get(4..8)) {
+        (Some(t), Some(c)) => alloc::format!("{} {}", word(t), word(c)),
+        _ => String::new(),
+    }
+}
+
+/// `TYPE CREA` (two words of four printable ASCII characters; spaces
+/// inside a word are kept, so `TEXT ttxt` or `APPL ????`) as bytes.
+pub fn parse_type_creator(text: &str) -> Option<([u8; 4], [u8; 4])> {
+    let b = text.as_bytes();
+    if b.len() != 9 || b[4] != b' ' || !b.iter().all(|c| (0x20..0x7F).contains(c)) {
+        return None;
+    }
+    let mut t = [0u8; 4];
+    let mut c = [0u8; 4];
+    t.copy_from_slice(&b[0..4]);
+    c.copy_from_slice(&b[5..9]);
+    Some((t, c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +623,17 @@ mod tests {
         assert_eq!(column_at(30), SortBy::Size);
         assert_eq!(column_at(45), SortBy::Kind);
         assert_eq!(column_at(70), SortBy::Date);
+    }
+
+    #[test]
+    fn type_and_creator() {
+        let mut info = [0u8; 32];
+        info[..8].copy_from_slice(b"TEXTttxt");
+        assert_eq!(format_type_creator(&info), "TEXT ttxt");
+        assert_eq!(format_type_creator(&[0u8; 32]), "???? ????");
+        assert_eq!(parse_type_creator("APPL STLA"), Some((*b"APPL", *b"STLA")));
+        assert_eq!(parse_type_creator("APPL"), None);
+        assert_eq!(parse_type_creator("APPLESTLA"), None);
+        assert_eq!(parse_type_creator("ab c d e "), Some((*b"ab c", *b"d e ")));
     }
 }

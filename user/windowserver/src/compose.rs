@@ -569,6 +569,46 @@ pub fn ime_boxes(
     (text, list)
 }
 
+/// One period of the desktop's rows (16 logical rows at `scale`), each
+/// `width` physical pixels; empty for a plain desktop.
+pub fn backdrop_rows(pattern: u32, base: u32, width: usize, scale: i32) -> Vec<Vec<u32>> {
+    if pattern == abi::window::backdrop::PLAIN {
+        return Vec::new();
+    }
+    let line = toolbox::backdrop::line_color(base);
+    let s = scale.max(1);
+    (0..16 * s)
+        .map(|y| {
+            (0..width as i32)
+                .map(|x| {
+                    if toolbox::backdrop::on(pattern, x / s, y / s) {
+                        line
+                    } else {
+                        base
+                    }
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `Data:/.stela/display` (P13 K21): `blank=MINUTES` (0: never; `Ns`:
+/// seconds, for the tests): how long without input blanks the screen, in
+/// ns (`None`: not given).
+pub fn parse_display(text: &str) -> Option<u64> {
+    let mut after = None;
+    for line in text.lines() {
+        if let Some(("blank", v)) = line.trim().split_once('=') {
+            let v = v.trim();
+            after = match v.strip_suffix('s') {
+                Some(secs) => secs.parse::<u64>().ok().map(|s| s * 1_000_000_000),
+                None => v.parse::<u64>().ok().map(|m| m * 60_000_000_000),
+            };
+        }
+    }
+    after
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,5 +807,27 @@ mod tests {
         assert_eq!(parse_audio("volume=40\nmute=1\n"), (40, true));
         assert_eq!(parse_audio("volume=400"), (100, false));
         assert_eq!(parse_audio(""), (100, false));
+    }
+
+    #[test]
+    fn the_desktop_rows() {
+        use abi::window::backdrop;
+        let line = toolbox::backdrop::line_color(0x5B_7B86);
+        let rows = backdrop_rows(backdrop::MEANDER, 0x5B_7B86, 40, 2);
+        assert_eq!((rows.len(), rows[0].len()), (32, 40));
+        assert_eq!(
+            (rows[0][0], rows[0][1], rows[2][2]),
+            (line, line, 0x5B_7B86)
+        );
+        assert!(backdrop_rows(backdrop::PLAIN, 0, 40, 2).is_empty());
+    }
+
+    #[test]
+    fn the_display_sleep() {
+        assert_eq!(parse_display("blank=10\n"), Some(600_000_000_000));
+        assert_eq!(parse_display("blank=0"), Some(0));
+        assert_eq!(parse_display("blank=3s"), Some(3_000_000_000));
+        assert_eq!(parse_display("blank=soon"), None);
+        assert_eq!(parse_display(""), None);
     }
 }

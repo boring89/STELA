@@ -122,3 +122,10 @@ host `toolbox`：`draw`（矩形運算、填色與裁切、stride 外的像素�
 - `Window::scale`：緩衝是 `width * scale` × `height * scale`；`Window::canvas()` 給一個 `Canvas::scaled`。
 - `Canvas` 的方法都吃邏輯座標；`size`、`bounds`、`clip` 傳回邏輯值；`pixels`、`stride` 是實體緩衝。scale 2 時：8x16 的字改用 16x32 的字型畫在 2 倍的位置（`char_phys`）；`Canvas::icon` 用兩倍大的圖（沒有就放大）；其他一律放大成 2×2 的方塊。`Canvas::image_phys` 不放大（圖示用）。
 - 程式不用改：版面用 `font.width`／`font.height` 與邏輯座標排，`font_for(conn.screen.0)` 在 2x 的 2560 螢幕（邏輯 1280）給 8x16。
+
+## 8. P13：powerbox、拖放、桌面圖樣（使用者尚未審核）
+
+- `dialog::pick_open`／`pick_save` 回傳 `Picked { location, file }`：有 `VOLUMES` 的程式用自己的對話框再開檔，沒有的經視窗伺服器的 powerbox（`docs/sandbox.md` §5）；`dialog::file_dialog`、`ask_text_shown` 多一個「對話框出現了」的回呼（測試等它才打字）；`open_location`。
+- `Event::Dropped { window, x, y, file, path }`：Mouseion 拖過來的檔案（`docs/sandbox.md` §6）；`Connection::wait_message(tag, request, timeout)` 等某一則訊息、其他的留著。
+- `backdrop`：桌面的圖樣（`on`、`line_color`、`parse`、`paint`；`docs/window.md` §12）。
+

@@ -119,6 +119,13 @@ Mouseion 的資料不再放在 Finder 資訊（那 32 bytes 照 HFS 的原意留
 
 Mouseion 啟動的程式（bundle、單一程式、Linux 程式，雙擊文件開的 Kalamos／Viewer）沒有 `VOLUMES`：`[3]` 是 `Data:/Programs/NAME/container/`、`[4]` 唯讀（bundle 本身或所在的資料夾），印 `mouseion: started NAME (sandboxed)`；雙擊的文件以 `[6]` 交出去。`Initrd:/` 的 Terminal、Classic、Setup 例外（`TRUSTED`）。檔案拖到別的程式的視窗時，Mouseion 送 `DROP_FILE` 給視窗伺服器（`mouseion: dropped PATH at X,Y`），那個程式收到 `DROPPED`。細節見 `docs/sandbox.md`。
 
+### 5.z P13 K20–K21：Find、改名與 type／creator、桌面圖樣、Sleep Display（使用者尚未審核）
+
+- **File > Find...**（Alt-F）：問一行字（`dialog::ask_text_shown`，對話框出現時印 `mouseion: find on VOLUME`），在**前面那個資料夾視窗的卷宗**（沒有就 `Data`）裡找名字含有它的項目（不分大小寫；廣度優先、跳過 `.` 開頭的、最多看 2000 個資料夾、最多 100 個結果），印 `mouseion: found N for "TEXT" on VOLUME`，結果放在一個資訊視窗：每行「路徑  大小  日期」；**雙擊一行打開它所在的資料夾**（`Pane::found`）。
+- **File > Rename...**：用對話框改選取項目的名字（原本「點選取項目的名字」的改名照舊）。**File > Set Type...**：檔案的 Mac type 與 creator（Finder 資訊的前 8 bytes，`TEXT ttxt` 這樣兩個四字元的字，`model::parse_type_creator`）；**Get Info** 多一行 `type:`。計畫寫「Get Info 可改名、改 type/creator」——Get Info 仍是唯讀的資訊視窗，改的動作放在 File 選單（工具箱沒有可編輯的資訊視窗）。
+- **Mouseion > Preferences...**：桌面圖樣（Plain、Meander 回紋、Waves 波浪；`toolbox::backdrop`，草稿）存到 `Data:/.stela/desktop`（`pattern=…`，`color=RRGGBB` 可以手改），送 `SET_BACKDROP` 讓視窗伺服器換；Mouseion 自己的圖示直條用同一個圖樣、對齊同一個螢幕格線。
+- **Special > Sleep Display**：送 `BLANK`，視窗伺服器立刻把螢幕變黑（`docs/window.md` §12）。
+
 ## 6. Viewer（`Viewer.app`，暫名）
 
 `Viewer 路徑`：`Volume:/path` 或相對工作資料夾；最多 1 MiB；80 欄折行（Tab 到 8 的倍數、控制字元略過、壞 UTF-8 顯示 U+FFFD）；視窗標題 = 檔名；方向鍵、Page Up／Down、Home／End、捲軸捲動；File > Close 或關閉鈕結束。開檔時在 serial 印 `viewer: <路徑>: N lines`。
@@ -150,4 +157,5 @@ P11：host `model`——開著的視窗清單的格式往返與壞行、框選�
 - bundle 的自訂圖示（`icon-*.ppm`）還沒讀。
 - 跨卷宗複製把整個檔案讀進記憶體；同名檔案已存在時失敗（`Exists`）。
 - 前後順序是 Mouseion 自己記的（`FOCUS` 事件），可能和視窗伺服器的不同（例如別的程式的視窗）。
+- P13：Find 只找名字（不找內容）、一次一個卷宗、結果不會自己更新；Set Type 沒有選單式的 type 清單；桌面圖樣只有三種（草稿）、顏色只能手改檔案。
 - 有 `MANAGE` 的程式都能用 `FileSetAttr` 改 Mouseion 的屬性（屬性沒有依程式分開）。

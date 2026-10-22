@@ -100,6 +100,10 @@ struct Pane {
     rect: Rect,
     /// Lines of text for a Note.
     note: Vec<String>,
+    /// For a Find result (P13 K20): the folder each note line's item is
+    /// in (`Volume:/path`; empty for the other lines), opened by a double
+    /// click.
+    found: Vec<String>,
     /// The order of the items (P11 K43: the list view's column titles).
     sort: model::SortBy,
 }
@@ -200,6 +204,9 @@ struct Mouseion {
     band: Option<Band>,
     /// A rename in progress.
     editing: Option<Editing>,
+    /// The desktop's pattern and colour (P13 K20), as the window server
+    /// draws it, for the icon strip.
+    backdrop: (u32, u32),
     conn: Connection,
     font: &'static Font,
     icon_size: i32,
@@ -214,6 +221,79 @@ struct Mouseion {
 
 const LIST_LINE_EXTRA: i32 = 8;
 const SCROLL_WIDTH: i32 = 24;
+
+/// Most items a Find shows (P13 K20).
+const FIND_MAX: usize = 100;
+/// Most folders a Find looks in.
+const FIND_FOLDERS: usize = 2000;
+
+/// An item a Find found.
+struct Hit {
+    /// `Volume:/path/name`.
+    path: String,
+    /// The folder it is in, `Volume:/path`.
+    folder: String,
+    is_dir: bool,
+    size: u64,
+    mtime: u64,
+}
+
+/// The items on `volume` whose names have `text` (any case), breadth
+/// first; hidden ones (`.` first) are skipped (P13 K20).
+fn find_names(volume: &str, text: &str) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    let Ok(root) = fs::volume_open(volume).map(Owned) else {
+        return hits;
+    };
+    let needle = text.to_lowercase();
+    // Folders to look in, relative to the root (opened one at a time).
+    let mut queue = alloc::collections::VecDeque::from([String::new()]);
+    let mut looked = 0;
+    while let Some(rel) = queue.pop_front() {
+        looked += 1;
+        if looked > FIND_FOLDERS {
+            break;
+        }
+        let dir = if rel.is_empty() {
+            None
+        } else {
+            match fs::open(root.0, &rel, open::READ | open::DIRECTORY) {
+                Ok(h) => Some(Owned(h)),
+                Err(_) => continue,
+            }
+        };
+        let h = dir.as_ref().map_or(root.0, |d| d.0);
+        let folder = format!("{volume}:/{rel}");
+        for e in fs::entries(h).unwrap_or_default() {
+            let name = e.name();
+            if name.starts_with('.') {
+                continue;
+            }
+            let child = if rel.is_empty() {
+                String::from(name)
+            } else {
+                format!("{rel}/{name}")
+            };
+            let is_dir = e.kind == kind::DIRECTORY;
+            if name.to_lowercase().contains(&needle) {
+                hits.push(Hit {
+                    path: format!("{volume}:/{child}"),
+                    folder: folder.clone(),
+                    is_dir,
+                    size: e.size,
+                    mtime: e.mtime,
+                });
+                if hits.len() == FIND_MAX {
+                    return hits;
+                }
+            }
+            if is_dir {
+                queue.push_back(child);
+            }
+        }
+    }
+    hits
+}
 
 /// `Data:/Programs/NAME/container/` (or on `Tmp` without `Data`), made if
 /// needed (P13 K15).
@@ -358,19 +438,19 @@ impl Mouseion {
                 outlines.push(rects[i].offset(dx, dy));
             }
         }
+        let backdrop = self.backdrop;
         let pane = &mut self.panes[index];
         let bounds = pane.window.bounds();
         let desktop = pane.place == Place::Desktop;
         {
             let mut c = pane.window.canvas();
-            c.fill(
-                bounds,
-                if desktop {
-                    color::DESKTOP
-                } else {
-                    color::PARCHMENT
-                },
-            );
+            if desktop {
+                // P13 K20: the window server's pattern, on the same grid.
+                let origin = (pane.rect.x, pane.rect.y);
+                toolbox::backdrop::paint(&mut c, bounds, origin, backdrop.0, backdrop.1);
+            } else {
+                c.fill(bounds, color::PARCHMENT);
+            }
             if pane.place == Place::Note {
                 for (i, text) in pane.note.iter().enumerate() {
                     c.text(16, 16 + i as i32 * line, text, font, color::BLACK, None);
@@ -736,6 +816,7 @@ impl Mouseion {
             selected: Vec::new(),
             rect: Rect::new(rect.x, rect.y, w, h),
             note: Vec::new(),
+            found: Vec::new(),
             sort: model::SortBy::Name,
         });
         self.order.insert(0, id_w);
@@ -1328,6 +1409,19 @@ impl Mouseion {
         };
 
         match kind {
+            MouseKind::Down if self.panes[index].place == Place::Note => {
+                // A found item's line: its folder (P13 K20).
+                let line = (y - 16).div_euclid(self.line());
+                if clicks >= 2
+                    && let Some(folder) = usize::try_from(line)
+                        .ok()
+                        .and_then(|l| self.panes[index].found.get(l))
+                        .filter(|f| !f.is_empty())
+                        .cloned()
+                {
+                    self.open_path(&folder);
+                }
+            }
             MouseKind::Down => {
                 if self.panes[index].place != Place::Desktop
                     && self.panes[index].place != Place::Note
@@ -1458,6 +1552,205 @@ impl Mouseion {
         }
     }
 
+    /// File > Find... (P13 K20): items whose name has the text typed, on
+    /// the front folder's volume (or `Data`), in a note; a double click on
+    /// one opens its folder.
+    fn find(&mut self) {
+        let volume = self
+            .front_folder()
+            .and_then(|p| match &self.panes[p].place {
+                Place::Folder { volume, .. } => Some(volume.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| String::from("Data"));
+        let prompt = format!("Find on {volume}: names with");
+        let shown = || println!("mouseion: find on {volume}");
+        let Some(text) = dialog::ask_text_shown(&mut self.conn, "Find", &prompt, "", &shown) else {
+            return;
+        };
+        let text = String::from(text.trim());
+        if text.is_empty() {
+            return;
+        }
+        let hits = find_names(&volume, &text);
+        println!("mouseion: found {} for \"{text}\" on {volume}", hits.len());
+        let mut lines = alloc::vec![format!("\"{text}\" on {volume}: {} found", hits.len())];
+        let mut found = alloc::vec![String::new()];
+        for h in &hits {
+            let size = if h.is_dir {
+                String::from("folder")
+            } else {
+                format!("{} bytes", h.size)
+            };
+            let date = if h.mtime == 0 {
+                String::from("-")
+            } else {
+                libstela::time::format(libstela::time::to_local(h.mtime))
+            };
+            lines.push(format!("{}  {size}  {date}", h.path));
+            found.push(h.folder.clone());
+        }
+        if hits.len() == FIND_MAX {
+            lines.push(format!("(only the first {FIND_MAX})"));
+            found.push(String::new());
+        }
+        self.note_found("Find", lines, found);
+    }
+
+    /// Opens the folder at `path` (`Volume:/a/b`).
+    fn open_path(&mut self, path: &str) {
+        let Some((volume, inside)) = path.split_once(':') else {
+            return;
+        };
+        let Ok(root) = fs::volume_open(volume).map(Owned) else {
+            return;
+        };
+        let inside = inside.trim_matches('/');
+        let dir = if inside.is_empty() {
+            None
+        } else {
+            match fs::open(root.0, inside, open::READ | open::DIRECTORY) {
+                Ok(h) => Some(Owned(h)),
+                Err(_) => return,
+            }
+        };
+        let h = dir.as_ref().map_or(root.0, |d| d.0);
+        let Ok(st) = fs::stat(h) else {
+            return;
+        };
+        let title = inside
+            .rsplit('/')
+            .next()
+            .filter(|t| !t.is_empty())
+            .unwrap_or(volume);
+        let title = String::from(title);
+        self.open_folder(volume, st.id, String::from(path), &title);
+    }
+
+    /// The selected item of the front folder window: (pane, item).
+    fn selected_item(&self) -> Option<(usize, usize)> {
+        let p = self.order.first().and_then(|&w| self.pane(w))?;
+        if !matches!(self.panes[p].place, Place::Folder { .. }) {
+            return None;
+        }
+        Some((p, *self.panes[p].selected.first()?))
+    }
+
+    /// File > Rename... (P13 K20: Get Info's name, in a dialog).
+    fn rename_selected(&mut self) {
+        let Some((p, i)) = self.selected_item() else {
+            return;
+        };
+        let old = self.panes[p].items[i].name.clone();
+        let Some(new) = dialog::ask_text(&mut self.conn, "Rename", "New name:", &old) else {
+            return;
+        };
+        let new = new.trim();
+        if new.is_empty() || new == old {
+            return;
+        }
+        let Some(h) = self.panes[p].handle.as_ref().map(|h| h.0) else {
+            return;
+        };
+        match fs::rename(h, &old, h, new) {
+            Ok(()) => println!("mouseion: renamed {old} to {new}"),
+            Err(e) => println!("mouseion: rename {old}: {}", describe(e)),
+        }
+        self.reload(p);
+    }
+
+    /// The type and creator (`TEXT ttxt`) of item `i` of pane `p`, from
+    /// its Finder information (P13 K20).
+    fn type_creator(&self, p: usize, i: usize) -> Option<String> {
+        let h = self.panes[p].handle.as_ref()?.0;
+        let item = self.panes[p].items.get(i)?;
+        if item.is_dir || item.volume {
+            return None;
+        }
+        let f = Owned(fs::open_by_id(h, item.id).ok()?);
+        let info = fs::get_info(f.0).ok()?;
+        Some(model::format_type_creator(&info))
+    }
+
+    /// File > Set Type... (P13 K20): the Mac's type and creator of the
+    /// selected file (two words of four characters).
+    fn set_type_selected(&mut self) {
+        let Some((p, i)) = self.selected_item() else {
+            return;
+        };
+        let Some(old) = self.type_creator(p, i) else {
+            return;
+        };
+        let name = self.panes[p].items[i].name.clone();
+        let prompt = format!("Type and creator of {name}:");
+        let Some(text) = dialog::ask_text(&mut self.conn, "Set Type", &prompt, &old) else {
+            return;
+        };
+        let Some((t, c)) = model::parse_type_creator(&text) else {
+            println!("mouseion: set type {name}: not two four-letter words");
+            return;
+        };
+        let Some(h) = self.panes[p].handle.as_ref().map(|h| h.0) else {
+            return;
+        };
+        let id = self.panes[p].items[i].id;
+        let result = fs::open_by_id(h, id).map(Owned).and_then(|f| {
+            let mut info = fs::get_info(f.0)?;
+            info[0..4].copy_from_slice(&t);
+            info[4..8].copy_from_slice(&c);
+            fs::set_info(f.0, &info)
+        });
+        match result {
+            Ok(()) => println!(
+                "mouseion: {name} is now {}",
+                model::format_type_creator(&[t, c].concat())
+            ),
+            Err(e) => println!("mouseion: set type {name}: {}", describe(e)),
+        }
+    }
+
+    /// Mouseion > Preferences... (P13 K20): the desktop's pattern, kept in
+    /// `Data:/.stela/desktop` and drawn by the window server.
+    fn preferences(&mut self) {
+        let Some(choice) = dialog::alert(
+            &mut self.conn,
+            "Preferences",
+            "The desktop:",
+            &["Cancel", "Plain", "Meander", "Waves"],
+        ) else {
+            return;
+        };
+        let pattern = match choice {
+            1 => abi::window::backdrop::PLAIN,
+            2 => abi::window::backdrop::MEANDER,
+            3 => abi::window::backdrop::WAVES,
+            _ => return,
+        };
+        let name = abi::window::backdrop::name(pattern);
+        // A colour set in the file stays.
+        let colour = self.backdrop.1;
+        let mut text = format!("pattern={name}\n");
+        if colour != color::DESKTOP {
+            text.push_str(&format!("color={colour:06x}\n"));
+        }
+        if let Ok(root) = fs::volume_open("Data").map(Owned) {
+            let flags = open::READ | open::WRITE | open::CREATE | open::DIRECTORY;
+            if let Ok(dir) = fs::open(root.0, ".stela", flags).map(Owned) {
+                let flags = open::READ | open::WRITE | open::CREATE | open::TRUNCATE;
+                if let Ok(f) = fs::open(dir.0, "desktop", flags).map(Owned) {
+                    let _ = fs::write(f.0, text.as_bytes(), 0);
+                }
+            }
+        }
+        let custom = if colour == color::DESKTOP { 0 } else { colour };
+        let _ = self.conn.send(&abi::window::set_backdrop(pattern, custom));
+        println!("mouseion: desktop {name}");
+        self.backdrop.0 = pattern;
+        if let Some(d) = self.panes.iter().position(|p| p.place == Place::Desktop) {
+            self.draw(d);
+        }
+    }
+
     fn front_folder(&self) -> Option<usize> {
         self.order
             .iter()
@@ -1473,7 +1766,18 @@ impl Mouseion {
     }
 
     fn note(&mut self, title: &str, lines: Vec<String>) {
-        let w = 40 * self.font.width + self.icon_size + 48;
+        self.note_found(title, lines, Vec::new());
+    }
+
+    /// A note whose lines may stand for found items (`found`, P13 K20).
+    fn note_found(&mut self, title: &str, lines: Vec<String>, found: Vec<String>) {
+        let cols = lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0)
+            .clamp(40, 72);
+        let w = cols as i32 * self.font.width + self.icon_size + 48;
         let h = (lines.len() as i32 + 2) * self.line() + 16;
         let Ok(window) = self.conn.create_window(
             w as u32,
@@ -1496,6 +1800,7 @@ impl Mouseion {
             selected: Vec::new(),
             rect: Rect::new(0, 0, w, h),
             note: lines,
+            found,
             sort: model::SortBy::Name,
         });
         self.order.insert(0, id);
@@ -1551,6 +1856,10 @@ impl Mouseion {
                     self.open_item(p, i);
                 }
             }
+            Some("Find...") => self.find(),
+            Some("Rename...") => self.rename_selected(),
+            Some("Set Type...") => self.set_type_selected(),
+            Some("Preferences...") => self.preferences(),
             Some("Get Info") => {
                 if let Some(p) = self.order.first().and_then(|&w| self.pane(w))
                     && let Some(&i) = self.panes[p].selected.first()
@@ -1573,6 +1882,8 @@ impl Mouseion {
                             format!("size:  {} bytes", item.size),
                             format!("where: {where_}"),
                             format!("id:    {}", item.id),
+                            // P13 K20: the Mac's type and creator.
+                            format!("type:  {}", self.type_creator(p, i).unwrap_or_default()),
                             if item.mtime == 0 {
                                 String::from("changed: -")
                             } else {
@@ -1606,6 +1917,10 @@ impl Mouseion {
                 }
             }
             Some("Terminal") => self.terminal(),
+            // P13 K21: the window server blanks the screen.
+            Some("Sleep Display") => {
+                let _ = self.conn.send(&abi::window::blank());
+            }
             Some("Monitor") => self.monitor(),
             Some("Empty Trash...") => self.empty_trash(),
             Some("Restart") => {
@@ -1807,10 +2122,22 @@ fn main() -> i64 {
         let refs: Vec<&str> = items.iter().map(String::as_str).collect();
         menus.add(toolbox::i18n::tr(title), &refs);
     };
-    add("Mouseion", &["About Mouseion", "About STELA"]);
+    add(
+        "Mouseion",
+        &["About Mouseion", "About STELA", "-", "Preferences..."],
+    );
     add(
         "File",
-        &["New Folder^N", "Open^O", "Get Info^I", "-", "Close^W"],
+        &[
+            "New Folder^N",
+            "Open^O",
+            "Find...^F",
+            "Get Info^I",
+            "Rename...",
+            "Set Type...",
+            "-",
+            "Close^W",
+        ],
     );
     add("Edit", &[]);
     add("View", &["Icons", "List"]);
@@ -1819,6 +2146,7 @@ fn main() -> i64 {
         &[
             "Terminal",
             "Monitor",
+            "Sleep Display",
             "Empty Trash...",
             "-",
             "Restart",
@@ -1864,6 +2192,7 @@ fn main() -> i64 {
         shift: false,
         band: None,
         editing: None,
+        backdrop: (abi::window::backdrop::PLAIN, color::DESKTOP),
     };
     let id = desktop.id;
     m.panes.push(Pane {
@@ -1876,9 +2205,14 @@ fn main() -> i64 {
         selected: Vec::new(),
         rect,
         note: Vec::new(),
+        found: Vec::new(),
         sort: model::SortBy::Name,
     });
     m.order.push(id);
+    if let Ok(text) = fs::read_path("Data:/.stela/desktop") {
+        let (pattern, colour) = toolbox::backdrop::parse(&String::from_utf8_lossy(&text));
+        m.backdrop = (pattern, colour.unwrap_or(color::DESKTOP));
+    }
     m.load_desktop(0);
     println!(
         "mouseion: ready, {} volume(s)",

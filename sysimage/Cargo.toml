@@ -1,0 +1,20 @@
+[package]
+name = "sysimage"
+description = "The System image's trailer (version, SHA-256, ed25519 signature) and the slot file (P14 K5, docs/system.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lib]
+bench = false
+doctest = false
+
+[dependencies]
+# The same crates and versions as user/pkgcore (P12; third_party/README.md).
+ed25519-dalek = { version = "2", default-features = false }
+sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
+
+[lints]
+workspace = true

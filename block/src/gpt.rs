@@ -35,6 +35,18 @@ impl Guid {
         0x28, 0x73, 0x2A, 0xC1, 0x1F, 0xF8, 0xD2, 0x11, 0xBA, 0x4B, 0x00, 0xA0, 0xC9, 0x3E, 0xC9,
         0x3B,
     ]);
+    /// STELA System (P14 K5, `docs/storage.md`):
+    /// 53544C41-5359-5354-454D-000000000001 ("STLA" "SYST" "EM").
+    pub const STELA_SYSTEM: Guid = Guid([
+        0x41, 0x4C, 0x54, 0x53, 0x59, 0x53, 0x54, 0x53, 0x45, 0x4D, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01,
+    ]);
+    /// STELA Data: 53544C41-4441-5441-0000-000000000001 (the eHFS magic
+    /// still decides; this only names the partition).
+    pub const STELA_DATA: Guid = Guid([
+        0x41, 0x4C, 0x54, 0x53, 0x41, 0x44, 0x41, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x01,
+    ]);
 }
 
 impl core::fmt::Display for Guid {
@@ -269,6 +281,14 @@ mod tests {
         assert_eq!(
             Guid::ESP.to_string(),
             "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+        );
+        assert_eq!(
+            Guid::STELA_SYSTEM.to_string(),
+            "53544C41-5359-5354-454D-000000000001"
+        );
+        assert_eq!(
+            Guid::STELA_DATA.to_string(),
+            "53544C41-4441-5441-0000-000000000001"
         );
     }
 

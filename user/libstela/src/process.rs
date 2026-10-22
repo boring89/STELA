@@ -489,6 +489,24 @@ pub fn args() -> Vec<String> {
     ARGS.lock().clone()
 }
 
+/// `BootOk` (P14 K5, `docs/system.md` §5): the desktop is up; needs the
+/// `POWER` capability (Mouseion).
+pub fn boot_ok() -> Result<(), Error> {
+    let power = capability(abi::capability::POWER).ok_or(Error::AccessDenied)?;
+    syscall1(Syscall::BootOk, power.raw()).map(|_| ())
+}
+
+/// `SystemStatus` (P14 K5): `mounted=a slot=a 0 a=0.1.0 b=-`.
+pub fn system_status() -> Result<alloc::string::String, Error> {
+    let mut buf = [0u8; 256];
+    let n = syscall2(
+        Syscall::SystemStatus,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+    )? as usize;
+    Ok(alloc::string::String::from_utf8_lossy(&buf[..n.min(buf.len())]).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

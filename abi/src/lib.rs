@@ -298,6 +298,12 @@ pub enum Syscall {
     /// `AudioMaster(volume, mute, power)` (P13 K18): the master volume
     /// 0-100 and mute; needs the `POWER` capability.
     AudioMaster = 76,
+    /// `BootOk(power)` (P14 K5, `docs/system.md` §5): the desktop is up;
+    /// the System slot's start is no longer a try. Needs `POWER`.
+    BootOk = 77,
+    /// `SystemStatus(buf, len) -> length` (P14 K5): one line,
+    /// `mounted=a slot=a 0 a=0.1.0 b=-`.
+    SystemStatus = 78,
 }
 
 /// `DeviceConfig` flags (P13 K11).
@@ -311,7 +317,7 @@ pub const RANDOM_MAX: u64 = 64 * 1024;
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 76] = [
+    pub const ALL: [Syscall; 78] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -388,6 +394,8 @@ impl Syscall {
         Syscall::NetTake,
         Syscall::AudioSetVolume,
         Syscall::AudioMaster,
+        Syscall::BootOk,
+        Syscall::SystemStatus,
     ];
 
     /// The call with number `raw`, if any.
@@ -2246,5 +2254,7 @@ mod tests {
         );
         assert_eq!(sysinfo::AUDIO, 10);
         assert_eq!(Syscall::from_raw(76), Some(Syscall::AudioMaster));
+        assert_eq!(Syscall::from_raw(77), Some(Syscall::BootOk));
+        assert_eq!(Syscall::from_raw(78), Some(Syscall::SystemStatus));
     }
 }

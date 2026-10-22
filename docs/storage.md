@@ -140,6 +140,9 @@ drivers::sync::set_hooks(Hooks { current, block_until, wake, now_ns })
 - 扇區大小：區塊 0 的 byte 512 是 "EFI PART" → 512；否則讀區塊 1 → 4096（4Kn 磁碟，例如測試的 NVMe）。
 - `blocks_of`：分割區起點要 4 KiB 對齊（否則不掛載、印警告）；結尾不足一塊的部分捨去（sgdisk 讓最後一個分割區結束在備份表前，不一定對齊）。
 - ESP 的 type GUID `C12A7328-F81F-11D2-BA4B-00A0C93EC93B`（磁碟上前三段小端序）。
+- P14 K5：STELA 自己的分割區類型（`block::gpt::Guid`，自訂、不是任何標準登記的值；開頭 4 bytes 是 ASCII `STLA`）：
+  - **STELA System** `53544C41-5359-5354-454D-000000000001`（"STLA" "SY" "ST" "EM"）：System 映像的槽，表裡第一個是 A、第二個是 B（`docs/system.md` §4）。kernel 不看裡面是什麼（空的槽也算槽），也不會把它提供給 Setup 格式化。
+  - **STELA Data** `53544C41-4441-5441-0000-000000000001`：`make disk-image` 的 Data 分割區（以前用 Linux 的 `0FC63DAF-…`）。kernel 仍以 eHFS 的 magic 判斷 Data，這個 GUID 只是名字。
 
 ## 10. FAT（Microsoft FAT spec 1.03），唯讀
 

@@ -39,6 +39,8 @@ pub mod program;
 pub mod psyscall;
 #[cfg(target_os = "none")]
 pub mod syscall;
+#[cfg(target_os = "none")]
+pub mod system;
 pub mod task;
 #[cfg(target_os = "none")]
 pub mod usb;

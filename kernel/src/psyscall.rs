@@ -388,3 +388,23 @@ pub fn system_power(process: &Process, kind: u64, power: u64) -> Result<u64, Err
         _ => Err(Error::InvalidArgument),
     }
 }
+
+/// `BootOk(power)` (P14 K5): the desktop is up (Mouseion calls it); the
+/// System slot's start stops counting as a try. Needs `POWER`.
+pub fn boot_ok(process: &Process, power: u64) -> Result<u64, Error> {
+    crate::object::check_capability(process, power, abi::capability::POWER)?;
+    crate::system::boot_ok()?;
+    Ok(0)
+}
+
+/// `SystemStatus(buf, len) -> length` (P14 K5): the System slots in one
+/// line (`crate::system::status`); writes at most `len` bytes.
+pub fn system_status(process: &Process, buf: u64, len: u64) -> Result<u64, Error> {
+    let text = crate::system::status();
+    let n = text.len().min(len as usize);
+    process
+        .space()
+        .write(buf, &text.as_bytes()[..n])
+        .map_err(|_| Error::BadAddress)?;
+    Ok(text.len() as u64)
+}

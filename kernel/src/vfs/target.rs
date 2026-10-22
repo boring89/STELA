@@ -551,6 +551,43 @@ impl FatFs {
         ))
     }
 
+    /// P14 K5: file `name` of folder `folder` (at the root), read by the
+    /// kernel itself (the ESP's `STELA/slot`); at most `max` bytes.
+    pub fn kernel_read(&self, folder: &str, name: &str, max: usize) -> Option<Vec<u8>> {
+        self.fat.with(|f| {
+            let dir = f.lookup(f.root(), folder).ok()??;
+            let e = f.lookup(f.dir_of(&dir), name).ok()??;
+            let mut buf = alloc::vec![0u8; (e.size as usize).min(max)];
+            let n = f.read_file(&e, 0, &mut buf).ok()?;
+            buf.truncate(n);
+            Some(buf)
+        })
+    }
+
+    /// P14 K5: writes the whole file `name` in folder `folder` (made if
+    /// needed) for the kernel itself, even when the volume is read only
+    /// for programs. The cache is write-through, so it is on the disk
+    /// when this returns.
+    pub fn kernel_write(&self, folder: &str, name: &str, data: &[u8]) -> Result<(), Error> {
+        let now = fat_now(frame::time::wall_clock_ns());
+        self.fat
+            .with(|f| {
+                let root = f.root();
+                let dir = match f.lookup(root, folder)? {
+                    Some(d) => d,
+                    None => f.create(root, folder, true, now)?,
+                };
+                let d = f.dir_of(&dir);
+                let mut e = match f.lookup(d, name)? {
+                    Some(e) => e,
+                    None => f.create(d, name, false, now)?,
+                };
+                f.set_size(&mut e, 0, now)?;
+                f.write_file(&mut e, 0, data, now)
+            })
+            .map_err(fat_error)
+    }
+
     fn id_for(&self, dir: u64, entry: &FatEntry) -> u64 {
         let key = (dir, entry.name.to_ascii_uppercase());
         let mut names = self.names.lock();

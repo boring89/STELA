@@ -148,16 +148,28 @@ pub fn mount_all() {
     let mut summary: Vec<String> = Vec::new();
     // P14 K4: System volumes wait until Initrd and Tmp are mounted, so
     // that the volume list keeps its order (Data, …, Initrd, Tmp,
-    // System); one is mounted.
-    let mut systems: Vec<(String, Partition<Disk>)> = Vec::new();
+    // System); one is mounted. K5: STELA System partitions are the slots
+    // (crate::system chooses), whatever they hold.
+    let mut typed: Vec<crate::system::Place> = Vec::new();
+    let mut named: Vec<crate::system::Place> = Vec::new();
     for (disk_name, disk) in disks() {
         for (kind, start, count) in partitions(&disk_name, &disk) {
+            let place = crate::system::Place {
+                disk_name: disk_name.clone(),
+                disk: Arc::clone(&disk),
+                start,
+                count,
+            };
+            if kind == Some(Guid::STELA_SYSTEM) {
+                typed.push(place);
+                continue;
+            }
             let Some(part) = Partition::new(Arc::clone(&disk), start, count, false) else {
                 continue;
             };
             let mut first = vec![0u8; BLOCK_SIZE];
             if part.read(0, &mut first).is_ok() && ehfs::label(&first).as_deref() == Some(SYSTEM) {
-                systems.push((disk_name.clone(), part));
+                named.push(place);
                 continue;
             }
             if let Some(line) = mount_partition(&disk_name, &disk, part, kind, &mut have_data) {
@@ -180,7 +192,7 @@ pub fn mount_all() {
         tmp.name,
         super::tmpfs::CAPACITY >> 20
     ));
-    if let Some(line) = mount_system(systems) {
+    if let Some(line) = mount_system(typed, named) {
         summary.push(line);
     }
     if summary.is_empty() {
@@ -190,26 +202,30 @@ pub fn mount_all() {
     }
 }
 
-/// Mounts the first of `systems` read only as `System` (P14 K4); the
-/// others are left alone.
-fn mount_system(systems: Vec<(String, Partition<Disk>)>) -> Option<String> {
-    let mut line = None;
-    for (disk_name, part) in systems {
-        if line.is_some() {
-            frame::kprintln!("vfs: {disk_name}: another System volume; not mounted");
-            continue;
+/// Mounts the System volume read only as `System`: the slot
+/// `crate::system::choose` picks (P14 K5), or the first volume called
+/// System when there are no slots (P14 K4).
+fn mount_system(
+    typed: Vec<crate::system::Place>,
+    named: Vec<crate::system::Place>,
+) -> Option<String> {
+    let (part, version) = crate::system::choose(typed, named)?;
+    let device: VolumeDevice = CachedDevice::new(part, DEFAULT_BLOCKS);
+    match EhfsFs::mount(device, true) {
+        Ok((fs, _)) => {
+            let (total, _) = super::FileSystem::space(&fs);
+            let volume = mount(SYSTEM, Arc::new(fs));
+            Some(alloc::format!(
+                "{} (eHFS, ro, {}, {version})",
+                volume.name,
+                mib(total)
+            ))
         }
-        let device: VolumeDevice = CachedDevice::new(part, DEFAULT_BLOCKS);
-        match EhfsFs::mount(device, true) {
-            Ok((fs, _)) => {
-                let (total, _) = super::FileSystem::space(&fs);
-                let volume = mount(SYSTEM, Arc::new(fs));
-                line = Some(alloc::format!("{} (eHFS, ro, {})", volume.name, mib(total)));
-            }
-            Err(e) => frame::kprintln!("vfs: {disk_name}: System volume not mounted: {e:?}"),
+        Err(e) => {
+            frame::kprintln!("vfs: System volume not mounted: {e:?}");
+            None
         }
     }
-    line
 }
 
 fn mount_partition(
@@ -254,7 +270,10 @@ fn mount_partition(
         match FatFs::mount(device, true) {
             Ok((fs, _label)) => {
                 let (total, _) = super::FileSystem::space(&fs);
-                let volume = mount("Boot", Arc::new(fs));
+                // P14 K5: the kernel itself writes the slot file there.
+                let fs = Arc::new(fs);
+                crate::system::set_boot(Arc::clone(&fs));
+                let volume = mount("Boot", fs);
                 return Some(alloc::format!("{} (FAT, ro, {})", volume.name, mib(total)));
             }
             Err(e) => frame::kprintln!("vfs: {disk_name}: EFI system partition not mounted: {e:?}"),
@@ -285,7 +304,8 @@ pub fn format_candidates() -> Vec<(String, u64)> {
         let parts = partitions(&disk_name, &disk);
         let whole = parts.len() == 1 && parts[0].1 == 0 && parts[0].0.is_none();
         for (i, (kind, start, count)) in parts.into_iter().enumerate() {
-            if kind == Some(Guid::ESP) {
+            // P14 K5: nor the System slots (an empty slot B is all zeros).
+            if kind == Some(Guid::ESP) || kind == Some(Guid::STELA_SYSTEM) {
                 continue;
             }
             let Some(part) = Partition::new(Arc::clone(&disk), start, count, false) else {

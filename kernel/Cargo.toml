@@ -33,6 +33,7 @@ ehfs = { path = "../ehfs" }
 elfload = { path = "../elfload" }
 frame = { path = "../frame" }
 net = { path = "../net" }
+sysimage = { path = "../sysimage" }
 
 [lints]
 workspace = true

@@ -102,7 +102,7 @@ QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
 QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 128M
 
 # Crates that run on the host and have unit tests.
-HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox pkgcore
+HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox pkgcore sysimage
 # Crates with a bare-metal binary whose library part has host unit tests.
 HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic bin periplus ime
 # Crates built for the bare-metal kernel target.
@@ -161,6 +161,9 @@ system-image: user linux-tests ehfs-tools $(CHEWING_DATA)
 	cp -r $(LINUX_DIR)/lib $(SYSTEM_ROOT)/linux/lib
 	printf '%s\n' "$(VERSION)" > $(SYSTEM_ROOT)/VERSION
 	python3 tools/make_system_image.py $(SYSTEM_ROOT) $(SYSTEM_IMG) $(SYSTEM_IMG_MIB) $(EHFS_TOOLS)
+	python3 tools/pkgsign.py keygen $(BUILD)/sys-signing.key $(BUILD)/sys-signing.pub
+	cmp $(BUILD)/sys-signing.pub tools/pkg.pub
+	python3 tools/sysimage.py sign $(SYSTEM_IMG) $(BUILD)/sys-signing.key "$(VERSION)"
 
 # P14 K2 (docs/mouseion.md §4.2): bundles with their own icon (NAME:the
 # images' prefix; -32.ppm for 1x, -64.ppm for 2x). Echo.app shows the
@@ -390,14 +393,18 @@ test-qemu-min: esp-test test-images $(BUILD)/OVMF_VARS.fd
 DATA_MIB    ?= 4096
 DISK_IMAGE  := $(BUILD)/stela.img
 DISK_ESP    := $(BUILD)/disk-esp
-# The Data partition's first sector (65 MiB; tools/make_disk_image.py),
-# for ehfs-cp --offset.
-DATA_SECTOR := 133120
+# P14 K5: the two System slots, SYSTEM_MIB each, between the ESP and Data
+# (tools/make_disk_image.py); slot A holds build/system.img.
+SYSTEM_MIB  ?= 64
+# The Data partition's first sector (65 MiB + the slots), for ehfs-cp
+# --offset.
+DATA_SECTOR := $(shell echo $$(( (65 + 2 * $(SYSTEM_MIB)) * 2048 )))
 disk-image: esp ehfs-tools
 	rm -rf $(DISK_ESP)
 	cp -r $(ESP) $(DISK_ESP)
 	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
-	python3 tools/make_disk_image.py $(DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) $(DATA_MIB)
+	python3 tools/make_disk_image.py --system $(SYSTEM_IMG) --system-mib $(SYSTEM_MIB) \
+		$(DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) $(DATA_MIB)
 	@if [ -f "$(MAC_ROM)" ] && [ -f "$(MAC_DISK)" ]; then \
 		$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(DISK_IMAGE) mkdir /Classic && \
 		$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(DISK_IMAGE) in "$(MAC_ROM)" /Classic/ROM && \
@@ -419,15 +426,18 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	cp -r $(ESP) $(DISK_ESP)
 	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
 	mkdir -p $(IMAGES)
-	python3 tools/make_disk_image.py --setup-done $(TEST_DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
+	python3 tools/make_disk_image.py --setup-done --system $(SYSTEM_IMG) --system-mib $(SYSTEM_MIB) \
+		$(TEST_DISK_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
 	python3 tools/qemu_test.py --exit-code 0 --timeout 90 \
 		--type "STELA shell" "mkdir from-the-disk-image\n" \
 		--type "> mkdir from-the-disk-image" "shutdown\n" \
-		--expect "windowserver: " --expect "mouseion: ready" --expect "STELA shell" \
-		--expect "power: turning off" \
+		--expect "system: slot a (version" --expect "System (eHFS, ro" \
+		--expect "windowserver: " --expect "mouseion: ready" --expect "system: slot a confirmed" \
+		--expect "STELA shell" --expect "power: turning off" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio $(DISK_IMAGE_FLAGS)
-	$(EHFS_TOOLS)/fsck.ehfs --offset 133120 $(TEST_DISK_IMAGE) | grep -q "unmounted cleanly"
-	$(EHFS_TOOLS)/ehfs-ls --offset 133120 $(TEST_DISK_IMAGE) / | grep -q from-the-disk-image
+	$(EHFS_TOOLS)/fsck.ehfs --offset $(DATA_SECTOR) $(TEST_DISK_IMAGE) | grep -q "unmounted cleanly"
+	mtype -i $(TEST_DISK_IMAGE)@@1M ::/STELA/slot | grep -qx "a 0"
+	$(EHFS_TOOLS)/ehfs-ls --offset $(DATA_SECTOR) $(TEST_DISK_IMAGE) / | grep -q from-the-disk-image
 	python3 tools/qemu_test.py --timeout 90 --type "STELA shell" "ls Data:/\n" \
 		--expect "mounted Boot (FAT, ro" --expect "STELA shell" \
 		--expect "from-the-disk-image" --expect "Welcome.txt" \
@@ -480,10 +490,11 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 	cp -r $(ESP) $(DISK_ESP)
 	cp tools/boot.cfg $(DISK_ESP)/STELA/boot.cfg
 	mkdir -p $(IMAGES)
-	python3 tools/make_disk_image.py --setup-done $(CLASSIC_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
-	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) mkdir /Classic
-	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_ROM)" /Classic/ROM
-	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in "$(MAC_DISK)" /Classic/System.img
+	python3 tools/make_disk_image.py --setup-done --system $(SYSTEM_IMG) --system-mib $(SYSTEM_MIB) \
+		$(CLASSIC_IMAGE) $(DISK_ESP) $(EHFS_TOOLS) 128
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(CLASSIC_IMAGE) mkdir /Classic
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(CLASSIC_IMAGE) in "$(MAC_ROM)" /Classic/ROM
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(CLASSIC_IMAGE) in "$(MAC_DISK)" /Classic/System.img
 	cp $(CLASSIC_IMAGE) $(CLASSIC_FS_IMAGE)
 	cp $(CLASSIC_IMAGE) $(CLASSIC_POWER_IMAGE)
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic.ppm --log $(BUILD)/test-classic.log \
@@ -508,11 +519,11 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-audiodev wav,id=a0,path=$(CLASSIC_WAV) -device intel-hda -device hda-duplex,audiodev=a0
 	python3 tools/check_wav.py $(CLASSIC_WAV) 0.05 0
 	printf '# make test-classic\nram=32\nresolution=800x600\ndepth=1\nscale=1\ndisk2=Applications.img,ro\n' > $(BUILD)/classic.cfg
-	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in $(BUILD)/classic.cfg /Classic/classic.cfg
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(CLASSIC_IMAGE) in $(BUILD)/classic.cfg /Classic/classic.cfg
 	rm -f $(CLASSIC_APPS)
 	truncate -s 4M $(CLASSIC_APPS)
 	HOME=$(abspath $(IMAGES)) hformat -l Applications $(CLASSIC_APPS)
-	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_IMAGE) in $(CLASSIC_APPS) /Classic/Applications.img
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(CLASSIC_IMAGE) in $(CLASSIC_APPS) /Classic/Applications.img
 	python3 tools/qemu_test.py --timeout 600 --screendump $(BUILD)/classic-card.ppm --log $(BUILD)/test-classic-card.log \
 		--type "STELA shell" "run Classic.app\n" \
 		--expect "classic: disk2 Applications.img (4096 KiB, read only)" \
@@ -532,8 +543,8 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_FS_IMAGE) \
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
-	$(EHFS_TOOLS)/ehfs-ls --offset 133120 $(CLASSIC_FS_IMAGE) / | grep -q "untitled folder"
-	$(EHFS_TOOLS)/fsck.ehfs --offset 133120 $(CLASSIC_FS_IMAGE) | grep -q "unmounted cleanly"
+	$(EHFS_TOOLS)/ehfs-ls --offset $(DATA_SECTOR) $(CLASSIC_FS_IMAGE) / | grep -q "untitled folder"
+	$(EHFS_TOOLS)/fsck.ehfs --offset $(DATA_SECTOR) $(CLASSIC_FS_IMAGE) | grep -q "unmounted cleanly"
 	python3 tools/qemu_test.py --exit-code 0 --timeout 600 --log $(BUILD)/test-classic-power.log \
 		--type "STELA shell" "run Classic.app --test-power\n" --type "Classic exited" "shutdown\n" \
 		--expect "classic: finder desktop shown" --expect "classic: restarting" \
@@ -543,10 +554,10 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_POWER_IMAGE) \
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
 	rm -f $(BUILD)/classic-system.img
-	$(EHFS_TOOLS)/ehfs-cp --offset 133120 $(CLASSIC_POWER_IMAGE) out /Classic/System.img $(BUILD)/classic-system.img
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(CLASSIC_POWER_IMAGE) out /Classic/System.img $(BUILD)/classic-system.img
 	python3 tools/hfs_check.py $(BUILD)/classic-system.img
 	rm -f $(BUILD)/classic-system.img
-	$(EHFS_TOOLS)/fsck.ehfs --offset 133120 $(CLASSIC_POWER_IMAGE) | grep -q "unmounted cleanly"
+	$(EHFS_TOOLS)/fsck.ehfs --offset $(DATA_SECTOR) $(CLASSIC_POWER_IMAGE) | grep -q "unmounted cleanly"
 
 # Networking (docs/net.md): QEMU user networking (slirp: gateway and host
 # 10.0.2.2, DNS 10.0.2.3, us 10.0.2.15) with each of the three cards; an

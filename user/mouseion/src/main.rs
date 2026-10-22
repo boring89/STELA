@@ -2483,6 +2483,10 @@ fn main() -> i64 {
         );
     }
     m.terminal();
+    // P14 K5: the desktop is up; the System slot's start was good.
+    if let Err(e) = process::boot_ok() {
+        println!("mouseion: BootOk: {}", describe(e));
+    }
     // The folder windows that were open last time (P11).
     m.reopen();
     loop {

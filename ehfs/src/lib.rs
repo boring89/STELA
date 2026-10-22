@@ -92,5 +92,15 @@ pub fn label(block0: &[u8]) -> Option<alloc::string::String> {
     Some(alloc::string::String::from_utf8_lossy(name).into())
 }
 
+/// The volume's size in 4 KiB blocks from the superblock of block 0
+/// (P14 K5: the System image's trailer is the block after the volume).
+pub fn block_count(block0: &[u8]) -> Option<u64> {
+    if !is_ehfs(block0) || block0.len() < format::SB_OFFSET + format::SB_SIZE {
+        return None;
+    }
+    let at = format::SB_OFFSET + format::sb::BLOCK_COUNT;
+    Some(u64::from_le_bytes(block0[at..at + 8].try_into().ok()?))
+}
+
 #[cfg(test)]
 mod tests;

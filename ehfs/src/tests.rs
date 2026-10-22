@@ -45,6 +45,8 @@ fn format_and_mount() {
     disk.read(0, &mut block0).unwrap();
     assert_eq!(crate::label(&block0).as_deref(), Some("Data"));
     assert_eq!(crate::label(&[0u8; 4096]), None);
+    assert_eq!(crate::block_count(&block0), Some(4096));
+    assert_eq!(crate::block_count(&[0u8; 4096]), None);
     assert_eq!(v.state(), format::state::CLEAN);
     assert_eq!(v.counts(), (0, 0));
     let root = v.get(ROOT).unwrap();

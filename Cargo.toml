@@ -11,6 +11,7 @@ members = [
     "net",
     "frame",
     "kernel",
+    "sysimage",
     "user/libstela",
     "user/hello",
     "user/spin",

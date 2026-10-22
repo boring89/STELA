@@ -879,11 +879,16 @@ pub mod capability {
     /// `docs/sandbox.md`): every volume, not only the folders a program was
     /// given. Programs Mouseion starts run without it, in their container.
     pub const VOLUMES: u32 = 6;
+    /// P14 K12 (`docs/linux.md` §19, `docs/sandbox.md`): a Linux program
+    /// may make anonymous memory executable (a JIT compiler), never
+    /// writable and executable at once. Given on purpose: the shell's
+    /// `run --jit`, a bundle's `jit=yes`.
+    pub const JIT: u32 = 7;
     /// Most capabilities one `ProcessSpawn` passes.
-    pub const MAX: usize = 6;
+    pub const MAX: usize = 7;
     /// Whether `kind` is one of the kinds above.
     pub const fn is_valid(kind: u32) -> bool {
-        kind >= POWER && kind <= VOLUMES
+        kind >= POWER && kind <= JIT
     }
     /// The last kind in a `CAPABILITIES` message's data when another
     /// `CAPABILITIES` message follows (P13 K15: a message carries four
@@ -2246,11 +2251,11 @@ mod tests {
     fn capabilities() {
         use capability::*;
         assert_eq!(
-            (POWER, INPUT, NETWORK, INIT, DEVICES, VOLUMES, MAX),
-            (1, 2, 3, 4, 5, 6, 6)
+            (POWER, INPUT, NETWORK, INIT, DEVICES, VOLUMES, JIT, MAX),
+            (1, 2, 3, 4, 5, 6, 7, 7)
         );
         assert!(is_valid(POWER) && is_valid(INIT) && is_valid(DEVICES) && is_valid(VOLUMES));
-        assert!(!is_valid(0) && !is_valid(7) && !is_valid(MORE));
+        assert!(is_valid(JIT) && !is_valid(0) && !is_valid(8) && !is_valid(MORE));
         assert_eq!((tag::CAPABILITIES, tag::POWER_REQUEST), (7, 8));
         assert_eq!((tag::DEVICE_IRQ, tag::NET_TX_READY), (11, 12));
         assert_eq!(

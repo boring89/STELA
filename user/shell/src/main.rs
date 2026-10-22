@@ -142,7 +142,9 @@ impl Shell {
             ("mv", [a, b]) => self.mv(a, b),
             ("mkdir", [p]) => self.mkdir(p),
             ("rm", [p]) => self.rm(p),
-            ("run", [program, rest @ ..]) => self.run(program, rest),
+            // P14 K12: `run --jit` gives the JIT capability.
+            ("run", ["--jit", program, rest @ ..]) => self.run(program, rest, true),
+            ("run", [program, rest @ ..]) => self.run(program, rest, false),
 
             ("ps", []) => ps(),
             ("jobs", []) => {
@@ -160,7 +162,7 @@ impl Shell {
             // Initrd:/ (the network and sound tools, hwinfo) or in
             // Initrd:/bin/ (P11: the command-line tools, docs/apps.md).
             (name, rest) => match self.find_program(name) {
-                Ok(_) => self.run(name, rest),
+                Ok(_) => self.run(name, rest, false),
                 Err(_) => Err(String::from("unknown command or wrong arguments; try help")),
             },
         };
@@ -795,7 +797,7 @@ impl Shell {
         Ok(())
     }
 
-    fn run(&self, program: &str, rest: &[&str]) -> Result<(), String> {
+    fn run(&self, program: &str, rest: &[&str], jit: bool) -> Result<(), String> {
         let (file, folder) = self.find_program(program)?;
         let cwd = open_at(&self.cwd, open::READ | open::WRITE)
             .or_else(|_| open_at(&self.cwd, open::READ))
@@ -838,6 +840,12 @@ impl Shell {
         let mut caps = process::inherited();
         if let Some(input) = process::pass_capability(libstela::abi::capability::INPUT) {
             caps.push((libstela::abi::capability::INPUT, input));
+        }
+        if jit {
+            match process::pass_capability(libstela::abi::capability::JIT) {
+                Some(h) => caps.push((libstela::abi::capability::JIT, h)),
+                None => return Err(String::from("run --jit: this shell has no JIT capability")),
+            }
         }
         let child = Owned(
             process::spawn_with(file.0, &args, &handles, &caps)
@@ -989,6 +997,7 @@ fn help() {
     println!(
         "  run prog [args]  run a program or Name.app (current folder, then the search path); Ctrl-C stops it"
     );
+    println!("  run --jit prog   the same, and the program may generate code (JIT capability)");
     println!("  ps, mem, uptime  processes, memory, time since boot");
     println!("  a | b, a > f, a >> f, a < f, a &   pipes, files, background (programs only)");
     println!("  jobs, fg N, kill N                 background jobs");

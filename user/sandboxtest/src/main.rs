@@ -60,6 +60,11 @@ fn run() -> Result<(), i64> {
     if let Ok(h) = initrd {
         let _ = handle_close(h);
     }
+    // P14 K12: its info.txt says jit=yes.
+    check(
+        libstela::process::capability(libstela::abi::capability::JIT).is_some(),
+        "JIT given (info.txt jit=yes)",
+    )?;
     // P14 K4: the System volume too (read only, like Initrd).
     let system = fs::volume_open("System");
     check(system.is_ok(), "System allowed")?;

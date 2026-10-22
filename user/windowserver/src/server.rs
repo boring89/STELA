@@ -2455,8 +2455,9 @@ fn start_programs(names: &[String]) {
         ];
         let base = name.rsplit('/').next().unwrap_or(name);
         let base = base.strip_suffix(".app").unwrap_or(base);
-        // The first programs (Mouseion) may turn the machine off.
-        let mut caps = process::inherited();
+        // The first programs (Mouseion) may turn the machine off (and give
+        // JIT on, P14 K12).
+        let mut caps = process::inherited_with_jit();
         if let Some(p) = process::pass_capability(abi::capability::POWER) {
             caps.push((abi::capability::POWER, p));
         }

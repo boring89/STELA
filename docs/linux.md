@@ -652,3 +652,23 @@ Go 的程式是靜態連結、不經過 libc 的 Linux 程式（`CGO_ENABLED=0`�
 | `make test-go`（`make test` 在 `GO_TARBALL` 存在時；CI 下載並快取） | `go/hello a b`：版本、參數、`os.Hostname`、exit 7；`go/readdir /Data/go`：4 個項目、`/tmp` 寫讀與 `os.Stat`；`go/goroutine`：8 個 goroutine（channel、mutex、`GOMAXPROCS(4)`）、`GOMAXPROCS(1)` 下一個不呼叫函式的迴圈被搶佔（計時器在約 50 ms 叫醒 main）、`time.After`；`go/httpget`：`net/http` 從 host 拿檔案 |
 
 限制：`epoll_wait` 每 20 ms 醒一次重讀清單（阻塞中的 netpoller 有一點 CPU）；edge-triggered 只做在 `EPOLLOUT`；Go 的 `GOMAXPROCS` 再大，一個行程的執行緒都在同一顆 CPU（`docs/smp.md`）；`os/exec`、`cgo`、race detector 沒有測。
+
+## 19. JIT 能力（P14 K12，自動排程一次做完，**使用者尚未審核**）
+
+P13 起可執行的映射只能來自 lib 資料夾的檔案（與程式自己的資料夾），所以產生機器碼的程式（JIT：JavaScript 引擎、LuaJIT、Java、.NET…）跑不了。P14 K12 加一個能力 **`JIT`**（`abi::capability::JIT` = 7）：
+
+| | 沒有 JIT | 有 JIT |
+|---|---|---|
+| `mmap(PROT_EXEC)` 匿名 | `EACCES` | 可以（沒有 `PROT_WRITE` 時） |
+| `mprotect(PROT_EXEC)` | 只有 lib 檔案的映射 | 任何私有記憶體 |
+| 同時 `PROT_WRITE | PROT_EXEC` | `EACCES` | **仍然 `EACCES`**（W^X：先寫、再改成可執行；V8 的 `--jitless`/W^X 模式、LuaJIT 都這樣用） |
+
+- **誰拿得到**：kernel 給 init；init 給視窗伺服器與文字模式的 shell；視窗伺服器給 Mouseion；Mouseion 給 Terminal（`TRUSTED`）→ terminal → shell。**shell 只在 `run --jit 程式` 時往下給**；Mouseion 只給 `info.txt` 有一行 `jit=yes` 的 bundle（印 `mouseion: started NAME (sandboxed, JIT)`）。`libstela::process::inherited_with_jit`：預設往下傳的（`inherited`）加上 JIT，給上面那幾個轉手的程式用；一般程式啟動的子行程拿不到。
+- kernel：`linux::State::jit`（spawn 時從能力來，fork／execve 保留）；`memory.rs` 的 `mmap`／`mprotect`。STELA 原生程式沒有可執行的動態記憶體（`MemoryMap` 一律不可執行），所以這個能力只對 Linux 程式有意義。
+
+| 測試 | 內容 |
+|---|---|
+| `make test-linux` | `run linux/jit` → `jit: no JIT capability (EACCES)`、exit 2；`run --jit linux/jit` → 寫入 `mov eax, 42; add eax, edi; ret`、`mprotect` 成 RX、呼叫得到 50、W+X 的 `mmap` 被拒、改回 RW 改一個 byte 再 RX 得到 15、可執行的匿名 `mmap` 可以 |
+| `make test-sandbox` | `Sandbox.app/info.txt` 有 `jit=yes`：`started Sandbox (sandboxed, JIT)`，程式裡看得到 JIT 能力 |
+
+限制：沒有 `MAP_JIT` 式的雙重映射；JIT 能力是整個行程的（不分執行緒）；有 JIT 的程式產生的碼和一般程式一樣受 NX/W^X 保護，但 STELA 沒有 ASLR，所以 JIT 程式被攻破時比 Linux 上危險。

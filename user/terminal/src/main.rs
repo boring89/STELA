@@ -169,7 +169,13 @@ impl Terminal {
             pass(bootstrap::MAIN_PORT, Rights::SEND),
             process::pass_dir(bootstrap::CWD),
         ];
-        match process::spawn(program, &["shell"], handles) {
+        // P14 K12: with JIT, which the shell gives on `run --jit` only.
+        match process::spawn_with(
+            program,
+            &["shell"],
+            &handles,
+            &process::inherited_with_jit(),
+        ) {
             Ok(p) => {
                 let _ = self.set.add(p, KEY_SHELL, wait::EXITED);
                 self.shell = Some(p);

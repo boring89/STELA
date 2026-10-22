@@ -306,10 +306,14 @@ pub fn mmap(
     let anonymous = flags & MAP_ANONYMOUS != 0;
     let exec = prot & PROT_EXEC != 0;
     if exec {
-        // W^X, and only files from the library folders (P13 K5).
-        if anonymous || shared || prot & PROT_WRITE != 0 {
+        // W^X, and only files from the library folders (P13 K5); P14 K12:
+        // anonymous memory too, with the JIT capability.
+        let jit = anonymous && p.linux().is_some_and(|l| l.jit);
+        if (anonymous && !jit) || shared || prot & PROT_WRITE != 0 {
             return Err(EACCES);
         }
+    }
+    if exec && !anonymous {
         let file = super::sys::file_of(p, fd)?;
         let super::state::OpenFile::File { node, .. } = &*file else {
             return Err(EACCES);
@@ -462,13 +466,16 @@ pub fn mprotect(p: &Process, addr: u64, len: u64, prot: u64) -> LinuxResult {
     }
     let exec = prot & PROT_EXEC != 0;
     if exec {
+        // A mapping of a library file, or (P14 K12) any private memory of
+        // a holder of JIT; never writable at the same time.
         let allowed = prot & PROT_WRITE == 0
             && p.linux().is_some_and(|l| {
-                l.memory
-                    .lock()
-                    .exec
-                    .iter()
-                    .any(|&(s, e)| s <= addr && end <= e)
+                l.jit
+                    || l.memory
+                        .lock()
+                        .exec
+                        .iter()
+                        .any(|&(s, e)| s <= addr && end <= e)
             });
         if !allowed {
             return Err(EACCES);

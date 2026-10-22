@@ -357,6 +357,19 @@ fn open_named(dir: Handle, name: &str) -> Result<Owned, Error> {
         .map(Owned)
 }
 
+/// Whether `file` is a bundle whose `info.txt` has a line `jit=yes` (P14
+/// K12, `docs/sandbox.md`).
+fn bundle_wants_jit(file: Handle) -> bool {
+    let Ok(info) = fs::open(file, "info.txt", open::READ).map(Owned) else {
+        return false;
+    };
+    fs::read_all(info.0).is_ok_and(|t| {
+        String::from_utf8_lossy(&t)
+            .lines()
+            .any(|l| l.trim().replace(' ', "") == "jit=yes")
+    })
+}
+
 /// A system program (P14 K4): `System:/Programs/NAME`, else
 /// `Initrd:/NAME`.
 fn system_program(name: &str) -> Option<Owned> {
@@ -1018,9 +1031,18 @@ impl Mouseion {
             Handle::NONE,
             document.map_or(Handle::NONE, pass_file),
         ];
-        match process::spawn_with(file, args, &handles, &process::sandboxed()) {
+        // P14 K12: a bundle whose info.txt says jit=yes gets JIT.
+        let mut caps = process::sandboxed();
+        let jit = bundle_wants_jit(file);
+        if jit && let Some(h) = process::pass_capability(libstela::abi::capability::JIT) {
+            caps.push((libstela::abi::capability::JIT, h));
+        }
+        match process::spawn_with(file, args, &handles, &caps) {
             Ok(p) => {
-                println!("mouseion: started {name} (sandboxed)");
+                println!(
+                    "mouseion: started {name} (sandboxed{})",
+                    if jit { ", JIT" } else { "" }
+                );
                 let _ = handle_close(p);
             }
             Err(e) => println!("mouseion: cannot run {name}: {}", describe(e)),
@@ -1037,7 +1059,7 @@ impl Mouseion {
             process::pass_dir(cwd),
             process::pass_dir(home),
         ];
-        match process::spawn_with(file, args, &handles, &process::inherited()) {
+        match process::spawn_with(file, args, &handles, &process::inherited_with_jit()) {
             Ok(p) => {
                 println!("mouseion: started {}", args[0]);
                 let _ = handle_close(p);

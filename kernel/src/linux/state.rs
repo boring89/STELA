@@ -225,6 +225,9 @@ pub struct State {
     /// Whether it was given the `NETWORK` capability (`socket` needs it;
     /// P11).
     pub network: bool,
+    /// Whether it was given the `JIT` capability (P14 K12: anonymous
+    /// memory may become executable, never writable at the same time).
+    pub jit: bool,
     /// The volumes it sees under `/` (besides `tmp`): those of its `[3]`
     /// and `[4]` (P11).
     pub volumes: Vec<String>,
@@ -301,6 +304,7 @@ impl State {
             nice: core::sync::atomic::AtomicI64::new(0),
             tty,
             network: false,
+            jit: false,
             volumes: Vec::new(),
             confined: None,
             threads: SpinLock::new(Vec::new()),
@@ -340,6 +344,7 @@ impl State {
             nice: core::sync::atomic::AtomicI64::new(self.nice.load(Ordering::Relaxed)),
             tty: Arc::clone(&self.tty),
             network: self.network,
+            jit: self.jit,
             volumes: self.volumes.clone(),
             confined: self.confined.clone(),
             threads: SpinLock::new(Vec::new()),

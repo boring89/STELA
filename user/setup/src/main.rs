@@ -651,7 +651,7 @@ fn start_mouseion() {
         ),
         process::pass_dir(bootstrap::CWD),
     ];
-    let mut caps = process::inherited();
+    let mut caps = process::inherited_with_jit();
     if let Some(p) = process::pass_capability(abi::capability::POWER) {
         caps.push((abi::capability::POWER, p));
     }

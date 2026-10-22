@@ -128,3 +128,7 @@ toolbox 的 `dialog::pick_open(conn, title, start)`、`pick_save(conn, title, st
 - powerbox 當掉時程式要等 30 分鐘才放棄；程式一次只能開一個 powerbox；伺服器不限制一個程式開幾次。
 - Linux 的受限只有 host 測試（`path::within`）與程式碼審查，沒有 QEMU 測試；`/proc/<pid>` 仍看得到別的行程。
 - shell 啟動的程式沒有沙箱（開發者模式）；`NETWORK` 與 `INIT` 仍給所有人（`docs/userland.md` §2.3）。
+
+## P14 K12：JIT 能力
+
+bundle 的 `info.txt` 有一行 `jit=yes` 時，Mouseion 在容器之外再給它 **`JIT`** 能力（Linux 程式可以把匿名記憶體改成可執行，但永遠不能同時可寫可執行；`docs/linux.md` §19）。沒有這行的 bundle、容器裡的其他程式都沒有。shell 啟動的程式要 `run --jit` 才有。`make test-sandbox` 的 Sandbox.app 有 `jit=yes`。

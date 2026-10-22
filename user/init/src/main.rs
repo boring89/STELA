@@ -128,6 +128,8 @@ fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
     ];
     let mut caps = process::inherited();
     caps.extend(give(capability::INPUT));
+    // P14 K12: the shell gives JIT on `run --jit` only.
+    caps.extend(give(capability::JIT));
     let shell = match process::spawn_with(program, &["shell"], &handles, &caps) {
         Ok(h) => h,
         Err(e) => {
@@ -209,6 +211,9 @@ fn run_desktop(home: Handle) {
         let mut caps = process::inherited();
         caps.extend(give(capability::POWER));
         caps.extend(give(capability::INPUT));
+        // P14 K12: on to Mouseion, which gives it to bundles with jit=yes
+        // and to the terminal's shell.
+        caps.extend(give(capability::JIT));
         let server = match process::spawn_with(program, programs, &handles, &caps) {
             Ok(h) => h,
             Err(e) => {

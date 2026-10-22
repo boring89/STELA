@@ -285,7 +285,8 @@ pub fn spawn_process(
         let has = |k: u32| capabilities.iter().any(|(kind, _)| *kind == k);
         let network = has(abi::capability::NETWORK);
         let volumes = has(abi::capability::VOLUMES);
-        return spawn_linux(name, &elf, initial, &args, network, volumes);
+        let jit = has(abi::capability::JIT);
+        return spawn_linux(name, &elf, initial, &args, network, volumes, jit);
     }
     let process = task::process::create_with(name, initial, None)?;
     if let Some((program, system)) = program {
@@ -348,6 +349,7 @@ fn spawn_linux(
     args: &QueuedMessage,
     network: bool,
     volumes: bool,
+    jit: bool,
 ) -> Result<Arc<Process>, LoadError> {
     let tty = match &initial[0] {
         Some(Entry {
@@ -421,6 +423,7 @@ fn spawn_linux(
     seen.dedup();
     let mut state = crate::linux::State::with_streams(Arc::clone(&tty), stdin, stdout, cwd, 0);
     state.network = network;
+    state.jit = jit;
     state.volumes = seen;
     // P13 K15 (docs/sandbox.md): without VOLUMES only the folders [3] and
     // [4] and what is below them (and /tmp, /lib, /dev, /etc, /proc).

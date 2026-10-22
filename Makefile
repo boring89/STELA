@@ -71,7 +71,7 @@ CHEWING_DIR := $(BUILD)/chewing
 CHEWING_DATA := $(CHEWING_DIR)/data/index_tree.dat
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc events sys
+LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc events sys jit
 LINUX_DIR   := $(USER_DIR)/linux
 # P13 K5: the dynamically linked test program and its libraries.
 LINUX_DYN   := $(LINUX_DIR)/dyn $(LINUX_DIR)/lib/ld-musl-x86_64.so.1 $(LINUX_DIR)/lib/libdyntest.so
@@ -1205,6 +1205,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "events exited with code" "run linux/sys\n" \
 		--type "sys exited with code" "run linux/signals\n" \
 		--send-keys "signals: press Ctrl-C" "ctrl-c" \
+		--type "signals exited with code" "run linux/jit\n" \
+		--type "jit exited with code" "run --jit linux/jit\n" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
 		--expect "files: working directory /Data/linuxdir" \
@@ -1236,6 +1238,10 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "signals: handlers, mask and timers work" \
 		--expect "signals: children, pipes, faults and restarts work" \
 		--expect "signals: got SIGINT" --expect "signals: OK" --expect "signals exited with code 0" \
+		--expect "jit: no JIT capability (EACCES)" --expect "jit exited with code 2" \
+		--expect "jit: generated code returned 50 (W+X refused: EACCES)" \
+		--expect "jit: rewritten code returned 15" --expect "jit: executable anonymous mmap allowed" \
+		--expect "jit exited with code 0" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-linux.img \
 		-device ide-hd,drive=sata1,bus=ide.1
@@ -1421,7 +1427,7 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 # twice to Find..., Enter).
 test-sandbox: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-sandbox.img
-	printf 'Sandbox\n0.1.0\n' > $(BUILD)/sandbox-info.txt
+	printf 'Sandbox\n0.1.0\njit=yes\n' > $(BUILD)/sandbox-info.txt
 	printf 'pattern=meander\n' > $(BUILD)/sandbox-desktop.txt
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img in $(BUILD)/sandbox-desktop.txt /.stela/desktop
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img mkdir /Sandbox.app
@@ -1434,10 +1440,11 @@ test-sandbox: esp test-images $(BUILD)/OVMF_VARS.fd
 		--send-keys "sandbox: OK" "alt-m right down down ret" \
 		--type "mouseion: find on Data" "welcome\n" \
 		--expect "windowserver: desktop meander" \
-		--expect "mouseion: started Sandbox (sandboxed)" \
+		--expect "mouseion: started Sandbox (sandboxed, JIT)" \
 		--expect "sandbox: working folder /Programs/Sandbox/container" \
 		--expect "sandbox: Data not allowed" --expect "sandbox: volume list not allowed" \
-		--expect "sandbox: open by id not allowed" --expect "sandbox: Initrd allowed" --expect "sandbox: System allowed" \
+		--expect "sandbox: open by id not allowed" --expect "sandbox: Initrd allowed" --expect "sandbox: JIT given (info.txt jit=yes)" \
+		--expect "sandbox: System allowed" \
 		--expect "sandbox: container writable" --expect "sandbox: bundle readable" \
 		--expect "sandbox: bundle read only" --expect "sandbox: asking" \
 		--expect "windowserver: powerbox (open)" --expect "powerbox: picked Data:/welcome.txt" \

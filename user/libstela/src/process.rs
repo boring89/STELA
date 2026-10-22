@@ -34,6 +34,16 @@ pub fn inherited() -> Vec<(u32, Handle)> {
         .collect()
 }
 
+/// [`inherited`] and, when this program has it, `JIT` (P14 K12: for the
+/// programs that pass it on: the window server, Mouseion, the terminal).
+pub fn inherited_with_jit() -> Vec<(u32, Handle)> {
+    let mut caps = inherited();
+    if let Some(h) = pass_capability(capability::JIT) {
+        caps.push((capability::JIT, h));
+    }
+    caps
+}
+
 /// The document this program was started with (`[6]`, P13 K16: Mouseion's
 /// "open with" hands the file over instead of its path), if any.
 pub fn document() -> Option<Handle> {

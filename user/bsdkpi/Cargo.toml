@@ -1,0 +1,22 @@
+[package]
+name = "bsdkpi"
+description = "bsdnet: FreeBSD's if_em driver (sys/dev/e1000, BSD-2-Clause) on STELA's Device interface through a small FreeBSD KPI shim (P14 K13-K14)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "bsdnet"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

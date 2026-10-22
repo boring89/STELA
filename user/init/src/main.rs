@@ -249,8 +249,11 @@ fn main() -> i64 {
     };
     // P13 K12: with usernet the network card's driver is a user program
     // (docs/devices.md); it alone gets the DEVICES capability.
+    // P14 K14: usernet=bsd is FreeBSD's if_em (bsdnet, docs/bsdkpi.md).
     if process::boot_flag("usernet") {
-        start_driver("e1000u");
+        let bsd =
+            libstela::abi::sysinfo::cmdline_option(&process::cmdline(), "usernet") == Some(b"bsd");
+        start_driver(if bsd { "bsdnet" } else { "e1000u" });
     }
     let text_only = process::boot_flag("textmode") || process::boot_flag("nowindow");
     if text_only {

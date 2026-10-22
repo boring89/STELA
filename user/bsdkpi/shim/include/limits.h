@@ -1,0 +1,18 @@
+/* STELA bsdkpi (MIT): limits.h without the host's. */
+#ifndef BSDKPI_LIMITS_H
+#define BSDKPI_LIMITS_H
+#define CHAR_BIT 8
+#define SCHAR_MAX 127
+#define UCHAR_MAX 255
+#define SHRT_MAX 32767
+#define USHRT_MAX 65535
+#define INT_MAX 2147483647
+#define INT_MIN (-INT_MAX - 1)
+#define UINT_MAX 4294967295U
+#define LONG_MAX 9223372036854775807L
+#define LONG_MIN (-LONG_MAX - 1)
+#define ULONG_MAX 18446744073709551615UL
+#define LLONG_MAX LONG_MAX
+#define ULLONG_MAX ULONG_MAX
+#define UINT16_MAX_bsdkpi 65535
+#endif

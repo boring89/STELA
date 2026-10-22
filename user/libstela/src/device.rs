@@ -117,6 +117,12 @@ impl Bar {
         self.size
     }
 
+    /// Where it is mapped in this program (P14 K14: for a driver's own
+    /// code to reach the registers, `user/bsdkpi`'s C half).
+    pub fn base(&self) -> u64 {
+        self.base
+    }
+
     fn check(&self, offset: usize) -> bool {
         offset.is_multiple_of(4) && (offset as u64) + 4 <= self.size
     }

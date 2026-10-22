@@ -48,6 +48,7 @@ members = [
     "user/sandboxtest",
     "user/setup",
     "user/stela-update",
+    "user/bsdkpi",
     "classic",
     "tools/ehfs",
     "tools/fuzz",

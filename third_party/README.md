@@ -4,6 +4,7 @@
 |---|---|---|---|
 | Spleen font 8x16, 16x32 (Frederic Cambus) | `spleen/` | BSD-2-Clause (`spleen/LICENSE`) | the console and UI text |
 | Fusion Pixel 12px Mono zh_TW 2026.10.16 (TakWolf; glyphs from Ark Pixel, Cubic 11, Galmuri) | `fusion-pixel/` (converted glyphs) | SIL Open Font License 1.1 (`fusion-pixel/OFL.txt`, `fusion-pixel/LICENSES/`) | characters beyond ASCII in the toolbox (P11) |
+| FreeBSD 14.3 `sys/dev/e1000` (if_em), `net/iflib.h`, `net/if_media.h`, `dev/pci/pcireg.h`, `sys/queue.h` | `user/bsdkpi/freebsd/` (unchanged; source and SHA-256 in its README) | BSD-2-Clause, BSD-3-Clause | bsdnet: FreeBSD's driver on STELA (P14 K13–K14, `docs/bsdkpi.md`) |
 | libchewing 0.5.1 (P13) | **not in the repository**; unpacked in `build/chewing/` by `make chewing` | LGPL-2.1-or-later | the Zhuyin input method (`user/ime`, `docs/ime.md`) |
 | musl 1.2.5 | **not in the repository**; built in `build/musl/` by `make musl` | MIT | only to build the Linux test programs (`linux/tests/`) |
 

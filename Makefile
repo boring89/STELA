@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup ime e1000u powerbox sandboxtest
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup ime e1000u bsdnet powerbox sandboxtest
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
@@ -111,7 +111,7 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 # The packages to give cargo: `spin` is also a crates.io crate (a TLS
 # dependency, P12), so the workspace's is named with its version.
-USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
+USER_PACKAGES := $(patsubst bsdnet,bsdkpi,$(patsubst spin,spin@0.1.0,$(USER_PROGRAMS)))
 
 .PHONY: test-qemu-all test-qemu-shard
 .PHONY: all boot kernel user initrd system-image go go-tests musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
@@ -962,6 +962,7 @@ test-net-rndis:
 # the e1000e with MSI (DEVICE_IRQ messages), then the e1000 polled; DHCP,
 # ping and fetch through it.
 ESP_USERNET := $(BUILD)/esp-usernet
+ESP_BSDNET := $(BUILD)/esp-bsdnet
 USERNET_PORT := 8650
 test-net-user: esp $(BUILD)/OVMF_VARS.fd
 	rm -rf $(ESP_USERNET)
@@ -979,6 +980,23 @@ test-net-user: esp $(BUILD)/OVMF_VARS.fd
 			--expect "MAC 52:54:00:12:34:56, $$how" --expect "net: DHCP: 10.0.2.15" \
 			--expect "bytes from 10.0.2.2: seq=1" --expect "hello from the host over TCP" \
 			-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_USERNET) -display none -serial stdio $(SYSTEM_DRIVE) \
+			-nic none -netdev user,id=n0 -device $$dev,netdev=n0 || exit 1; \
+	done
+	# P14 K14 (docs/bsdkpi.md): usernet=bsd: FreeBSD 14.3's own if_em
+	# (bsdnet) instead of e1000u, on both cards.
+	rm -rf $(ESP_BSDNET)
+	cp -r $(ESP) $(ESP_BSDNET)
+	printf 'usernet=bsd\n' > $(ESP_BSDNET)/STELA/boot.cfg
+	for card in e1000e:82574L:MSI e1000:82540EM:polled; do dev=$${card%%:*}; rest=$${card#*:}; \
+		chip=$${rest%%:*}; how=$${rest#*:}; \
+		python3 tools/with_http.py $(BUILD)/www-user $(USERNET_PORT) -- \
+		python3 tools/qemu_test.py --timeout 150 --log $(BUILD)/test-net-bsd-$$dev.log \
+			--type "net: DHCP: 10.0.2.15" "ping 10.0.2.2 2\n" \
+			--type "ping exited" "fetch http://10.0.2.2:$(USERNET_PORT)/hello.txt\n" \
+			--expect "bsdnet: 00:02.0" --expect "$$chip" \
+			--expect "bsdnet: em0 MAC 52:54:00:12:34:56, $$how" --expect "net: DHCP: 10.0.2.15" \
+			--expect "bytes from 10.0.2.2: seq=1" --expect "hello from the host over TCP" \
+			-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_BSDNET) $(SYSTEM_DRIVE) -display none -serial stdio \
 			-nic none -netdev user,id=n0 -device $$dev,netdev=n0 || exit 1; \
 	done
 

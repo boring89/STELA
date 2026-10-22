@@ -13,6 +13,7 @@
 //! ```
 
 pub mod bitmap;
+pub mod cow;
 #[cfg(target_os = "none")]
 pub mod device;
 #[cfg(target_os = "none")]

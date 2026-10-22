@@ -657,6 +657,15 @@ fn belongs_to(thread: &Thread, pid: super::ProcessId) -> bool {
 /// for the signal gets it (`docs/linux.md` §12); otherwise the fault is
 /// reported and the process ends with exit code 128 + vector.
 fn user_fault(frame: &mut frame::trap::TrapFrame, cr2: u64) {
+    // P13 K6: a write to a page shared copy-on-write since a fork (page
+    // fault, error code P = 1 and W = 1: Intel SDM Vol. 3A 4.7 "Page-Fault
+    // Exceptions") copies the page and runs the instruction again.
+    if frame.vector == 14
+        && frame.error_code & 3 == 3
+        && current_process().is_some_and(|p| p.space().resolve_cow(cr2))
+    {
+        return;
+    }
     let code = match current_linux() {
         Some(linux) => match crate::linux::fault_signal(frame, cr2, linux) {
             Ok(()) => return,

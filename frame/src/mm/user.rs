@@ -45,6 +45,11 @@ use bootinfo::HHDM_BASE;
 /// Software bit of a leaf entry: the frame belongs to a [`SharedMemory`],
 /// not to the address space.
 const SHARED: u64 = 1 << 9;
+/// Software bit (P13 K6): the frame is shared copy-on-write since a `fork`
+/// (`super::cow`); the entry is read-only until a write copies it.
+const COW: u64 = 1 << 10;
+/// Software bit (P13 K6): a [`COW`] page that is writable once copied.
+const WAS_WRITABLE: u64 = 1 << 11;
 
 /// Permissions of a user page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,12 +214,101 @@ impl AddressSpace {
     }
 
     /// Changes the permissions of the user page at `virt` (one the address
-    /// space owns; shared pages are refused with `NotMapped`).
+    /// space owns; shared pages are refused with `NotMapped`). A page
+    /// shared copy-on-write stays read-only; "writable" is remembered for
+    /// when it is copied.
     pub fn protect(&self, virt: u64, flags: UserFlags) -> Result<(), MapError> {
         let _guard = self.lock.lock();
         let old = self.clear_leaf(virt, false)?;
+        let leaf = if old & COW != 0 {
+            let ro = UserFlags {
+                writable: false,
+                ..flags
+            };
+            let was = if flags.writable { WAS_WRITABLE } else { 0 };
+            Self::leaf_bits(old & ADDR_MASK, ro) | COW | was
+        } else {
+            Self::leaf_bits(old & ADDR_MASK, flags)
+        };
         // The tables exist (the page was mapped), so this cannot fail.
-        self.set_leaf(virt, Self::leaf_bits(old & ADDR_MASK, flags))
+        self.set_leaf(virt, leaf)
+    }
+
+    /// Where the leaf entry of user page `virt` is: its page table and
+    /// the index in it, if the tables exist. The caller holds `self.lock`.
+    fn leaf_slot(&self, virt: u64) -> Option<(u64, usize)> {
+        if virt >= USER_END {
+            return None;
+        }
+        let mut phys = self.root;
+        for level in [4, 3, 2] {
+            // SAFETY: see `set_leaf`; this only reads.
+            let entry = unsafe { table(phys) }[index(virt, level)];
+            if entry & PRESENT == 0 {
+                return None;
+            }
+            phys = entry & ADDR_MASK;
+        }
+        Some((phys, index(virt, 1)))
+    }
+
+    /// Gives page `virt` its own frame if it is shared copy-on-write
+    /// (P13 K6): copies it when others still use the frame, or takes it
+    /// over when this is the last reference. With `write`, only a page
+    /// that was writable qualifies, and it becomes writable; without, it
+    /// keeps its permission (the kernel loading data into it). False if
+    /// the page is not such a page (or memory ran out).
+    fn unshare(&self, virt: u64, write: bool) -> bool {
+        let virt = page_of(virt);
+        let _guard = self.lock.lock();
+        let Some((table_phys, slot)) = self.leaf_slot(virt) else {
+            return false;
+        };
+        // SAFETY: this address space's page table, edited under its lock;
+        // the reference lives until the end of this function only.
+        let entry = &mut unsafe { table(table_phys) }[slot];
+        let old = *entry;
+        if old & PRESENT == 0 || old & COW == 0 || (write && old & WAS_WRITABLE == 0) {
+            return false;
+        }
+        let phys = old & ADDR_MASK;
+        let mut leaf = old & !(ADDR_MASK | COW | WAS_WRITABLE);
+        if old & WAS_WRITABLE != 0 {
+            leaf |= WRITABLE;
+        }
+        let last = super::cow::COUNTS.lock().count(phys) == 1;
+        if last {
+            *entry = leaf | phys;
+        } else {
+            let Some(frame) = pmm::alloc_frame() else {
+                return false;
+            };
+            // SAFETY: both frames are RAM reached through the HHDM; the
+            // new one is ours alone, the old one is only read (every
+            // other mapping of it is read-only).
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (HHDM_BASE + phys) as *const u8,
+                    (HHDM_BASE + frame.addr()) as *mut u8,
+                    4096,
+                )
+            };
+            *entry = leaf | frame.addr();
+            // One reference less to the old frame (never the last: count
+            // was at least 2).
+            pmm::free_frame(PhysFrame::from_addr(phys));
+        }
+        if self.is_active() {
+            paging::invlpg(virt);
+        }
+        true
+    }
+
+    /// A write fault at `virt` in ring 3 (P13 K6): if the page is shared
+    /// copy-on-write and was writable, it gets its own frame and the
+    /// instruction can run again (true).
+    pub fn resolve_cow(&self, virt: u64) -> bool {
+        self.unshare(virt, true)
     }
 
     /// Maps all of `memory` at `virt..virt + memory.size()`. The address
@@ -435,6 +529,17 @@ impl AddressSpace {
     }
 
     fn write_inner(&self, virt: u64, data: &[u8], need_write: bool) -> Result<(), BadAddress> {
+        // Pages shared copy-on-write get their own frames first (P13 K6).
+        if !data.is_empty() {
+            let end = virt.checked_add(data.len() as u64).ok_or(BadAddress)?;
+            let mut page = page_of(virt);
+            while page < end {
+                if self.leaf(page).is_some_and(|e| e & COW != 0) {
+                    self.unshare(page, need_write);
+                }
+                page += 4096;
+            }
+        }
         self.pieces(virt, data.len(), need_write, |phys, offset, len| {
             // SAFETY: as in `read`; the frame is RAM owned by this address
             // space and no Rust reference points into it.
@@ -448,16 +553,25 @@ impl AddressSpace {
         })
     }
 
-    /// A copy of the user half for `fork` (`docs/linux.md`): every page the
-    /// address space owns is copied into a new frame with the same
-    /// permissions; shared-memory and device pages are mapped again (the
-    /// same frames) and the objects cloned. Nothing is copied-on-write.
+    /// A copy of the user half for `fork` (`docs/linux.md`): P13 K6, every
+    /// page the address space owns is shared copy-on-write (both entries
+    /// read-only with [`COW`], the frame's count up by one; the first
+    /// write copies it); shared-memory and device pages are mapped again
+    /// (the same frames) and the objects cloned.
     pub fn clone_user(&self) -> Result<AddressSpace, MapError> {
         let copy = AddressSpace::new()?;
         let _guard = self.lock.lock();
         let _copy_guard = copy.lock.lock();
-        // SAFETY: this address space's user tables, read under its lock.
-        unsafe { self.clone_level(&copy, self.root, 4, 0)? };
+        // SAFETY: this address space's user tables, edited under its lock.
+        let result = unsafe { self.clone_level(&copy, self.root, 4, 0) };
+        // Our entries became read-only: the TLB must forget the old ones
+        // (this process's threads all run on this processor).
+        if self.is_active() {
+            // SAFETY: reloading the same root flushes the user half's TLB
+            // entries; the kernel half is unchanged.
+            unsafe { paging::load_root(self.root) };
+        }
+        result?;
         drop(_copy_guard);
         drop(_guard);
         *copy.shared.lock() = self.shared.lock().clone();
@@ -496,17 +610,19 @@ impl AddressSpace {
             let leaf = if entry & SHARED != 0 {
                 entry
             } else {
-                let frame = pmm::alloc_frame().ok_or(MapError::OutOfMemory)?;
-                // SAFETY: both frames are RAM reached through the HHDM; the
-                // new one is ours alone, the old one is only read.
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        (HHDM_BASE + (entry & ADDR_MASK)) as *const u8,
-                        (HHDM_BASE + frame.addr()) as *mut u8,
-                        4096,
-                    )
+                // Copy-on-write: read-only in both, writable again after
+                // the copy if it was.
+                let was = if entry & (WRITABLE | WAS_WRITABLE) != 0 {
+                    WAS_WRITABLE
+                } else {
+                    0
                 };
-                (entry & !ADDR_MASK) | frame.addr()
+                let shared = (entry & !WRITABLE) | COW | was;
+                // SAFETY: the caller's guarantee (our table, our lock).
+                let ours = unsafe { table(phys) };
+                ours[i] = shared;
+                super::cow::COUNTS.lock().share(entry & ADDR_MASK);
+                shared
             };
             if let Err(e) = copy.set_leaf(virt, leaf) {
                 if entry & SHARED == 0 {

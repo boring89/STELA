@@ -42,6 +42,7 @@ pub fn run(info: &'static BootInfo) -> ! {
         ("exception report format", report_format),
         ("frame allocator", frame_allocator),
         ("page mapping", page_mapping),
+        ("copy on write", copy_on_write),
         ("heap", heap),
         ("locks and interrupts", locks),
         ("mmio mapping", mmio_mapping),
@@ -318,6 +319,58 @@ fn frame_allocator(_: &'static BootInfo) {
     pmm::free_contiguous(run);
     assert_eq!(pmm::stats().0, free_before);
     kprintln!("selftest:   {} of {} frames free", free_before, total);
+}
+
+/// P13 K6: a cloned address space shares the frames until one side
+/// writes; the counts go back to nothing and every frame comes back.
+fn copy_on_write(_: &'static BootInfo) {
+    use frame::mm::cow;
+    use frame::mm::user::AddressSpace;
+    let rw = UserFlags {
+        writable: true,
+        executable: false,
+    };
+    let ro = UserFlags {
+        writable: false,
+        executable: false,
+    };
+    let (free_before, _) = pmm::stats();
+    let shared_before = cow::shared_frames();
+    {
+        let va = 0x40_0000;
+        let parent = AddressSpace::new().expect("an address space");
+        let frame = pmm::alloc_zeroed_frame().expect("a frame");
+        parent.map(va, frame, rw).expect("map rw");
+        let frame = pmm::alloc_zeroed_frame().expect("a frame");
+        parent.map(va + 4096, frame, ro).expect("map ro");
+        parent.write(va, b"parent").expect("write");
+        let before_clone = pmm::stats().0;
+        let child = parent.clone_user().expect("clone");
+        // The same frames, counted twice; only page tables were new.
+        assert_eq!(parent.translate(va), child.translate(va));
+        assert_eq!(parent.translate(va + 4096), child.translate(va + 4096));
+        assert_eq!(cow::shared_frames(), shared_before + 2);
+        assert!(before_clone - pmm::stats().0 <= 4, "fork copied pages");
+        // The child writes: it gets its own copy, the parent keeps its.
+        child.write(va, b"child!").expect("child write");
+        assert_ne!(parent.translate(va), child.translate(va));
+        let mut buf = [0u8; 6];
+        parent.read(va, &mut buf).expect("read");
+        assert_eq!(&buf, b"parent");
+        child.read(va, &mut buf).expect("read");
+        assert_eq!(&buf, b"child!");
+        assert_eq!(cow::shared_frames(), shared_before + 1);
+        // A read-only page stays read-only.
+        assert!(child.write(va + 4096, b"x").is_err());
+        // The parent is the last user of its frame: no copy, the same frame.
+        let mine = parent.translate(va);
+        assert!(parent.resolve_cow(va));
+        assert_eq!(parent.translate(va), mine);
+        assert!(!parent.resolve_cow(va), "not shared any more");
+        drop(child);
+        assert_eq!(cow::shared_frames(), shared_before);
+    }
+    assert_eq!(pmm::stats().0, free_before, "frames leaked");
 }
 
 fn page_mapping(info: &'static BootInfo) {

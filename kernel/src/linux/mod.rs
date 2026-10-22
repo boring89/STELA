@@ -20,11 +20,13 @@ pub mod signal;
 pub mod stack;
 
 #[cfg(target_os = "none")]
+mod events;
+#[cfg(target_os = "none")]
 mod files;
 #[cfg(target_os = "none")]
 mod futex;
 #[cfg(target_os = "none")]
-mod memory;
+pub(crate) mod memory;
 #[cfg(target_os = "none")]
 mod poll;
 #[cfg(target_os = "none")]

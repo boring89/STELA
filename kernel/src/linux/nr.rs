@@ -33,6 +33,7 @@ pub const PIPE: u64 = 22;
 pub const SELECT: u64 = 23;
 pub const SCHED_YIELD: u64 = 24;
 pub const MREMAP: u64 = 25;
+pub const MSYNC: u64 = 26;
 pub const MADVISE: u64 = 28;
 pub const DUP: u64 = 32;
 pub const DUP2: u64 = 33;
@@ -140,6 +141,16 @@ pub const FCHMODAT: u64 = 268;
 pub const FACCESSAT: u64 = 269;
 pub const PSELECT6: u64 = 270;
 pub const PPOLL: u64 = 271;
+pub const EPOLL_CREATE: u64 = 213;
+pub const EPOLL_WAIT: u64 = 232;
+pub const EPOLL_CTL: u64 = 233;
+pub const EPOLL_PWAIT: u64 = 281;
+pub const TIMERFD_CREATE: u64 = 283;
+pub const EVENTFD: u64 = 284;
+pub const TIMERFD_SETTIME: u64 = 286;
+pub const TIMERFD_GETTIME: u64 = 287;
+pub const EVENTFD2: u64 = 290;
+pub const EPOLL_CREATE1: u64 = 291;
 pub const SET_ROBUST_LIST: u64 = 273;
 pub const GET_ROBUST_LIST: u64 = 274;
 pub const UTIMENSAT: u64 = 280;
@@ -178,6 +189,15 @@ mod tests {
         );
         assert_eq!((PIPE2, GETRANDOM, CLONE3), (293, 318, 435));
         assert_eq!((POLL, SELECT, PSELECT6, PPOLL), (7, 23, 270, 271));
+        assert_eq!(
+            (EPOLL_CREATE, EPOLL_WAIT, EPOLL_CTL, EPOLL_PWAIT),
+            (213, 232, 233, 281)
+        );
+        assert_eq!((EPOLL_CREATE1, EVENTFD, EVENTFD2), (291, 284, 290));
+        assert_eq!(
+            (TIMERFD_CREATE, TIMERFD_SETTIME, TIMERFD_GETTIME),
+            (283, 286, 287)
+        );
         assert_eq!((SENDMSG, RECVMSG), (46, 47));
         assert_eq!((RT_SIGRETURN, WAIT4, KILL, TKILL), (15, 61, 62, 200));
         assert_eq!((TGKILL, WAITID, EXECVEAT, PRLIMIT64), (234, 247, 322, 302));

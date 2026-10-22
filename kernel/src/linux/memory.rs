@@ -11,8 +11,170 @@
 use super::errno::{EACCES, EINVAL, ENOMEM, ENOSYS};
 use super::sys::LinuxResult;
 use crate::task::Process;
+use crate::vfs::Node;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use frame::mm::pmm;
+use frame::mm::shared::SharedMemory;
 use frame::mm::user::UserFlags;
+use frame::sync::SpinLock;
+
+/// Pages of a file mapped `MAP_SHARED` (P13 K6): one set of frames for
+/// every process that maps the same range of the same file, written back
+/// to the file on `msync`, `munmap`, `execve` and `exit`/`exit_group`
+/// (not from a destructor: that may run where file I/O cannot wait).
+pub struct FileShare {
+    node: Node,
+    offset: u64,
+    memory: SharedMemory,
+}
+
+impl FileShare {
+    /// Writes the pages back to the file (not past its current end).
+    pub fn write_back(&self) {
+        let Ok(info) = self.node.volume.fs.get(self.node.id) else {
+            return;
+        };
+        if info.size <= self.offset {
+            return;
+        }
+        let len = (info.size - self.offset).min(self.memory.size()) as usize;
+        let mut buf = alloc::vec![0u8; len];
+        if self.memory.read(0, &mut buf).is_ok() {
+            let _ = self.node.volume.fs.write(self.node.id, self.offset, &buf);
+        }
+    }
+}
+
+/// The shared file ranges mapped somewhere now.
+static SHARES: SpinLock<Vec<Weak<FileShare>>> = SpinLock::new(Vec::new());
+
+/// The frames for `pages` pages of `node` from `offset` (made and filled
+/// from the file if no one maps that range now).
+fn share_for(node: &Node, offset: u64, pages: usize) -> Result<Arc<FileShare>, i64> {
+    {
+        let mut shares = SHARES.lock();
+        shares.retain(|w| w.strong_count() > 0);
+        let found = shares.iter().filter_map(Weak::upgrade).find(|s| {
+            s.offset == offset
+                && s.memory.pages() == pages
+                && s.node.id == node.id
+                && Arc::ptr_eq(&s.node.volume, &node.volume)
+        });
+        if let Some(s) = found {
+            return Ok(s);
+        }
+    }
+    let memory = SharedMemory::new(pages).ok_or(ENOMEM)?;
+    let mut buf = alloc::vec![0u8; 64 * 1024];
+    let mut done = 0u64;
+    while done < memory.size() {
+        let want = ((memory.size() - done) as usize).min(buf.len());
+        let n = node
+            .volume
+            .fs
+            .read(node.id, offset + done, &mut buf[..want])
+            .map_err(super::errno::from_error)?;
+        if n == 0 {
+            break;
+        }
+        memory.write(done, &buf[..n]).map_err(|_| ENOMEM)?;
+        done += n as u64;
+    }
+    let share = Arc::new(FileShare {
+        node: node.clone(),
+        offset,
+        memory,
+    });
+    SHARES.lock().push(Arc::downgrade(&share));
+    Ok(share)
+}
+
+/// Writes every shared file mapping of `p` back (it is ending).
+pub fn flush_shared(p: &Process) {
+    let Some(linux) = p.linux() else {
+        return;
+    };
+    let maps: Vec<Arc<FileShare>> = linux
+        .shared_maps
+        .lock()
+        .iter()
+        .map(|(_, f)| Arc::clone(f))
+        .collect();
+    for f in maps {
+        f.write_back();
+    }
+}
+
+/// `mmap` of a file with `MAP_SHARED` (P13 K6): the shared frames, mapped
+/// at a place the kernel chooses.
+fn mmap_shared(p: &Process, len: u64, prot: u64, fd: u64, off: u64) -> LinuxResult {
+    let file = super::sys::file_of(p, fd)?;
+    let super::state::OpenFile::File { node, state } = &*file else {
+        return Err(EACCES);
+    };
+    if prot & PROT_WRITE != 0 && !state.lock().writable {
+        return Err(EACCES);
+    }
+    let pages = len.div_ceil(4096) as usize;
+    let share = share_for(node, off, pages)?;
+    let size = share.memory.size();
+    let start = p.maps().lock().alloc(size).ok_or(ENOMEM)?;
+    let flags = UserFlags {
+        writable: prot & PROT_WRITE != 0,
+        executable: false,
+    };
+    if p.space().map_shared(start, &share.memory, flags).is_err() {
+        p.maps().lock().free(start);
+        return Err(ENOMEM);
+    }
+    if let Some(linux) = p.linux() {
+        linux.shared_maps.lock().push((start, share));
+    }
+    Ok(start)
+}
+
+/// `msync(addr, len, flags)`: the shared file mappings in the range are
+/// written back.
+pub fn msync(p: &Process, addr: u64, len: u64) -> LinuxResult {
+    if !addr.is_multiple_of(4096) {
+        return Err(EINVAL);
+    }
+    let end = addr.saturating_add(len);
+    let Some(linux) = p.linux() else {
+        return Ok(0);
+    };
+    let maps: Vec<Arc<FileShare>> = linux
+        .shared_maps
+        .lock()
+        .iter()
+        .filter(|(s, f)| *s < end && addr < *s + f.memory.size())
+        .map(|(_, f)| Arc::clone(f))
+        .collect();
+    for f in maps {
+        f.write_back();
+    }
+    Ok(0)
+}
+
+/// Removes the shared file mapping at `addr`, if there is one (written
+/// back first); true if it did.
+fn munmap_shared(p: &Process, addr: u64) -> bool {
+    let Some(linux) = p.linux() else {
+        return false;
+    };
+    let share = {
+        let mut maps = linux.shared_maps.lock();
+        let Some(i) = maps.iter().position(|(s, _)| *s == addr) else {
+            return false;
+        };
+        maps.swap_remove(i).1
+    };
+    share.write_back();
+    let _ = p.space().unmap_shared(addr);
+    p.maps().lock().free(addr);
+    true
+}
 
 /// Largest `brk` area.
 pub const BRK_MAX: u64 = 256 << 20;
@@ -118,9 +280,6 @@ pub fn mmap(
     let fixed = flags & MAP_FIXED != 0;
     let shared = flags & MAP_SHARED != 0;
     if flags & MAP_ANONYMOUS == 0 {
-        if shared && prot & PROT_WRITE != 0 {
-            return Err(ENOSYS);
-        }
         if !shared && flags & MAP_PRIVATE == 0 {
             return Err(EINVAL);
         }
@@ -129,6 +288,14 @@ pub fn mmap(
     }
     if !off.is_multiple_of(4096) {
         return Err(EINVAL);
+    }
+    // P13 K6: a shared file mapping shares its frames (and is written
+    // back); not at a fixed place, not executable.
+    if shared {
+        if fixed || prot & PROT_EXEC != 0 {
+            return Err(EINVAL);
+        }
+        return mmap_shared(p, len, prot, fd, off);
     }
     let anonymous = flags & MAP_ANONYMOUS != 0;
     let exec = prot & PROT_EXEC != 0;
@@ -253,6 +420,9 @@ pub fn munmap(p: &Process, addr: u64, len: u64) -> LinuxResult {
     if end > abi::layout::MAP_END || addr < abi::layout::MAP_BASE {
         // Not in the map area (the program, its stack or the brk area).
         return Err(EINVAL);
+    }
+    if munmap_shared(p, addr) {
+        return Ok(0);
     }
     unmap_pages(p, addr, end);
     let mut maps = p.maps().lock();

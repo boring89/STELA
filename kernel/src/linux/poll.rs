@@ -38,16 +38,43 @@ const MAX_FDS: usize = 1024;
 
 /// One `struct pollfd`: fd, wanted events, returned events.
 #[derive(Clone, Copy)]
-struct PollFd {
+pub(super) struct PollFd {
     fd: i32,
     events: i16,
     revents: i16,
 }
 
+impl PollFd {
+    /// An entry for `fd` wanting `events` (epoll, P13 K6).
+    pub(super) fn new(fd: i32, events: i16) -> PollFd {
+        PollFd {
+            fd,
+            events,
+            revents: 0,
+        }
+    }
+
+    /// The events that hold.
+    pub(super) fn revents(&self) -> i16 {
+        self.revents
+    }
+}
+
 /// The events of `file` that hold now (`POLLERR`, `POLLHUP` always
-/// count), and the object to wait on if it can change.
-fn file_events(file: &OpenFile) -> (i16, Option<KernelObject>) {
-    match file {
+/// count), the object to wait on if it can change, and when it changes
+/// by itself (a timerfd, P13 K6).
+fn file_events(file: &OpenFile) -> (i16, Option<KernelObject>, Option<u64>) {
+    let (events, object) = match file {
+        OpenFile::EventFd(e) => {
+            let read = if e.readable() { POLLIN } else { 0 };
+            (read | POLLOUT, Some(e.wait_object()))
+        }
+        OpenFile::TimerFd(t, _) => {
+            let (ready, deadline) = t.status();
+            return (if ready { POLLIN } else { 0 }, None, deadline);
+        }
+        // An epoll inside poll: not followed (never ready).
+        OpenFile::Epoll(_) => (0, None),
         OpenFile::Tty(tty) => {
             let read = if tty.readable() { POLLIN } else { 0 };
             (read | POLLOUT, Some(KernelObject::Tty(Arc::clone(tty))))
@@ -98,14 +125,16 @@ fn file_events(file: &OpenFile) -> (i16, Option<KernelObject>) {
         }
         // Files, folders and devices never block.
         _ => (POLLIN | POLLOUT, None),
-    }
+    };
+    (events, object, None)
 }
 
 /// Fills in `revents` of every entry; returns how many have some, and
 /// the objects to wait on.
-fn scan(p: &Process, fds: &mut [PollFd]) -> (usize, Vec<KernelObject>) {
+fn scan(p: &Process, fds: &mut [PollFd]) -> (usize, Vec<KernelObject>, Option<u64>) {
     let mut ready = 0;
     let mut objects = Vec::new();
+    let mut wake: Option<u64> = None;
     for f in fds.iter_mut() {
         f.revents = 0;
         if f.fd < 0 {
@@ -114,10 +143,13 @@ fn scan(p: &Process, fds: &mut [PollFd]) -> (usize, Vec<KernelObject>) {
         match file_of(p, f.fd as u64) {
             Err(_) => f.revents = POLLNVAL,
             Ok(file) => {
-                let (now, object) = file_events(&file);
+                let (now, object, at) = file_events(&file);
                 f.revents = now & (f.events | POLLERR | POLLHUP);
                 if let Some(o) = object {
                     objects.push(o);
+                }
+                if let Some(t) = at {
+                    wake = Some(wake.map_or(t, |w| w.min(t)));
                 }
             }
         }
@@ -125,20 +157,30 @@ fn scan(p: &Process, fds: &mut [PollFd]) -> (usize, Vec<KernelObject>) {
             ready += 1;
         }
     }
-    (ready, objects)
+    (ready, objects, wake)
 }
 
 /// Waits until some entry of `fds` is ready or `deadline` (`now_ns`;
 /// `None`: forever); returns how many are.
-fn poll_fds(p: &Process, fds: &mut [PollFd], deadline: Option<u64>) -> Result<usize, i64> {
+pub(super) fn poll_fds(
+    p: &Process,
+    fds: &mut [PollFd],
+    deadline: Option<u64>,
+) -> Result<usize, i64> {
     loop {
         if task::current_killed() {
             return Err(EINTR);
         }
-        let (ready, objects) = scan(p, fds);
+        let (ready, objects, wake) = scan(p, fds);
         if ready > 0 || deadline.is_some_and(|d| frame::time::now_ns() >= d) {
             return Ok(ready);
         }
+        // A timerfd's deadline wakes the wait too.
+        let deadline = match (deadline, wake) {
+            (Some(d), Some(w)) => Some(d.min(w)),
+            (d, None) => d,
+            (None, w) => w,
+        };
         if objects.is_empty() {
             // Nothing can change: just sleep (in steps, to notice a kill).
             let step = frame::time::now_ns() + 100_000_000;

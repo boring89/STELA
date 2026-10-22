@@ -8,7 +8,7 @@
 use super::errno::{self, EBADF, EFAULT, EINTR, EINVAL, ENOSYS, ENOTTY, EPERM, ESRCH};
 use super::stack::{self, at};
 use super::state::OpenFile;
-use super::{files, futex, memory, nr, poll, process as lproc, signals, socket};
+use super::{events, files, futex, memory, nr, poll, process as lproc, signals, socket};
 use crate::task::{self, Process};
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
@@ -72,6 +72,7 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
     let result = match number {
         nr::EXIT => lproc::exit_thread(process, a0),
         nr::EXIT_GROUP => {
+            memory::flush_shared(p);
             drop(process);
             task::exit_process(a0 as i64 & 0xFF)
         }
@@ -103,6 +104,22 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::GETDENTS64 => files::getdents64(p, a0, a1, a2),
         nr::POLL => poll::poll(p, a0, a1, a2),
         nr::PPOLL => poll::ppoll(p, a0, a1, a2),
+        // P13 K6.
+        nr::EPOLL_CREATE => {
+            if a0 as i32 <= 0 {
+                Err(EINVAL)
+            } else {
+                events::epoll_create(p, 0)
+            }
+        }
+        nr::EPOLL_CREATE1 => events::epoll_create(p, a0),
+        nr::EPOLL_CTL => events::epoll_ctl(p, a0, a1, a2, a3),
+        nr::EPOLL_WAIT | nr::EPOLL_PWAIT => events::epoll_wait(p, a0, a1, a2, a3),
+        nr::EVENTFD => events::eventfd(p, a0, 0),
+        nr::EVENTFD2 => events::eventfd(p, a0, a1),
+        nr::TIMERFD_CREATE => events::timerfd_create(p, a0, a1),
+        nr::TIMERFD_SETTIME => events::timerfd_settime(p, a0, a1, a2, a3),
+        nr::TIMERFD_GETTIME => events::timerfd_gettime(p, a0, a1),
         nr::SELECT => poll::select(p, [a0, a1, a2, a3, a4]),
         nr::PSELECT6 => poll::pselect6(p, [a0, a1, a2, a3, a4]),
         // Only /proc's links (P12).
@@ -134,6 +151,7 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::IOCTL => ioctl(p, a0, a1, a2),
         nr::BRK => Ok(memory::brk(p, a0)),
         nr::MMAP => memory::mmap(p, a0, a1, a2, a3, a4, a5),
+        nr::MSYNC => memory::msync(p, a0, a1),
         nr::MUNMAP => memory::munmap(p, a0, a1),
         nr::MPROTECT => memory::mprotect(p, a0, a1, a2),
         nr::MADVISE => Ok(0),

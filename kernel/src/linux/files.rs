@@ -506,6 +506,8 @@ pub fn fcntl(p: &Process, fd: u64, cmd: u64, arg: u64) -> LinuxResult {
                 | OpenFile::PtyMaster(_, _, nb) => {
                     nb.store(arg & O_NONBLOCK != 0, core::sync::atomic::Ordering::Relaxed);
                 }
+                OpenFile::EventFd(e) => e.set_nonblock(arg & O_NONBLOCK != 0),
+                OpenFile::TimerFd(t, _) => t.set_nonblock(arg & O_NONBLOCK != 0),
                 _ => {}
             }
             Ok(0)
@@ -546,6 +548,9 @@ fn read_file(file: &OpenFile, len: usize) -> Result<Vec<u8>, i64> {
             })
         }
         OpenFile::Dir { .. } => Err(EISDIR),
+        OpenFile::EventFd(e) => e.read(len),
+        OpenFile::TimerFd(t, _) => t.read(len),
+        OpenFile::Epoll(_) => Err(EINVAL),
         OpenFile::Socket(socket) => super::socket::read(socket, len),
         OpenFile::PipeRead(end, nonblock) => {
             let deadline = if nonblock.load(core::sync::atomic::Ordering::Relaxed) {
@@ -600,6 +605,8 @@ fn write_file(file: &OpenFile, data: &[u8]) -> Result<usize, i64> {
             Ok(data.len())
         }
         OpenFile::Dir { .. } => Err(EISDIR),
+        OpenFile::EventFd(e) => e.write(data),
+        OpenFile::TimerFd(..) | OpenFile::Epoll(_) => Err(EINVAL),
         OpenFile::Socket(socket) => super::socket::write(socket, data),
         OpenFile::Text { .. } | OpenFile::PipeRead(..) => Err(EBADF),
         OpenFile::PipeWrite(end, nonblock) => {
@@ -834,6 +841,10 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
             stat_bytes(0, 0x2000 + u64::from(*n), S_IFCHR | 0o620, 0, 0, 0)
         }
         OpenFile::Socket(_) => stat_bytes(0, 7, S_IFSOCK | 0o777, 0, 0, 0),
+        // anon_inode files (P13 K6).
+        OpenFile::EventFd(_) | OpenFile::TimerFd(..) | OpenFile::Epoll(_) => {
+            stat_bytes(0, 13, 0o600, 0, 0, 0)
+        }
         OpenFile::PipeRead(..) | OpenFile::PipeWrite(..) => {
             stat_bytes(0, 10, S_IFIFO | 0o600, 0, 0, 0)
         }
@@ -1201,6 +1212,9 @@ fn fd_link(p: &Process, fd: u64) -> Result<String, i64> {
         OpenFile::Socket(_) => alloc::format!("socket:[{fd}]"),
         OpenFile::PipeRead(..) | OpenFile::PipeWrite(..) => alloc::format!("pipe:[{fd}]"),
         OpenFile::Text { .. } => String::from("/proc"),
+        OpenFile::EventFd(_) => String::from("anon_inode:[eventfd]"),
+        OpenFile::TimerFd(..) => String::from("anon_inode:[timerfd]"),
+        OpenFile::Epoll(_) => String::from("anon_inode:[eventpoll]"),
     })
 }
 

@@ -52,7 +52,7 @@ CHEWING_DIR := $(BUILD)/chewing
 CHEWING_DATA := $(CHEWING_DIR)/data/index_tree.dat
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc
+LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc events
 LINUX_DIR   := $(USER_DIR)/linux
 # P13 K5: the dynamically linked test program and its libraries.
 LINUX_DYN   := $(LINUX_DIR)/dyn $(LINUX_DIR)/lib/ld-musl-x86_64.so.1 $(LINUX_DIR)/lib/libdyntest.so
@@ -837,7 +837,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "procs exited with code" "run linux/misc\n" \
 		--type "misc exited with code" "run linux/hello-std rust\n" \
 		--type "hello-std exited with code" "run linux/dyn\n" \
-		--type "dyn exited with code" "run linux/signals\n" \
+		--type "dyn exited with code" "run linux/events\n" \
+		--type "events exited with code" "run linux/signals\n" \
 		--send-keys "signals: press Ctrl-C" "ctrl-c" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
@@ -861,6 +862,9 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "hello-std: OK" --expect "hello-std exited with code 0" \
 		--expect "dyn: hello from a dynamic program" --expect "dyn: pie yes" --expect "dyn: 2 + 3 = 5" \
 		--expect "dyn: dlsym add(4, 5) = 9, calls 42" --expect "dyn: malloc ok 7" --expect "dyn exited with code 0" \
+		--expect "events: copy-on-write fork works" --expect "events: MAP_SHARED works" \
+		--expect "events: eventfd works" --expect "events: timerfd works" --expect "events: epoll works" \
+		--expect "events: OK" --expect "events exited with code 0" \
 		--expect "signals: handlers, mask and timers work" \
 		--expect "signals: children, pipes, faults and restarts work" \
 		--expect "signals: got SIGINT" --expect "signals: OK" --expect "signals exited with code 0" \

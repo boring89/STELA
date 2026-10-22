@@ -85,8 +85,12 @@ pub fn alloc_zeroed_frame() -> Option<PhysFrame> {
     Some(frame)
 }
 
-/// Returns a frame.
+/// Returns a frame (P13 K6: a frame shared copy-on-write only loses one
+/// reference; the last one frees it, `super::cow`).
 pub fn free_frame(frame: PhysFrame) {
+    if !super::cow::COUNTS.lock().release(frame.0) {
+        return;
+    }
     if let Some(pmm) = PMM.lock().as_mut() {
         pmm.free(frame.0);
     }

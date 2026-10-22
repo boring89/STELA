@@ -61,6 +61,12 @@ pub enum OpenFile {
     PtyMaster(Arc<Tty>, u32, AtomicBool),
     /// `/dev/urandom` (P12).
     Random,
+    /// An `eventfd` (P13 K6).
+    EventFd(Arc<super::events::EventFd>),
+    /// A `timerfd` (P13 K6) and whether its clock is `CLOCK_REALTIME`.
+    TimerFd(Arc<super::events::TimerFd>, bool),
+    /// An `epoll` instance (P13 K6).
+    Epoll(Arc<super::events::Epoll>),
     /// A generated, read-only file (`/etc/resolv.conf`, `/proc/...`): its
     /// bytes, made when opened, and the offset.
     Text {
@@ -208,6 +214,8 @@ pub struct State {
     pub cwd: SpinLock<String>,
     /// The `brk` area.
     pub memory: SpinLock<Memory>,
+    /// Shared file mappings (P13 K6): where, and the shared pages.
+    pub shared_maps: SpinLock<Vec<(u64, Arc<super::memory::FileShare>)>>,
     /// The controlling terminal (`/dev/tty`).
     pub tty: Arc<Tty>,
     /// Whether it was given the `NETWORK` capability (`socket` needs it;
@@ -280,6 +288,7 @@ impl State {
                 mapped: start,
                 exec: Vec::new(),
             }),
+            shared_maps: SpinLock::new(Vec::new()),
             tty,
             network: false,
             volumes: Vec::new(),
@@ -315,6 +324,7 @@ impl State {
                 mapped: m.mapped,
                 exec: m.exec.clone(),
             }),
+            shared_maps: SpinLock::new(self.shared_maps.lock().clone()),
             tty: Arc::clone(&self.tty),
             network: self.network,
             volumes: self.volumes.clone(),

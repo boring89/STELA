@@ -416,6 +416,9 @@ pub fn exit_thread(p: Arc<Process>, code: u64) -> ! {
             }
             linux.threads.lock().retain(|x| !Arc::ptr_eq(x, &t));
         }
+        if linux.threads.lock().is_empty() {
+            super::memory::flush_shared(&p);
+        }
     }
     drop(p);
     task::exit()
@@ -515,6 +518,12 @@ pub fn execve(
     *p.maps().lock() =
         crate::object::regions::Regions::new(abi::layout::MAP_BASE, abi::layout::MAP_END);
     super::set_image(p, &image);
+    // Shared file mappings go with the old image (written back).
+    let old_maps = core::mem::take(&mut *linux.shared_maps.lock());
+    for (_, f) in &old_maps {
+        f.write_back();
+    }
+    drop(old_maps);
     let closed = linux.fds.lock().take_cloexec();
     drop(closed);
     for a in linux.actions.lock().iter_mut() {

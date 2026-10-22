@@ -509,7 +509,7 @@ Rust std 程式的建置（`make linux-rust`，`make linux-tests` 會做）：`r
 - 網路（P10，`docs/net.md` §7）：只有 `AF_INET` 的 `SOCK_STREAM`／`SOCK_DGRAM`；`socket`、`connect`、`bind`、`listen`、`accept`/`accept4`、`sendto`、`recvfrom`、`sendmsg`/`recvmsg`（P11，沒有 control 資料）、`shutdown`、`getsockname`、`getpeername`、`setsockopt`（忽略）、`getsockopt`（一律 0）；socket 上的 `read`/`write` 等於 recv/send。P11 起 musl 的 `getaddrinfo`（DNS）可用：`/etc/resolv.conf` + UDP + `poll` + `recvmsg`；TCP 的 DNS 退路（`MSG_FASTOPEN` 的 `sendmsg`）不支援。
 
 - P13 起有動態連結與 PIE（§16）；沒有 32 位元（`int 0x80`）、ASLR、`AT_EXECFN`、`LD_LIBRARY_PATH` 以外的搜尋設定（`/etc/ld-musl-x86_64.path` 沒有）。
-- 行程模型（P12）：fork 全複製（沒有 copy-on-write：大程式 fork 慢、記憶體加倍）；vfork 不讓父行程等；一個行程的執行緒都在同一顆 CPU；沒有 `MAP_FIXED`、可寫的 `MAP_SHARED`、`mremap`、`epoll`、`inotify`、`eventfd`、`timerfd`、`signalfd`；execve 不能換成 STELA 程式、`#!` 只有一層；行程名稱（`ps`）在 execve 後不變；沒有停止／繼續（SIGSTOP、SIGTSTP、SIGCONT 只是忽略，沒有 job control 的停止）；`sigaltstack` 只記錄；`ITIMER_VIRTUAL`／`PROF`、POSIX 計時器（`timer_create`）沒有；沒有 CPU 時間的統計（`times`、`getrusage` 是 0）；父行程先結束時子行程的狀態沒人收。
+- 行程模型（P12）：P13 起 fork 是 copy-on-write（§16.8）；vfork 不讓父行程等；一個行程的執行緒都在同一顆 CPU；沒有 `mremap`、`inotify`、`signalfd`；P13 的 `MAP_SHARED`、`epoll`、`eventfd`、`timerfd` 的限制見 §16.9；execve 不能換成 STELA 程式、`#!` 只有一層；行程名稱（`ps`）在 execve 後不變；沒有停止／繼續（SIGSTOP、SIGTSTP、SIGCONT 只是忽略，沒有 job control 的停止）；`sigaltstack` 只記錄；`ITIMER_VIRTUAL`／`PROF`、POSIX 計時器（`timer_create`）沒有；沒有 CPU 時間的統計（`times`、`getrusage` 是 0）；父行程先結束時子行程的狀態沒人收。
 - 權限：mode、owner、時間都不能改（`chmod`、`chown`、`utimensat` 成功但什麼都不做）；記錄鎖一律成功。
 - pty：master 關掉時程式端不會收到 EOF／SIGHUP。
 - Linux 程式在 `[3]`、`[4]` 的卷宗裡不受 handle 權限限制（整個卷宗，不只那個資料夾以下）。
@@ -574,3 +574,35 @@ musl 的動態連結器**就是** libc.so 本身：只連 libc 的程式（Alpin
 - `linux/tests/libdyntest.c` → `Initrd:/linux/lib/libdyntest.so`（`-shared -fPIC`；有 `static` 資料與 `__thread` 變數，檢查重定位與 TLS）。
 - `linux/tests/dyn.c` → `Initrd:/linux/dyn`：`-fPIE -pie -Wl,--dynamic-linker=/lib/ld-musl-x86_64.so.1 -ldyntest`。印 `pie yes`（`&main` 在 PIE_BASE 以上）、呼叫函式庫、`dlopen`／`dlsym`、`malloc` 1 MiB。
 - `make test-alpine`（本機）：Alpine 的 ld-musl 與 busybox，證明不是只和自己建的 musl 相容。
+
+### 16.7 eventfd、timerfd、epoll（P13 K6，`linux/events.rs`）
+
+| | 怎麼做 |
+|---|---|
+| `eventfd`／`eventfd2`（284／290） | 一個計數器（`SpinLock<u64>`）；不是 0 時一條內部 pipe 裡有 1 byte，所以 poll／epoll 可以等它（`KernelObject::PipeRead`）。`EFD_SEMAPHORE` 每次讀 1；`EFD_NONBLOCK`、`fcntl(O_NONBLOCK)` |
+| `timerfd_create`／`settime`／`gettime`（283／286／287） | 期限（`now_ns`）與間隔；到期次數在有人看的時候才算（`TimerState::update`），**沒有 kernel 計時器**。poll／epoll 把它的期限當作喚醒時間（`file_events` 多傳回一個「何時會自己改變」）。`TFD_TIMER_ABSTIME` 依它的時鐘（`CLOCK_REALTIME` 用牆上時間）換算 |
+| `epoll_create`／`create1`／`ctl`／`wait`／`pwait`（213／291／233／232／281） | 一張 fd → (events, data) 的表；`epoll_wait` 就是對這些 fd 做 `poll`（level-triggered；`EPOLLET` 當 level；`EPOLLONESHOT` 回報後關掉那一項）。關掉的 fd 在下次 `epoll_wait` 時移出。`struct epoll_event` 在 x86-64 是 packed 的 12 bytes。epoll 放進另一個 epoll／poll 時永遠不就緒 |
+
+### 16.8 copy-on-write 的 fork（P13 K6，`frame/src/mm/cow.rs`、`user.rs`）
+
+```
+ fork（clone_user）：每個自己的頁（不是共享記憶體、裝置）
+   父、子的 PTE 都改成唯讀 + 軟體位元 COW（bit 10）；原本可寫的再加 WAS_WRITABLE（bit 11）
+   頁框的參考計數 +1（cow::COUNTS）；父行程的 TLB 重新載入
+ 寫入 → #PF（error code P=1、W=1，Intel SDM Vol. 3A §4.7）→ kernel 的 user_fault 先問 resolve_cow：
+   計數 1（只剩自己）：PTE 改回可寫，不複製
+   計數 ≥ 2：配新頁框、複製、PTE 指向新頁框可寫，舊頁框的計數 -1
+ kernel 寫使用者記憶體（read()、CLONE_CHILD_SETTID…）：write() 先對 COW 頁做同樣的事
+ pmm::free_frame：共享中的頁框只減計數，最後一個才真的釋放（行程結束、munmap 都經過它）
+ mprotect：COW 頁維持唯讀，只記住「複製後可寫」
+```
+
+- 計數表是稀疏的 `BTreeMap<頁框, u32>`（只放正在共享的頁框），**不是**計畫寫的每個頁框一個 `u16`：64 GiB 的機器那張表要 32 MiB，而 kernel heap 最多 64 MiB（**計畫外的決定**）。
+- selftest「copy on write」：clone 後兩邊同一頁框、計數 2、只多了頁表；子寫入後各自的頁框與內容；唯讀頁 kernel 寫入被拒；父行程最後一個參考時不複製；全部結束後 PMM 回到原數。`linux/events` 的子行程改 4 MiB 的緩衝區，父行程的不變。
+- 鎖的順序：AddressSpace 的鎖 → `cow::COUNTS` → PMM。
+
+### 16.9 `MAP_SHARED`（P13 K6）
+
+- 檔案的 `MAP_SHARED`（可讀或可寫）：全域登記表（`memory::SHARES`，弱參考）以（卷宗、檔案、偏移、頁數）找已有的 `FileShare`，沒有就配一份 `SharedMemory` 並從檔案讀入；用 `map_shared` 映射（頁框不屬於位址空間），所以兩個行程（或 fork 後的父子）映射同一段檔案時**共用頁框**，彼此看得到寫入。
+- 寫回：`msync`（26）、`munmap`、`execve`、`exit`／`exit_group`（最後一個執行緒）時把頁寫回檔案（不超過檔案目前的長度）。**不在解構時寫**：那可能在不能等 I/O 的地方；被訊號或例外結束的行程最後一次的修改會丟失。
+- 限制：不能 `MAP_FIXED`、不能可執行；偏移或長度不同的映射不共用（各自一份）；`write()` 寫進檔案的資料不會出現在已有的映射裡（沒有和頁快取的一致性）；部分 `munmap` 共享映射不支援（只認整段的起點）。

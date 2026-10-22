@@ -75,6 +75,8 @@ kernel 的 `drivers/src/net/e1000.rs` 的使用者版：在 bus 0 上找 kernel 
 
 ## 7. FreeBSD 相容層要接在這裡
 
+P14（K13–K15）：已經接上了——`bsdnet` 是 FreeBSD 14.3 的 `if_em` 原樣跑在這個介面上（`docs/bsdkpi.md`）；下面列的缺口仍然在（82540 的 I/O BAR 暫時給假的）。
+
 `docs/architecture.md` 規劃的 FreeBSD 驅動相容層（Wi-Fi、GPU）會是使用者程式：它的 `bus_space`／`bus_dma`／`pci_*`／中斷 API 對應到這裡的 `DeviceConfig`、`DeviceMapBar`、`DeviceDma`、`DeviceIrq`；網路驅動經 `NetTap` 接上 kernel 的網路。還缺的：I/O port BAR、多個 MSI-X 向量、DMA 的分散表（現在只有一整塊連續的）、DMA 記憶體的快取屬性、USB 裝置的出借、IOMMU（有了才能放寬信任）。
 
 ## 8. 已知限制

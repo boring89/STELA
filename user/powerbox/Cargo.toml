@@ -1,0 +1,22 @@
+[package]
+name = "powerbox"
+description = "The powerbox: the file dialog the window server shows for programs in their container"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "powerbox"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+toolbox = { path = "../toolbox" }
+
+[lints]
+workspace = true

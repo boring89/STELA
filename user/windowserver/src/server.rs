@@ -241,6 +241,7 @@ impl Server {
             event::MOUSE => Self::rewrite(msg, &[1, 2], down),
             event::WINDOW_EVENT => Self::rewrite(msg, &[2, 3, 4, 5], down),
             event::WINDOW_CREATED | event::WINDOW_RESIZED => Self::rewrite(msg, &[1, 2], down),
+            event::DROPPED => Self::rewrite(msg, &[1, 2], down),
             _ => *msg,
         }
     }
@@ -272,6 +273,7 @@ impl Server {
             request::DAMAGE => Self::rewrite(msg, &[2, 3, 4, 5], up),
             request::MOVE_WINDOW | request::RESIZE_WINDOW => Self::rewrite(msg, &[2, 3], up),
             request::SET_CARET => Self::rewrite(msg, &[2, 3, 4], up),
+            request::DROP_FILE => Self::rewrite(msg, &[1, 2], up),
             _ => *msg,
         }
     }
@@ -1438,6 +1440,8 @@ impl Server {
             request::REGISTER_IME => self.register_ime(client),
             request::IME_RESULT => self.ime_result(client, msg),
             request::SET_CARET => self.set_caret(client, msg),
+            request::POWERBOX => self.powerbox(client, msg),
+            request::DROP_FILE => self.drop_file(client, msg),
             request::DISCONNECT => {
                 self.drop_client(client);
                 Ok(())
@@ -1726,6 +1730,80 @@ impl Server {
             reply.push_handle(memory);
         }
         self.send(client, &reply);
+        Ok(())
+    }
+
+    /// `POWERBOX` (P13 K16, `docs/sandbox.md`): the file dialog for a
+    /// program that may not open the volumes itself. The server starts
+    /// `Initrd:/powerbox` with `VOLUMES` and the SEND to the client's port
+    /// that came with the request (its `[6]`); it shows the dialog and
+    /// sends the client the file.
+    fn powerbox(&mut self, client: u32, msg: &Message) -> Result<(), Error> {
+        // The client's SEND to its own port comes with the request.
+        let Some(&reply) = msg.carried().first() else {
+            return Err(Error::InvalidArgument);
+        };
+        // Moved to the powerbox (closed here if it cannot start).
+        let reply = Owned(reply);
+        let (mode, [title, name, start]) = proto::powerbox_of(msg);
+        let mode = if mode == proto::powerbox::SAVE {
+            "save"
+        } else {
+            "open"
+        };
+        let initrd = Owned(fs::volume_open("Initrd")?);
+        let file = Owned(fs::open(initrd.0, POWERBOX_PROGRAM, open::READ)?);
+        let handles = [
+            pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
+            pass(
+                bootstrap::MAIN_PORT,
+                Rights::SEND | Rights::DUPLICATE | Rights::TRANSFER,
+            ),
+            process::pass_dir(bootstrap::CWD),
+            Handle::NONE,
+            Handle::NONE,
+            reply.0,
+        ];
+        let caps: Vec<(u32, Handle)> = process::pass_capability(abi::capability::VOLUMES)
+            .map(|v| (abi::capability::VOLUMES, v))
+            .into_iter()
+            .collect();
+        let p = process::spawn_with(
+            file.0,
+            &[POWERBOX_PROGRAM, mode, title, name, start],
+            &handles,
+            &caps,
+        )?;
+        core::mem::forget(reply);
+        let _ = handle_close(p);
+        println!("windowserver: powerbox ({mode}) for client {client}");
+        Ok(())
+    }
+
+    /// `DROP_FILE` (P13 K16): the file Mouseion dropped goes to the window
+    /// under (x, y) as `DROPPED`, if another client's.
+    fn drop_file(&mut self, client: u32, msg: &Message) -> Result<(), Error> {
+        let (x, y) = (proto::signed(msg, 1), proto::signed(msg, 2));
+        let target = match self.stack.hit(x, y, &self.m) {
+            Part::Content(id) => self.window_owner(id).map(|c| (id, c)),
+            _ => None,
+        };
+        let Some((id, owner)) = target.filter(|&(_, c)| c != client) else {
+            release(msg);
+            return Ok(());
+        };
+        let Some(&file) = msg.carried().first() else {
+            return Ok(());
+        };
+        let (cx, cy) = self.content_point(id, x, y);
+        let path = proto::tail(msg, 3);
+        let mut out = proto::dropped(id, cx, cy, path);
+        out.push_handle(file);
+        println!(
+            "windowserver: dropped {} on window {id}",
+            String::from_utf8_lossy(path)
+        );
+        self.send(owner, &out);
         Ok(())
     }
 
@@ -2039,6 +2117,9 @@ fn start_programs(names: &[String]) {
         }
     }
 }
+
+/// The powerbox's program in `Initrd:/` (P13 K16).
+const POWERBOX_PROGRAM: &str = "powerbox";
 
 /// Starts `Initrd:/ime` (if it is there) with a SEND to the IME port as
 /// its bootstrap handle (P13 K2).

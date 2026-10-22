@@ -83,6 +83,28 @@ pub mod request {
     /// P13 K2: where the text cursor of a window is (window, x, y, h in
     /// content coordinates): the composition is drawn there.
     pub const SET_CARET: u32 = 0x10E;
+    /// P13 K16, the powerbox (`docs/sandbox.md`): mode (`powerbox::OPEN`,
+    /// `SAVE`), then "title\0name\0start" (a suggested name, a folder
+    /// `Volume:/path` to start in; either may be empty); carries a SEND to
+    /// the client's main port (with `TRANSFER`). The server shows the file
+    /// dialog itself and the client gets a `POWERBOX_RESULT` there.
+    pub const POWERBOX: u32 = 0x10F;
+    /// P13 K16, from Mouseion: x, y (on the screen), then the file's path;
+    /// carries the file. The window there gets it as `DROPPED`.
+    pub const DROP_FILE: u32 = 0x110;
+}
+
+/// `POWERBOX` modes and `POWERBOX_RESULT` statuses (P13 K16).
+pub mod powerbox {
+    /// Pick a file to open (`READ`, and `WRITE` when the volume is
+    /// writable).
+    pub const OPEN: u32 = 0;
+    /// Pick where to save (the file is made if needed; `READ | WRITE`).
+    pub const SAVE: u32 = 1;
+    /// A file was picked: the result carries it.
+    pub const PICKED: u32 = 0;
+    /// The dialog was cancelled (or failed).
+    pub const CANCELLED: u32 = 1;
 }
 
 /// Server to client.
@@ -117,6 +139,14 @@ pub mod event {
     /// P13 K2, to the IME: the focus moved; drop what is being composed
     /// and answer with an `IME_RESULT` of seq 0.
     pub const IME_RESET: u32 = 0x18B;
+    /// P13 K16: the powerbox's answer: status (`powerbox::PICKED`,
+    /// `CANCELLED`), then the file's path `Volume:/path`; carries the file
+    /// when picked.
+    pub const POWERBOX_RESULT: u32 = 0x18C;
+    /// P13 K16: a file dropped on a window (window, x, y in the content,
+    /// then its path); carries the file (`READ`, and `WRITE` when
+    /// writable).
+    pub const DROPPED: u32 = 0x18D;
     // 0x188 was PING (version 1): the server now sees a client's reply
     // port close at once.
 }
@@ -475,9 +505,82 @@ pub fn text_of(msg: &Message) -> &str {
     }
 }
 
+/// `POWERBOX` (P13 K16).
+pub fn powerbox(mode: u32, title: &str, name: &str, start: &str) -> Message {
+    let (b, n) = join_nul(&[title, name, start]);
+    build(request::POWERBOX, &[0, mode], &b[..n])
+}
+
+/// The title, name and start folder of a `POWERBOX`.
+pub fn powerbox_of(msg: &Message) -> (u32, [&str; 3]) {
+    let mut parts = tail(msg, 2).split(|&b| b == 0);
+    let mut next = || core::str::from_utf8(parts.next().unwrap_or(&[])).unwrap_or("");
+    (word(msg, 1), [next(), next(), next()])
+}
+
+/// `POWERBOX_RESULT` (the file is carried when picked).
+pub fn powerbox_result(status: u32, path: &str) -> Message {
+    build(event::POWERBOX_RESULT, &[status], path.as_bytes())
+}
+
+/// `DROP_FILE` (the file is carried).
+pub fn drop_file(x: i32, y: i32, path: &str) -> Message {
+    build(
+        request::DROP_FILE,
+        &[0, x as u32, y as u32],
+        path.as_bytes(),
+    )
+}
+
+/// `DROPPED` (the file is carried).
+pub fn dropped(window: u32, x: i32, y: i32, path: &[u8]) -> Message {
+    build(event::DROPPED, &[window, x as u32, y as u32], path)
+}
+
+/// The words `parts` joined by NUL in a message-sized buffer, and its
+/// length (cut to what fits).
+fn join_nul(parts: &[&str]) -> ([u8; MESSAGE_DATA], usize) {
+    let mut b = [0u8; MESSAGE_DATA];
+    let mut at = 0;
+    for (i, p) in parts.iter().enumerate() {
+        if i > 0 && at < b.len() {
+            b[at] = 0;
+            at += 1;
+        }
+        let n = p.len().min(b.len() - at);
+        b[at..at + n].copy_from_slice(&p.as_bytes()[..n]);
+        at += n;
+    }
+    (b, at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn powerbox_messages() {
+        let m = powerbox(powerbox::SAVE, "Save As", "notes.txt", "Data:/");
+        assert_eq!(m.tag, request::POWERBOX);
+        assert_eq!(
+            powerbox_of(&m),
+            (powerbox::SAVE, ["Save As", "notes.txt", "Data:/"])
+        );
+        let m = powerbox(powerbox::OPEN, "Open", "", "");
+        assert_eq!(powerbox_of(&m), (powerbox::OPEN, ["Open", "", ""]));
+        let m = dropped(7, 10, 20, b"Data:/a.txt");
+        assert_eq!((word(&m, 0), signed(&m, 1), signed(&m, 2)), (7, 10, 20));
+        assert_eq!(tail(&m, 3), b"Data:/a.txt");
+        assert_eq!(
+            (
+                request::POWERBOX,
+                request::DROP_FILE,
+                event::POWERBOX_RESULT,
+                event::DROPPED
+            ),
+            (0x10F, 0x110, 0x18C, 0x18D)
+        );
+    }
     use crate::key::{KeyCode, Modifiers};
     extern crate std;
     use std::string::String;

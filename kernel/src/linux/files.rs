@@ -121,18 +121,27 @@ fn config_text(c: Config) -> Vec<u8> {
     }
 }
 
-/// The volume called `name`, if this process may see it (P11: the
-/// volumes of its `[3]` and `[4]`, and `Tmp`).
-fn volume(p: &Process, name: &str) -> Result<Arc<Volume>, i64> {
-    if name != "Tmp" && !visible(p, name) {
-        return Err(ENOENT);
-    }
-    vfs::find(name).ok_or(ENOENT)
-}
-
+/// Whether the root shows volume `name` (a confined program's shows none,
+/// P13 K15).
 fn visible(p: &Process, name: &str) -> bool {
     p.linux()
-        .is_some_and(|l| l.volumes.iter().any(|v| v == name))
+        .is_some_and(|l| l.confined.is_none() && l.volumes.iter().any(|v| v == name))
+}
+
+/// Whether `rest` on volume `name` is where this process may go: for a
+/// confined program (P13 K15), its folders and what is below them.
+fn reachable(p: &Process, name: &str, rest: &[String]) -> bool {
+    let Some(linux) = p.linux() else {
+        return false;
+    };
+    match &linux.confined {
+        None => name == "Tmp" || visible(p, name),
+        Some(allowed) => {
+            let mut parts = alloc::vec![String::from(name)];
+            parts.extend_from_slice(rest);
+            name == "Tmp" || path::within(&parts, allowed)
+        }
+    }
 }
 
 /// Walks `parts` from the root of `volume`.
@@ -172,7 +181,10 @@ fn resolve(p: &Process, parts: &[String]) -> Result<Found, i64> {
             Ok(Found::Item(node, info))
         }
         Target::Volume(name, rest) => {
-            let volume = volume(p, &name)?;
+            if !reachable(p, &name, &rest) {
+                return Err(ENOENT);
+            }
+            let volume = vfs::find(&name).ok_or(ENOENT)?;
             let info = walk(&volume, &rest)?;
             Ok(Found::Item(
                 Node {

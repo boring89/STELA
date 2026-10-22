@@ -125,6 +125,28 @@ impl Connection {
         }
     }
 
+    /// Waits up to `timeout_ns` for the message with `tag` (P13 K16: the
+    /// powerbox's answer), keeping everything else for later; `None` when
+    /// the time is up or the request `request` failed.
+    pub fn wait_message(&mut self, tag: u32, request: u32, timeout_ns: u64) -> Option<Message> {
+        let deadline = libstela::now_ns().saturating_add(timeout_ns);
+        loop {
+            let now = libstela::now_ns();
+            if now >= deadline {
+                return None;
+            }
+            let mut msg = Message::new();
+            port_receive(bootstrap::MAIN_PORT, &mut msg, deadline - now).ok()?;
+            if msg.tag == tag {
+                return Some(msg);
+            }
+            if msg.tag == event::ERROR && proto::word(&msg, 0) == request {
+                return None;
+            }
+            self.pending.push_back(msg);
+        }
+    }
+
     /// The next event, waiting up to `timeout_ns` (`FOREVER`); `None` when
     /// the time is up.
     pub fn next_event(&mut self, timeout_ns: u64) -> Option<Event> {

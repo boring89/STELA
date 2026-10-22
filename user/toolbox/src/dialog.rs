@@ -72,7 +72,9 @@ pub fn sort_entries(entries: &mut [(String, bool)]) {
 }
 
 #[cfg(not(test))]
-pub use modal::{alert, ask_text, open_file, save_file};
+pub use modal::{
+    Picked, alert, ask_text, file_dialog, open_file, open_location, pick_open, pick_save, save_file,
+};
 
 #[cfg(not(test))]
 mod modal {
@@ -82,7 +84,9 @@ mod modal {
     use crate::event::{Event, MouseKind};
     use crate::window::{Connection, Window};
     use abi::key::{KeyCode, KeyEvent};
+    use abi::window as proto;
     use abi::window::{AUTO, flags};
+    use libstela::Handle;
     use libstela::fs::{self, open};
     use libstela::ipc::{FOREVER, handle_close};
     use libstela::path::Location;
@@ -403,12 +407,15 @@ mod modal {
         }
     }
 
-    /// The file dialog: Open (`name` is `None`) or Save (a name field).
-    fn file_dialog(
+    /// The file dialog: Open (`name` is `None`) or Save (a name field);
+    /// `shown` is called once it is on the screen (P13 K16: the powerbox
+    /// says so for the tests).
+    pub fn file_dialog(
         conn: &mut Connection,
         title: &str,
         start: Option<&Location>,
         name: Option<&str>,
+        shown: &dyn Fn(),
     ) -> Option<Location> {
         let font = font_for(conn.screen.0);
         let lh = line(font);
@@ -464,6 +471,7 @@ mod modal {
             let _ = conn.damage_all(window);
         };
         draw(&mut window, &b, &list, &field, &buttons, conn);
+        shown();
         // The answer for line `i` (Open) or the name (Save), going into
         // folders on the way.
         let choose =
@@ -558,7 +566,7 @@ mod modal {
         title: &str,
         start: Option<&Location>,
     ) -> Option<Location> {
-        file_dialog(conn, title, start, None)
+        file_dialog(conn, title, start, None, &|| {})
     }
 
     /// Asks where to save, starting in `start` with `name` filled in.
@@ -568,7 +576,105 @@ mod modal {
         start: Option<&Location>,
         name: &str,
     ) -> Option<Location> {
-        file_dialog(conn, title, start, Some(name))
+        file_dialog(conn, title, start, Some(name), &|| {})
+    }
+
+    /// A file the user picked (P13 K16, `docs/sandbox.md`): where it is,
+    /// and the file itself, open (the caller closes it).
+    pub struct Picked {
+        /// Where it is.
+        pub location: Location,
+        /// The open file: `READ`, and `WRITE` when the volume is writable
+        /// (always for a save).
+        pub file: Handle,
+    }
+
+    /// How long a program waits for the powerbox.
+    const POWERBOX_WAIT: u64 = 30 * 60 * 1_000_000_000;
+
+    /// Asks for a file to open and opens it: with this program's own
+    /// dialog when it may open every volume (`VOLUMES`), else through the
+    /// window server's powerbox (a program in its container).
+    pub fn pick_open(
+        conn: &mut Connection,
+        title: &str,
+        start: Option<&Location>,
+    ) -> Option<Picked> {
+        if !fs::has_volumes() {
+            return powerbox(conn, proto::powerbox::OPEN, title, "", start);
+        }
+        let location = open_file(conn, title, start)?;
+        let file = open_location(&location, false).ok()?;
+        Some(Picked { location, file })
+    }
+
+    /// Asks where to save and makes (or opens) the file there, like
+    /// [`pick_open`].
+    pub fn pick_save(
+        conn: &mut Connection,
+        title: &str,
+        start: Option<&Location>,
+        name: &str,
+    ) -> Option<Picked> {
+        if !fs::has_volumes() {
+            return powerbox(conn, proto::powerbox::SAVE, title, name, start);
+        }
+        let location = save_file(conn, title, start, name)?;
+        let file = open_location(&location, true).ok()?;
+        Some(Picked { location, file })
+    }
+
+    /// Opens `loc`: to save, `READ | WRITE`, made if needed; else `READ |
+    /// WRITE` when it may be written, or `READ`.
+    pub fn open_location(loc: &Location, save: bool) -> Result<Handle, libstela::Error> {
+        let root = fs::volume_open(&loc.volume)?;
+        let rel = loc.relative();
+        let file = if save {
+            fs::open(root, &rel, open::READ | open::WRITE | open::CREATE)
+        } else {
+            fs::open(root, &rel, open::READ | open::WRITE)
+                .or_else(|_| fs::open(root, &rel, open::READ))
+        };
+        let _ = handle_close(root);
+        file
+    }
+
+    /// Asks the window server's powerbox; its answer carries the file.
+    fn powerbox(
+        conn: &mut Connection,
+        mode: u32,
+        title: &str,
+        name: &str,
+        start: Option<&Location>,
+    ) -> Option<Picked> {
+        let start = start.map(|l| alloc::format!("{l}")).unwrap_or_default();
+        // The answer comes to this program's main port.
+        let mut msg = proto::powerbox(mode, title, name, &start);
+        let reply = libstela::process::pass(libstela::bootstrap::MAIN_PORT, libstela::Rights::SEND);
+        msg.push_handle(reply);
+        if conn.send(&msg).is_err() {
+            let _ = handle_close(reply);
+            return None;
+        }
+        let msg = conn.wait_message(
+            proto::event::POWERBOX_RESULT,
+            proto::request::POWERBOX,
+            POWERBOX_WAIT,
+        )?;
+        let file = msg.carried().first().copied();
+        let path = String::from_utf8_lossy(proto::tail(&msg, 1)).into_owned();
+        match (proto::word(&msg, 0), file) {
+            (proto::powerbox::PICKED, Some(file)) => {
+                let location = libstela::path::resolve(&Location::root("Data"), &path).ok()?;
+                Some(Picked { location, file })
+            }
+            (_, file) => {
+                if let Some(f) = file {
+                    let _ = handle_close(f);
+                }
+                None
+            }
+        }
     }
 }
 

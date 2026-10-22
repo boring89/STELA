@@ -24,9 +24,27 @@ pub fn spawn(file: Handle, args: &[&str], handles: [Handle; 3]) -> Result<Handle
     spawn_with(file, args, &handles, &inherited())
 }
 
-/// Copies of the capabilities a child gets by default: `NETWORK` and
-/// `INIT` (`POWER` and `INPUT` are only given on purpose).
+/// Copies of the capabilities a child gets by default: `NETWORK`, `INIT`
+/// and (P13 K15) `VOLUMES` (`POWER`, `INPUT` and `DEVICES` are only given
+/// on purpose).
 pub fn inherited() -> Vec<(u32, Handle)> {
+    [capability::NETWORK, capability::INIT, capability::VOLUMES]
+        .into_iter()
+        .filter_map(|kind| pass_capability(kind).map(|h| (kind, h)))
+        .collect()
+}
+
+/// The document this program was started with (`[6]`, P13 K16: Mouseion's
+/// "open with" hands the file over instead of its path), if any.
+pub fn document() -> Option<Handle> {
+    crate::fs::stat(bootstrap::DOCUMENT)
+        .ok()
+        .map(|_| bootstrap::DOCUMENT)
+}
+
+/// The capabilities of a program that runs in its container (P13 K15,
+/// `docs/sandbox.md`): [`inherited`] without `VOLUMES`.
+pub fn sandboxed() -> Vec<(u32, Handle)> {
     [capability::NETWORK, capability::INIT]
         .into_iter()
         .filter_map(|kind| pass_capability(kind).map(|h| (kind, h)))
@@ -418,17 +436,27 @@ pub fn set_capability(kind: u32, handle: Handle) {
 #[doc(hidden)]
 pub fn take_args() {
     take_arguments();
-    let mut msg = Message::new();
-    if port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_err() || msg.tag != tag::CAPABILITIES {
-        return;
-    }
-    let kinds = msg.payload();
-    let mut caps = CAPS.lock();
-    for (i, &h) in msg.carried().iter().enumerate() {
-        let kind = kinds
-            .get(4 * i..4 * i + 4)
-            .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
-        caps.push((kind, h));
+    // Four capabilities to a message; one ending in MORE has a follower
+    // (P13 K15), all queued before the program started.
+    loop {
+        let mut msg = Message::new();
+        if port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_err() || msg.tag != tag::CAPABILITIES
+        {
+            return;
+        }
+        let kinds = msg.payload();
+        let kind_at = |i: usize| {
+            kinds
+                .get(4 * i..4 * i + 4)
+                .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let mut caps = CAPS.lock();
+        for (i, &h) in msg.carried().iter().enumerate() {
+            caps.push((kind_at(i), h));
+        }
+        if kind_at(msg.carried().len()) != capability::MORE {
+            return;
+        }
     }
 }
 

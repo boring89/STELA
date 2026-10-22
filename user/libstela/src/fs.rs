@@ -167,7 +167,13 @@ pub fn volume_by_index(index: u32) -> Option<VolumeInfo> {
 /// Volume `index` (`None` past the last).
 pub fn volume_list(index: u64) -> Result<Option<VolumeInfo>, Error> {
     let mut b = [0u8; VOLUME_INFO_SIZE];
-    if syscall2(Syscall::VolumeList, index, b.as_mut_ptr() as u64)? == 0 {
+    if syscall3(
+        Syscall::VolumeList,
+        index,
+        b.as_mut_ptr() as u64,
+        volumes_cap(),
+    )? == 0
+    {
         return Ok(None);
     }
     let mut v = VolumeInfo::new();
@@ -281,13 +287,31 @@ pub fn set_info(h: Handle, info: &[u8; abi::FINDER_INFO_SIZE]) -> Result<(), Err
     crate::sys::syscall2(Syscall::FileSetInfo, h.raw(), info.as_ptr() as u64).map(|_| ())
 }
 
-fn volume_open_inner(name: &str) -> Result<Handle, Error> {
-    syscall2(Syscall::VolumeOpen, name.as_ptr() as u64, name.len() as u64).map(Handle::from_raw)
+/// This program's `VOLUMES` capability (P13 K15; 0 without: the calls
+/// that need it answer `AccessDenied`).
+fn volumes_cap() -> u64 {
+    crate::process::capability(abi::capability::VOLUMES).map_or(0, |h| h.raw())
 }
 
-/// The item with persistent id `id` on `dir`'s volume.
+/// Whether this program may open every volume (P13 K15: it has `VOLUMES`;
+/// programs Mouseion starts run in their container without it).
+pub fn has_volumes() -> bool {
+    crate::process::capability(abi::capability::VOLUMES).is_some()
+}
+
+fn volume_open_inner(name: &str) -> Result<Handle, Error> {
+    syscall3(
+        Syscall::VolumeOpen,
+        name.as_ptr() as u64,
+        name.len() as u64,
+        volumes_cap(),
+    )
+    .map(Handle::from_raw)
+}
+
+/// The item with persistent id `id` on `dir`'s volume (needs `VOLUMES`).
 pub fn open_by_id(dir: Handle, id: u64) -> Result<Handle, Error> {
-    syscall2(Syscall::VolumeOpenById, dir.raw(), id).map(Handle::from_raw)
+    syscall3(Syscall::VolumeOpenById, dir.raw(), id, volumes_cap()).map(Handle::from_raw)
 }
 
 /// The whole file at `path` (`Volume:folder/name`; P12, for `tls` and

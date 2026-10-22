@@ -54,6 +54,10 @@ struct Editor {
     font: &'static Font,
     /// Where the document lives; `None` until it is saved once.
     path: Option<Location>,
+    /// The document's file when it came open (P13 K16: handed over at the
+    /// start, picked in the powerbox, dropped on the window): saved
+    /// through it, not by its path.
+    file: Option<sys::Owned>,
     active: bool,
     title: String,
 }
@@ -131,33 +135,58 @@ impl Editor {
         }
         self.view.scroll = 0;
         self.path = Some(loc);
+        self.file = None;
+    }
+
+    /// Loads the open file `file` (P13 K16), which lives at `loc`.
+    fn load_file(&mut self, file: sys::Owned, loc: Location) {
+        match sys::read_all(file.0) {
+            Ok(data) if data.len() <= MAX => {
+                self.view.buffer.set_text(&String::from_utf8_lossy(&data));
+                println!("kalamos: opened {loc} ({} bytes)", data.len());
+                self.view.scroll = 0;
+                self.path = Some(loc);
+                self.file = Some(file);
+            }
+            Ok(_) => println!("kalamos: {loc}: larger than 4 MiB"),
+            Err(e) => println!("kalamos: {loc}: {}", sys::describe(e)),
+        }
     }
 
     /// Writes the text to the document's file (asking where when it has
     /// none, or with `ask`); whether it was saved.
     fn save(&mut self, ask: bool) -> bool {
-        let loc = match (&self.path, ask) {
-            (Some(p), false) => p.clone(),
-            _ => {
-                let start = self.path.as_ref().map(Location::parent);
-                let name = self.name();
-                match dialog::save_file(&mut self.conn, "Save As", start.as_ref(), &name) {
-                    Some(l) => l,
-                    None => return false,
-                }
-            }
+        // P13 K16: Save As (and a first save) asks through the toolbox,
+        // which uses the powerbox for a program in its container; the
+        // file comes open.
+        if ask || self.path.is_none() {
+            let start = self.path.as_ref().map(Location::parent);
+            let name = self.name();
+            let Some(p) = dialog::pick_save(&mut self.conn, "Save As", start.as_ref(), &name)
+            else {
+                return false;
+            };
+            self.path = Some(p.location);
+            self.file = Some(sys::Owned(p.file));
+        }
+        let Some(loc) = self.path.clone() else {
+            return false;
         };
         let text = String::from(self.view.buffer.text());
-        let result = sys::open_at(
-            &loc,
-            open::READ | open::WRITE | open::CREATE | open::TRUNCATE,
-        )
-        .and_then(|h| sys::write_all(h.0, text.as_bytes(), 0));
+        let result = match &self.file {
+            Some(f) => {
+                libstela::fs::set_size(f.0, 0).and_then(|_| sys::write_all(f.0, text.as_bytes(), 0))
+            }
+            None => sys::open_at(
+                &loc,
+                open::READ | open::WRITE | open::CREATE | open::TRUNCATE,
+            )
+            .and_then(|h| sys::write_all(h.0, text.as_bytes(), 0)),
+        };
         match result {
             Ok(()) => {
                 println!("kalamos: saved {loc} ({} bytes)", text.len());
                 self.view.buffer.mark_saved();
-                self.path = Some(loc);
                 true
             }
             Err(e) => {
@@ -213,8 +242,8 @@ impl Editor {
             item::OPEN => {
                 if self.may_discard() {
                     let start = self.path.as_ref().map(Location::parent);
-                    if let Some(loc) = dialog::open_file(&mut self.conn, "Open", start.as_ref()) {
-                        self.load(loc);
+                    if let Some(p) = dialog::pick_open(&mut self.conn, "Open", start.as_ref()) {
+                        self.load_file(sys::Owned(p.file), p.location);
                     }
                 }
             }
@@ -329,6 +358,17 @@ impl Editor {
                 true
             }
             Event::CloseRequested(_) => self.command(item::CLOSE),
+            // P13 K16: a file dropped from Mouseion.
+            Event::Dropped { file, path, .. } => {
+                let file = sys::Owned(file);
+                if self.may_discard() {
+                    match sys::resolve(&path) {
+                        Ok(loc) => self.load_file(file, loc),
+                        Err(e) => println!("kalamos: {e}"),
+                    }
+                }
+                true
+            }
             _ => true,
         };
         if !was_dirty && self.view.buffer.is_dirty() {
@@ -375,13 +415,18 @@ fn main() -> i64 {
         view: TextView::new(bounds, "", (font.width, font.height)),
         font,
         path: None,
+        file: None,
         active: true,
         title: String::from("untitled"),
     };
+    // P13 K16: Mouseion hands the file over as [6] (its path is the
+    // argument); from the shell the argument is the path.
+    let document = libstela::process::document();
     if let Some(name) = args.get(1) {
-        match sys::resolve(name) {
-            Ok(loc) => ed.load(loc),
-            Err(e) => println!("kalamos: {e}"),
+        match (sys::resolve(name), document) {
+            (Ok(loc), Some(doc)) => ed.load_file(sys::Owned(doc), loc),
+            (Ok(loc), None) => ed.load(loc),
+            (Err(e), _) => println!("kalamos: {e}"),
         }
     }
     ed.draw();

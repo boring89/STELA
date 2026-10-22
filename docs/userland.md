@@ -50,11 +50,14 @@ tools/qemu_test.py           --type：經 QMP 打字
 | 2 | `INPUT` | `InputAttach` | init → 視窗伺服器；文字模式的 shell → 它 `run` 的程式（`echo`） |
 | 3 | `NETWORK` | `SocketCreate`；Linux 的 `socket()`（沒有 → `EACCES`；Linux 程式不留 handle，`linux::State::network` 記著） | init → 所有人（預設繼承，現在的行為） |
 | 4 | `INIT` | 不是 kernel 的能力：init 主 port 的 `SEND`，送 `POWER_REQUEST` | init 做的，所有人預設繼承 |
+| 5 | `DEVICES` | `DeviceOpen`、`NetAttach`（P13，`docs/devices.md`） | init → 它啟動的驅動（e1000u） |
+| 6 | `VOLUMES` | `VolumeOpen`（`Initrd` 例外）、`VolumeList`、`VolumeOpenById`（P13，`docs/sandbox.md`） | init → 所有人預設繼承（`inherited()`）；**Mouseion 啟動的程式沒有**（容器） |
 
 - kernel 物件 `KernelObject::Capability(kind)`，handle 的權限只有 `DUPLICATE|TRANSFER`；`HandleKind` = 12。持有就是許可，kernel 只檢查種類（`object::check_capability`）。
 - **傳遞**：`ProcessSpawn` 的第 5、6 個參數是 (handle, kind) 對（最多 4 個，搬走，要 `TRANSFER`）；kernel 檢查 Capability 的種類和宣稱的相符、`INIT` 必須是有 `SEND` 的 port，否則 `InvalidArgument`。kernel 在 `BOOTSTRAP_ARGS` 之後**一定**再排一則 `CAPABILITIES`（tag 7；data = 每個 handle 的 kind，u32 LE；沒有就是空的），都在程式開始前放好，所以 libstela 的 `take_args` 不等待地收兩則就好。
-- kernel 啟動 init 時給 `POWER`、`INPUT`、`NETWORK`（`program::spawn_path_with`）；selftest 啟動的程式什麼都沒有。
-- libstela：`process::capability(kind)`、`set_capability(kind, h)`（init 登記自己做的 `INIT`）、`pass_capability(kind)`（複製一份給子行程）、`inherited()`（`NETWORK` + `INIT` 的複製）、`spawn_with(file, args, handles, &[(kind, h)])`；`spawn` = `spawn_with(…, &inherited())`。**`POWER` 與 `INPUT` 不會自動往下傳**。
+- kernel 啟動 init 時給 `POWER`、`INPUT`、`NETWORK`（`program::spawn_path_with`；P13 起還有 `DEVICES`、`VOLUMES`）；selftest 啟動的程式什麼都沒有（fstest 例外：`VOLUMES`）。
+- P13：一個程式最多六個能力；`CAPABILITIES` 一則四個，多的接下一則（前一則的 data 以 `capability::MORE` 結尾，`docs/sandbox.md` §3）。
+- libstela：`process::capability(kind)`、`set_capability(kind, h)`（init 登記自己做的 `INIT`）、`pass_capability(kind)`（複製一份給子行程）、`inherited()`（`NETWORK` + `INIT` 的複製；P13 再加 `VOLUMES`）、`sandboxed()`（P13：沒有 `VOLUMES`）、`spawn_with(file, args, handles, &[(kind, h)])`；`spawn` = `spawn_with(…, &inherited())`。**`POWER` 與 `INPUT` 不會自動往下傳**。
 - `process::shutdown()`／`reboot()`（`power(kind)`）：有 `POWER` 就直接 `SystemPower(kind, power)`；否則有 `INIT` 就送 `POWER_REQUEST`（data = kind，夾帶回覆 port）給 init，等 10 秒的回覆（失敗時 init 回 `Error` 值；成功就沒有回覆，機器已經關了）；兩個都沒有 → `AccessDenied`。所以 shell 的 `shutdown` 不必持有 `POWER`：它請 init 做。
 - init 等子行程時用 WaitSet 同時等主 port（`POWER_REQUEST`）與子行程（`EXITED`）。
 - libstela 的 `ipc::input_attach` 與 `net::Socket::*` 自動帶上自己的能力（沒有就送 0 → `AccessDenied`）。

@@ -228,6 +228,10 @@ pub struct State {
     /// The volumes it sees under `/` (besides `tmp`): those of its `[3]`
     /// and `[4]` (P11).
     pub volumes: Vec<String>,
+    /// P13 K15 (`docs/sandbox.md`): without the `VOLUMES` capability, the
+    /// only paths on volumes it reaches (those folders and below them,
+    /// e.g. `/Data/Programs/x/container`); `None`: all of `volumes`.
+    pub confined: Option<Vec<String>>,
     /// Its threads (P12).
     pub threads: SpinLock<Vec<Arc<LinuxThread>>>,
     /// Signal actions (index = signal − 1).
@@ -298,6 +302,7 @@ impl State {
             tty,
             network: false,
             volumes: Vec::new(),
+            confined: None,
             threads: SpinLock::new(Vec::new()),
             actions: SpinLock::new([Action::default(); 64]),
             futex: SpinLock::new(Vec::new()),
@@ -336,6 +341,7 @@ impl State {
             tty: Arc::clone(&self.tty),
             network: self.network,
             volumes: self.volumes.clone(),
+            confined: self.confined.clone(),
             threads: SpinLock::new(Vec::new()),
             actions: SpinLock::new(*self.actions.lock()),
             futex: SpinLock::new(Vec::new()),

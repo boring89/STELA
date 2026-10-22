@@ -843,6 +843,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
+name = "powerbox"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "libstela",
+ "toolbox",
+]
+
+[[package]]
 name = "powerfmt"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -975,6 +984,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
 dependencies = [
  "semver",
+]
+
+[[package]]
+name = "sandboxtest"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "libstela",
+ "toolbox",
 ]
 
 [[package]]

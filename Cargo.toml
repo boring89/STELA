@@ -43,6 +43,8 @@ members = [
     "user/pkg",
     "user/ime",
     "user/e1000u",
+    "user/powerbox",
+    "user/sandboxtest",
     "user/setup",
     "classic",
     "tools/ehfs",

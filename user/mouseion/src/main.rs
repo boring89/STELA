@@ -22,7 +22,7 @@
 
 extern crate alloc;
 
-use abi::window::{AUTO, flags};
+use abi::window::{self as proto, AUTO, flags};
 use abi::{DirEntry, kind};
 use alloc::format;
 use alloc::string::String;
@@ -167,6 +167,11 @@ fn read_icon(h: Handle) -> Option<(i32, i32)> {
 /// Removes `name` from `dir`, with everything inside when it is a folder.
 /// The id the desktop's trash icon has (no volume has it).
 const TRASH_ID: u64 = u64::MAX;
+/// The applications in `Initrd:/` that run with every volume, as before
+/// P13 (the terminal's shell, Classic's `Data:/Classic`, Setup's disks);
+/// every other program Mouseion starts runs in its container
+/// (`docs/sandbox.md`).
+const TRUSTED: [&str; 3] = ["Terminal", "Classic", "Setup"];
 
 /// `volume`'s trash folder (`.Trash` at its root), made when `make`.
 fn trash_folder(volume: &str, make: bool) -> Option<Owned> {
@@ -209,6 +214,26 @@ struct Mouseion {
 
 const LIST_LINE_EXTRA: i32 = 8;
 const SCROLL_WIDTH: i32 = 24;
+
+/// `Data:/Programs/NAME/container/` (or on `Tmp` without `Data`), made if
+/// needed (P13 K15).
+fn container(name: &str) -> Result<Owned, Error> {
+    let root = Owned(fs::volume_open("Data").or_else(|_| fs::volume_open("Tmp"))?);
+    let flags = open::READ | open::WRITE | open::CREATE | open::DIRECTORY;
+    let programs = Owned(fs::open(root.0, "Programs", flags)?);
+    let program = Owned(fs::open(programs.0, name, flags)?);
+    fs::open(program.0, "container", flags).map(Owned)
+}
+
+/// A copy of the file `h` to hand to a program: `READ | WRITE` when it
+/// has both, else `READ`.
+fn pass_file(h: Handle) -> Handle {
+    [Rights::READ | Rights::WRITE, Rights::READ]
+        .into_iter()
+        .map(|r| pass(h, r | Rights::DUPLICATE))
+        .find(|&c| c != Handle::NONE)
+        .unwrap_or(Handle::NONE)
+}
 
 fn describe(e: Error) -> &'static str {
     match e {
@@ -801,9 +826,39 @@ impl Mouseion {
 
     // ---- opening and running ----
 
+    /// Runs `file` in its container (P13 K15, `docs/sandbox.md`): its
+    /// `[3]` is `Data:/Programs/NAME/container/` (made if needed; `Tmp`
+    /// without a `Data` volume), its `[4]` `home` read only, its `[6]`
+    /// `document` if any; no `VOLUMES` capability.
+    fn run_sandboxed(&self, file: Handle, args: &[&str], home: Handle, document: Option<Handle>) {
+        let name = args[0];
+        let container = match container(name) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("mouseion: cannot run {name}: no container: {}", describe(e));
+                return;
+            }
+        };
+        let handles = [
+            pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
+            pass(bootstrap::BOOTSTRAP, Rights::SEND | Rights::DUPLICATE),
+            process::pass_dir(container.0),
+            pass(home, Rights::READ | Rights::DUPLICATE),
+            Handle::NONE,
+            document.map_or(Handle::NONE, pass_file),
+        ];
+        match process::spawn_with(file, args, &handles, &process::sandboxed()) {
+            Ok(p) => {
+                println!("mouseion: started {name} (sandboxed)");
+                let _ = handle_close(p);
+            }
+            Err(e) => println!("mouseion: cannot run {name}: {}", describe(e)),
+        }
+    }
+
     /// Runs `file` (a program file or a bundle folder) with `args`; its
     /// working folder is `cwd`, and `home` the folder it is in (its
-    /// `[4]`).
+    /// `[4]`): a trusted program, with every volume.
     fn run(&self, file: Handle, args: &[&str], cwd: Handle, home: Handle) {
         let handles = [
             pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
@@ -858,11 +913,16 @@ impl Mouseion {
                 if let Ok(h) = fs::open_by_id(folder, item.id) {
                     let h = Owned(h);
                     let name = bundle_name(&item.name).unwrap_or(&item.name);
-                    self.run(h.0, &[name], folder, folder);
+                    if volume == "Initrd" && TRUSTED.contains(&name) {
+                        self.run(h.0, &[name], folder, folder);
+                    } else {
+                        // P13 K15: in its container; [4] is the bundle.
+                        self.run_sandboxed(h.0, &[name], h.0, None);
+                    }
                 }
             }
             // P11: text files open in Kalamos, the editor (docs/apps.md).
-            Kind::Text => self.open_with("Kalamos.app", "Kalamos", &child_path, folder),
+            Kind::Text => self.open_with("Kalamos.app", "Kalamos", &child_path, folder, item.id),
             Kind::Document => {
                 let Ok(h) = fs::open_by_id(folder, item.id) else {
                     return;
@@ -870,23 +930,28 @@ impl Mouseion {
                 let h = Owned(h);
                 let mut magic = [0u8; 4];
                 if fs::read(h.0, &mut magic, 0) == Ok(4) && &magic == b"\x7FELF" {
-                    self.run(h.0, &[&item.name], folder, folder);
+                    self.run_sandboxed(h.0, &[&item.name], folder, None);
                 } else {
-                    self.open_with("Viewer.app", "Viewer", &child_path, folder);
+                    self.open_with("Viewer.app", "Viewer", &child_path, folder, item.id);
                 }
             }
         }
     }
 
-    /// Opens `path` with the application `bundle` (in `Initrd:/`).
-    fn open_with(&self, bundle: &str, name: &str, path: &str, cwd: Handle) {
+    /// Opens item `id` of `folder` (at `path`) with the application
+    /// `bundle` (in `Initrd:/`): P13 K16, in its container, the file
+    /// handed over as its `[6]` (the path is only its name).
+    fn open_with(&self, bundle: &str, name: &str, path: &str, folder: Handle, id: u64) {
         let Ok(initrd) = fs::volume_open("Initrd") else {
             return;
         };
         let initrd = Owned(initrd);
+        let Ok(file) = fs::open_by_id(folder, id).map(Owned) else {
+            return;
+        };
         if let Ok(app) = fs::open(initrd.0, bundle, open::READ) {
             let app = Owned(app);
-            self.run(app.0, &[name, path], cwd, initrd.0);
+            self.run_sandboxed(app.0, &[name, path], app.0, Some(file.0));
         }
     }
 
@@ -1112,7 +1177,38 @@ impl Mouseion {
                 };
                 self.transfer(from, press.index, h, &volume, Some(pos));
             }
-            DropTarget::Nowhere => {}
+            DropTarget::Nowhere => self.drop_outside(from, press.index, screen.0, screen.1),
+        }
+    }
+
+    /// Item `index` of pane `from` dropped outside Mouseion's windows (P13
+    /// K16, `docs/sandbox.md`): a file goes to the window there (the
+    /// window server finds it) as `DROPPED`, open.
+    fn drop_outside(&self, from: usize, index: usize, x: i32, y: i32) {
+        let pane = &self.panes[from];
+        let Some(item) = pane.items.get(index) else {
+            return;
+        };
+        if item.is_dir || item.volume {
+            return;
+        }
+        let (Some(folder), Place::Folder { path, .. }) =
+            (pane.handle.as_ref().map(|h| h.0), &pane.place)
+        else {
+            return;
+        };
+        let Ok(file) = fs::open_by_id(folder, item.id).map(Owned) else {
+            return;
+        };
+        let path = if path.ends_with('/') {
+            format!("{path}{}", item.name)
+        } else {
+            format!("{path}/{}", item.name)
+        };
+        let mut msg = proto::drop_file(x, y, &path);
+        msg.push_handle(pass_file(file.0));
+        if self.conn.send(&msg).is_ok() {
+            println!("mouseion: dropped {path} at {x},{y}");
         }
     }
 

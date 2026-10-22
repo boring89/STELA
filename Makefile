@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup ime e1000u
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup ime e1000u powerbox sandboxtest
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
@@ -24,6 +24,9 @@ INITRD      := $(BUILD)/initrd.tar
 # initrd's root.
 BUNDLES     := terminal:Terminal echo_win:Echo viewer:Viewer classic:Classic kalamos:Kalamos monitor:Monitor periplus:Periplus setup:Setup
 BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
+# Built but not in the initrd (P13 K17: make test-sandbox puts it on the
+# test disk as Data:/Sandbox.app).
+NOT_IN_INITRD := sandboxtest
 INITRD_ROOT := $(BUILD)/initrd-root
 
 # musl (MIT license), only to build the Linux test programs; never part of
@@ -92,7 +95,7 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -115,7 +118,7 @@ user: $(CHEWING_DATA)
 initrd: user linux-tests
 	rm -rf $(INITRD_ROOT)
 	mkdir -p $(INITRD_ROOT)
-	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED),$(USER_PROGRAMS))) $(INITRD_ROOT)/
+	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED) $(NOT_IN_INITRD),$(USER_PROGRAMS))) $(INITRD_ROOT)/
 	cp -r $(LINUX_DIR) $(INITRD_ROOT)/linux
 	cp -r $(USER_DIR)/bin $(INITRD_ROOT)/bin
 	mkdir -p $(INITRD_ROOT)/fonts
@@ -253,7 +256,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-net-user test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-browser
+test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-net-user test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-browser
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -1090,6 +1093,35 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "mouseion: opened Data:/" --expect "mouseion: opened Initrd:/" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+
+# The sandbox (P13 K17, docs/sandbox.md): Mouseion starts Data:/Sandbox.app
+# (user/sandboxtest) in its container. It checks what it may reach (its
+# container, its bundle read only, Initrd, no other volume) and asks for a
+# file: the window server's powerbox shows the Open dialog in Data:/
+# (../, Programs/, Sandbox.app/, welcome.txt: Down four times, Enter) and
+# hands it Data:/welcome.txt.
+test-sandbox: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-sandbox.img
+	printf 'Sandbox\n0.1.0\n' > $(BUILD)/sandbox-info.txt
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img mkdir /Sandbox.app
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img in $(USER_DIR)/sandboxtest /Sandbox.app/exec
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-sandbox.img in $(BUILD)/sandbox-info.txt /Sandbox.app/info.txt
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-sandbox.log \
+		--click "mouseion: started Terminal" 2448 240 2 \
+		--click "mouseion: opened Data:/" 432 392 2 \
+		--type "powerbox: open dialog shown" "{down}{down}{down}{down}\n" \
+		--expect "mouseion: started Sandbox (sandboxed)" \
+		--expect "sandbox: working folder /Programs/Sandbox/container" \
+		--expect "sandbox: Data not allowed" --expect "sandbox: volume list not allowed" \
+		--expect "sandbox: open by id not allowed" --expect "sandbox: Initrd allowed" \
+		--expect "sandbox: container writable" --expect "sandbox: bundle readable" \
+		--expect "sandbox: bundle read only" --expect "sandbox: asking" \
+		--expect "windowserver: powerbox (open)" --expect "powerbox: picked Data:/welcome.txt" \
+		--expect "sandbox: read Data:/welcome.txt (32 bytes): Welcome to STELA's Data volume." \
+		--expect "sandbox: OK" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-sandbox.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 
 # The editor (P11, docs/apps.md §2): Kalamos.app opens a file that does

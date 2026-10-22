@@ -439,8 +439,10 @@ pub fn volume_info(volume: &vfs::Volume) -> VolumeInfo {
     info
 }
 
-/// `VolumeList(index, &mut VolumeInfo) -> 1 | 0`.
-pub fn volume_list(process: &Process, index: u64, ptr: u64) -> Result<u64, Error> {
+/// `VolumeList(index, &mut VolumeInfo, volumes) -> 1 | 0` (P13 K15: needs
+/// `VOLUMES`).
+pub fn volume_list(process: &Process, index: u64, ptr: u64, cap: u64) -> Result<u64, Error> {
+    crate::object::check_capability(process, cap, abi::capability::VOLUMES)?;
     let volumes = vfs::volumes();
     let Some(volume) = usize::try_from(index).ok().and_then(|i| volumes.get(i)) else {
         return Ok(0);
@@ -461,18 +463,25 @@ pub fn root_rights(volume: &vfs::Volume) -> Rights {
     rights
 }
 
-/// `VolumeOpen(name_ptr, name_len) -> handle`.
-pub fn volume_open(process: &Process, ptr: u64, len: u64) -> Result<u64, Error> {
+/// `VolumeOpen(name_ptr, name_len, volumes) -> handle` (P13 K15: needs
+/// `VOLUMES`, except for `Initrd`: the read-only system files, fonts and
+/// certificates every program may read; `docs/sandbox.md`).
+pub fn volume_open(process: &Process, ptr: u64, len: u64, cap: u64) -> Result<u64, Error> {
     let name = user_bytes(process, ptr, len, 64)?;
     let name = core::str::from_utf8(&name).map_err(|_| Error::InvalidArgument)?;
+    if name != "Initrd" {
+        crate::object::check_capability(process, cap, abi::capability::VOLUMES)?;
+    }
     let volume = vfs::find(name).ok_or(Error::NotFound)?;
     let rights = root_rights(&volume);
     let id = volume.fs.root();
     insert(process, Node { volume, id }, true, rights)
 }
 
-/// `VolumeOpenById(dir, id) -> handle`.
-pub fn volume_open_by_id(process: &Process, dir: u64, id: u64) -> Result<u64, Error> {
+/// `VolumeOpenById(dir, id, volumes) -> handle` (P13 K15: needs `VOLUMES`;
+/// an id reaches anywhere on the volume, past the folder `dir` is).
+pub fn volume_open_by_id(process: &Process, dir: u64, id: u64, cap: u64) -> Result<u64, Error> {
+    crate::object::check_capability(process, cap, abi::capability::VOLUMES)?;
     let (node, rights) = dir_of(process, dir, Rights::READ)?;
     let info = node.volume.fs.get(id)?;
     let rights =

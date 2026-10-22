@@ -139,6 +139,7 @@ fn run(name: &str) {
         abi::capability::INPUT,
         abi::capability::NETWORK,
         abi::capability::DEVICES,
+        abi::capability::VOLUMES,
     ]
     .into_iter()
     .map(|kind| (kind, kernel::object::capability(kind)))

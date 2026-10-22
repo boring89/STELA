@@ -1519,7 +1519,15 @@ fn file_systems(_: &'static BootInfo) {
         kprintln!("selftest:   no Data volume; fstest not run");
         return;
     }
-    let pid = initrd_program("fstest");
+    // P13 K15: fstest opens the volumes (VOLUMES).
+    let volumes = alloc::vec![(
+        abi::capability::VOLUMES,
+        kernel::object::capability(abi::capability::VOLUMES),
+    )];
+    let pid = match kernel::program::spawn_path_with("Initrd", "fstest", None, volumes) {
+        Ok(p) => p.id(),
+        Err(e) => panic!("cannot start fstest: {e:?}"),
+    };
     assert_eq!(task::wait_process(pid), Some(0), "fstest failed");
 }
 

@@ -279,39 +279,51 @@ pub fn spawn_process(
     let args = args.unwrap_or_else(|| name_args(name));
     if personality == Personality::Linux {
         // A Linux program keeps no handles for its capabilities: only
-        // whether it may use the network.
-        let network = capabilities
-            .iter()
-            .any(|(kind, _)| *kind == abi::capability::NETWORK);
-        return spawn_linux(name, &elf, initial, &args, network);
+        // whether it may use the network, and (P13 K15) see the volumes.
+        let has = |k: u32| capabilities.iter().any(|(kind, _)| *kind == k);
+        let network = has(abi::capability::NETWORK);
+        let volumes = has(abi::capability::VOLUMES);
+        return spawn_linux(name, &elf, initial, &args, network, volumes);
     }
     let process = task::process::create_with(name, initial, None)?;
     // On failure the process has no thread; dropping it frees what was
     // mapped and ends it with code -1.
     load(process.space(), &elf)?;
-    if process.main_port().send(args).is_err()
-        || process
-            .main_port()
-            .send(capabilities_message(capabilities))
-            .is_err()
-    {
+    if process.main_port().send(args).is_err() {
         return Err(LoadError::OutOfMemory);
+    }
+    for msg in capabilities_messages(capabilities) {
+        if process.main_port().send(msg).is_err() {
+            return Err(LoadError::OutOfMemory);
+        }
     }
     start(&process, elf.entry(), STACK_TOP - 8)
 }
 
-/// The `CAPABILITIES` message: the kinds in the data, the handles carried.
-fn capabilities_message(capabilities: Vec<(u32, Entry)>) -> QueuedMessage {
+/// The `CAPABILITIES` messages: the kinds in the data, the handles
+/// carried; four to a message, the data of all but the last ending in
+/// `capability::MORE` (P13 K15).
+fn capabilities_messages(capabilities: Vec<(u32, Entry)>) -> Vec<QueuedMessage> {
+    let mut messages = Vec::new();
     let mut data = Vec::new();
     let mut objects = Vec::new();
-    for (kind, entry) in capabilities.into_iter().take(abi::MESSAGE_HANDLES) {
+    for (kind, entry) in capabilities {
+        if objects.len() == abi::MESSAGE_HANDLES {
+            data.extend_from_slice(&abi::capability::MORE.to_le_bytes());
+            messages.push(QueuedMessage {
+                msg: Message::with_data(tag::CAPABILITIES, &data),
+                objects: core::mem::take(&mut objects),
+            });
+            data.clear();
+        }
         data.extend_from_slice(&kind.to_le_bytes());
         objects.push(entry);
     }
-    QueuedMessage {
+    messages.push(QueuedMessage {
         msg: Message::with_data(tag::CAPABILITIES, &data),
         objects,
-    }
+    });
+    messages
 }
 
 fn start(process: &Arc<Process>, entry: u64, rsp: u64) -> Result<Arc<Process>, LoadError> {
@@ -330,6 +342,7 @@ fn spawn_linux(
     initial: task::process::Initial,
     args: &QueuedMessage,
     network: bool,
+    volumes: bool,
 ) -> Result<Arc<Process>, LoadError> {
     let tty = match &initial[0] {
         Some(Entry {
@@ -387,18 +400,28 @@ fn spawn_linux(
     };
     let program_folder = folder(&initial[3]).map(|n| linux_path(&n));
     // It sees the volumes of [3] and [4] (and /tmp, /dev, /etc).
-    let mut volumes: Vec<String> = [folder(&initial[2]), folder(&initial[3])]
+    let given: Vec<String> = [folder(&initial[2]), folder(&initial[3])]
+        .into_iter()
+        .flatten()
+        .map(|n| linux_path(&n))
+        .collect();
+    let mut seen: Vec<String> = [folder(&initial[2]), folder(&initial[3])]
         .into_iter()
         .flatten()
         .map(|n| n.volume.name.clone())
         .collect();
-    if volumes.is_empty() {
-        volumes.push(String::from(&cwd[1..]));
+    if seen.is_empty() {
+        seen.push(String::from(&cwd[1..]));
     }
-    volumes.dedup();
+    seen.dedup();
     let mut state = crate::linux::State::with_streams(Arc::clone(&tty), stdin, stdout, cwd, 0);
     state.network = network;
-    state.volumes = volumes;
+    state.volumes = seen;
+    // P13 K15 (docs/sandbox.md): without VOLUMES only the folders [3] and
+    // [4] and what is below them (and /tmp, /lib, /dev, /etc, /proc).
+    if !volumes {
+        state.confined = Some(given);
+    }
     let process = task::process::create_with(name, initial, Some(state))?;
     let image = load_linux(process.space(), elf, crate::linux::lib_image)?;
     crate::linux::set_image(&process, &image);

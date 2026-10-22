@@ -115,6 +115,10 @@ Mouseion 的資料不再放在 Finder 資訊（那 32 bytes 照 HFS 的原意留
 - **清單檢視的欄位**：第一列是 Name、Size、Kind、Date 的標題，點一個就依它排序（名稱不分大小寫、資料夾在前；大小大的在前；種類；日期新的在前；`model::compare`、`column_at`，host 測試），目前的欄位加底線；Date 欄是本地時間（`docs/time.md` §5.6）。印 `mouseion: sorted by Size`。
 - 都沒有自動測試（要拖放與點擊座標）；排序有 host 測試。
 
+### 5.y P13 K15–K16：程式在容器裡跑（使用者尚未審核）
+
+Mouseion 啟動的程式（bundle、單一程式、Linux 程式，雙擊文件開的 Kalamos／Viewer）沒有 `VOLUMES`：`[3]` 是 `Data:/Programs/NAME/container/`、`[4]` 唯讀（bundle 本身或所在的資料夾），印 `mouseion: started NAME (sandboxed)`；雙擊的文件以 `[6]` 交出去。`Initrd:/` 的 Terminal、Classic、Setup 例外（`TRUSTED`）。檔案拖到別的程式的視窗時，Mouseion 送 `DROP_FILE` 給視窗伺服器（`mouseion: dropped PATH at X,Y`），那個程式收到 `DROPPED`。細節見 `docs/sandbox.md`。
+
 ## 6. Viewer（`Viewer.app`，暫名）
 
 `Viewer 路徑`：`Volume:/path` 或相對工作資料夾；最多 1 MiB；80 欄折行（Tab 到 8 的倍數、控制字元略過、壞 UTF-8 顯示 U+FFFD）；視窗標題 = 檔名；方向鍵、Page Up／Down、Home／End、捲軸捲動；File > Close 或關閉鈕結束。開檔時在 serial 印 `viewer: <路徑>: N lines`。

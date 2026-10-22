@@ -38,8 +38,13 @@ const BAR: i32 = 24;
 /// Largest file shown.
 const MAX: u64 = 1 << 20;
 
-/// The text of `name` (`Volume:/path` or relative to the working folder).
+/// The text of `name` (`Volume:/path` or relative to the working folder),
+/// or (P13 K16) of the document handed over as `[6]` (`name` is then only
+/// its name).
 fn load(name: &str) -> Result<Vec<u8>, Error> {
+    if let Some(doc) = process::document() {
+        return read(doc);
+    }
     let h = if name.contains(':') {
         let loc =
             path::resolve(&Location::root("Data"), name).map_err(|_| Error::InvalidArgument)?;
@@ -50,11 +55,17 @@ fn load(name: &str) -> Result<Vec<u8>, Error> {
     } else {
         fs::open(bootstrap::CWD, name, open::READ)?
     };
-    let size = fs::stat(h).map(|s| s.size.min(MAX)).unwrap_or(0);
+    let data = read(h);
+    let _ = handle_close(h);
+    data
+}
+
+/// The first `MAX` bytes of file `h`.
+fn read(h: libstela::Handle) -> Result<Vec<u8>, Error> {
+    let size = fs::stat(h).map(|s| s.size.min(MAX))?;
     let mut data = vec![0u8; size as usize];
     let n = fs::read(h, &mut data, 0).unwrap_or(0);
     data.truncate(n);
-    let _ = handle_close(h);
     Ok(data)
 }
 
@@ -79,7 +90,7 @@ fn main() -> i64 {
         }
     };
     let font = font_for(conn.screen.0);
-    let lines = wrap(&text, COLS as usize);
+    let mut lines = wrap(&text, COLS as usize);
     let title: String = name.rsplit(['/', ':']).next().unwrap_or(name).into();
     let (w, h) = (
         COLS * font.width + 2 * PAD + BAR,
@@ -167,12 +178,31 @@ fn main() -> i64 {
                         let _ = handle_close(h);
                     }
                 }
+                // P13 K16: a file dropped from Mouseion is shown instead.
+                Event::Dropped { file, path, .. } => {
+                    let text = read(file);
+                    let _ = handle_close(file);
+                    if let Ok(text) = text {
+                        lines = wrap(&text, COLS as usize);
+                        let title = path.rsplit(['/', ':']).next().unwrap_or(&path);
+                        let _ = conn.set_title(&window, title);
+                        println!("viewer: {path}: {} lines", lines.len());
+                        bar.value = 0;
+                        bar.total = lines.len();
+                        top = usize::MAX;
+                        break;
+                    }
+                }
                 _ => {}
             }
             if bar.value != before {
                 break;
             }
         }
-        top = bar.value;
+        if top != usize::MAX {
+            top = bar.value;
+        } else {
+            top = 0;
+        }
     }
 }

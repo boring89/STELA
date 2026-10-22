@@ -1,0 +1,22 @@
+[package]
+name = "sandboxtest"
+description = "make test-sandbox: a program in its container gets a file only through the powerbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "sandboxtest"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+toolbox = { path = "../toolbox" }
+
+[lints]
+workspace = true

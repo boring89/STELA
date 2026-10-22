@@ -249,6 +249,16 @@ pub fn split_last(parts: &[String]) -> Option<(&[String], &str)> {
     Some((parent, last.as_str()))
 }
 
+/// Whether `parts` (a path from the root, the volume first) is one of the
+/// folders `allowed` (absolute paths, e.g. `/Data/Programs/x/container`)
+/// or below one (P13 K15: a confined program, `docs/sandbox.md`).
+pub fn within(parts: &[String], allowed: &[String]) -> bool {
+    allowed.iter().any(|a| {
+        let a: Vec<&str> = a.split('/').filter(|c| !c.is_empty()).collect();
+        !a.is_empty() && parts.len() >= a.len() && parts.iter().zip(&a).all(|(p, a)| p == a)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +371,26 @@ mod tests {
         let parts = s(&["Data", "a"]);
         assert_eq!(split_last(&parts), Some((&parts[..1], "a")));
         assert_eq!(split_last(&[]), None);
+    }
+
+    #[test]
+    fn confined_paths() {
+        let allowed = alloc::vec![String::from("/Data/Programs/x/container")];
+        assert!(within(
+            &s(&["Data", "Programs", "x", "container"]),
+            &allowed
+        ));
+        assert!(within(
+            &s(&["Data", "Programs", "x", "container", "a"]),
+            &allowed
+        ));
+        assert!(!within(&s(&["Data", "Programs", "x"]), &allowed));
+        assert!(!within(&s(&["Data"]), &allowed));
+        assert!(!within(
+            &s(&["Data", "Programs", "x", "containers"]),
+            &allowed
+        ));
+        assert!(!within(&s(&["Initrd"]), &allowed));
+        assert!(!within(&s(&["Data"]), &[String::from("/")]));
     }
 }

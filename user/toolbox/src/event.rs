@@ -69,6 +69,21 @@ pub enum Event {
     Menu(u32, u32),
     /// A request failed: its tag and the error.
     Error(u32, u32),
+    /// P13 K16 (`docs/sandbox.md`): a file dropped on `window` at (x, y)
+    /// from Mouseion; `file` is now this program's (`READ`, and `WRITE`
+    /// when writable), `path` where it is (`Volume:/path`).
+    Dropped {
+        /// The window it was dropped on.
+        window: u32,
+        /// Where, in the content.
+        x: i32,
+        /// Where, in the content.
+        y: i32,
+        /// The file.
+        file: libstela::Handle,
+        /// Its path.
+        path: String,
+    },
     /// Anything else.
     Other(Message),
 }
@@ -115,6 +130,16 @@ impl Event {
             },
             event::MENU_SELECTED => Event::Menu(w(0), w(1)),
             event::ERROR => Event::Error(w(0), w(1)),
+            event::DROPPED => match msg.carried().first() {
+                Some(&file) => Event::Dropped {
+                    window: w(0),
+                    x: s(1),
+                    y: s(2),
+                    file,
+                    path: String::from_utf8_lossy(proto::tail(&msg, 3)).into_owned(),
+                },
+                None => Event::Other(msg),
+            },
             _ => Event::Other(msg),
         }
     }
@@ -124,7 +149,8 @@ impl Event {
         match *self {
             Event::Key { window, .. }
             | Event::Mouse { window, .. }
-            | Event::Text { window, .. } => Some(window),
+            | Event::Text { window, .. }
+            | Event::Dropped { window, .. } => Some(window),
             Event::Focus(w)
             | Event::Blur(w)
             | Event::Moved(w, ..)

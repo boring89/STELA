@@ -94,6 +94,8 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 
 **音量（P13 K19，使用者尚未審核）**：有音效卡時選單列右邊（注／英或時鐘的左邊）有喇叭圖示；點開是主音量的滑桿與 Mute（伺服器用 `POWER` 呼叫 `AudioMaster`，存到 `Data:/.stela/audio`）。細節見 `docs/sound.md` §4.1。
 
+**powerbox 與拖放（P13 K16，使用者尚未審核）**：請求 `POWERBOX`（0x10F：mode、"title\0name\0start"，夾帶 client 主 port 的 SEND）讓伺服器啟動 `Initrd:/powerbox` 畫開檔／存檔對話框，選好的檔案以 `POWERBOX_RESULT`（0x18C）送給 client；`DROP_FILE`（0x110，Mouseion：螢幕座標、路徑，夾帶檔案）→ 那一點的視窗的 client 收到 `DROPPED`（0x18D：視窗、內容座標、路徑，夾帶檔案）。座標照樣是邏輯像素。細節見 `docs/sandbox.md`。
+
 **選單快捷鍵（P11 K43）**：`SET_MENUBAR` 的項目文字結尾 `^K`（字母或數字）表示 Alt-K（Alt 當 Command）。伺服器在選單右邊畫 `Alt-K`；焦點 client 的選單有這個快捷鍵時，Alt+字母（沒有 Ctrl）不送給程式，改送 `MENU_SELECTED`。其他 Alt 組合照樣送（Classic.app 的 Mac 用 Alt 當 Command 不受影響，它的選單沒有快捷鍵）。toolbox：`MenuBar::item` 傳回去掉 `^K` 的標籤、`menu::shortcut`。標準：New^N、Open^O、Save^S、Close^W、Quit^Q、Undo^Z、Cut^X、Copy^C、Paste^V、Select All^A（Kalamos、Mouseion、Echo、Terminal、Monitor、Periplus、Viewer 都加了）。
 
 **zoom box（P11 K43）**：可改大小的視窗（`RESIZABLE`）標題列右端多一個框中框。按下去：伺服器記住內容區原來的位置與大小、把視窗搬到選單列下的左上角，送 `WINDOW_EVENT` `ZOOM_REQUESTED`（6，x、y、w、h = 整個螢幕減去選單列與框）；再按一次搬回原處、要回原大小。client 跟 `RESIZE_REQUESTED` 一樣回 `RESIZE_WINDOW`（toolbox 把 `ZOOM_REQUESTED` 也解成 `Event::ResizeRequested`，所以程式不用改）；client 可以給不一樣的大小（terminal 對齊格子）。

@@ -98,13 +98,16 @@ pub enum Syscall {
     FileStat = 22,
     /// `FileSetSize(file, size)`.
     FileSetSize = 23,
-    /// `VolumeList(index, &mut VolumeInfo) -> 1 | 0`.
+    /// `VolumeList(index, &mut VolumeInfo, volumes) -> 1 | 0`; P13 K15:
+    /// needs the `VOLUMES` capability.
     VolumeList = 24,
-    /// `VolumeOpen(name_ptr, name_len) -> handle`: the root folder of the
-    /// volume with that name.
+    /// `VolumeOpen(name_ptr, name_len, volumes) -> handle`: the root folder
+    /// of the volume with that name; P13 K15: needs the `VOLUMES`
+    /// capability, except for `Initrd` (the read-only system files).
     VolumeOpen = 25,
-    /// `VolumeOpenById(dir, id) -> handle`: the item with persistent id
-    /// `id` on `dir`'s volume.
+    /// `VolumeOpenById(dir, id, volumes) -> handle`: the item with
+    /// persistent id `id` on `dir`'s volume; P13 K15: needs `VOLUMES` (an
+    /// id reaches past the folder `dir` is).
     VolumeOpenById = 26,
     /// `ProcessSpawn(file, &Message, &[Handle; n], n) -> handle`: starts
     /// the ELF program in `file` (a handle with `READ`) as a new process.
@@ -848,13 +851,20 @@ pub mod capability {
     /// holding this is trusting the program with the machine
     /// (`docs/devices.md`); init gives it only to the drivers it starts.
     pub const DEVICES: u32 = 5;
-    /// Most capabilities one `ProcessSpawn` passes (and a message
-    /// carries).
-    pub const MAX: usize = 5;
+    /// `VolumeOpen`, `VolumeList`, `VolumeOpenById` (P13 K15,
+    /// `docs/sandbox.md`): every volume, not only the folders a program was
+    /// given. Programs Mouseion starts run without it, in their container.
+    pub const VOLUMES: u32 = 6;
+    /// Most capabilities one `ProcessSpawn` passes.
+    pub const MAX: usize = 6;
     /// Whether `kind` is one of the kinds above.
     pub const fn is_valid(kind: u32) -> bool {
-        kind >= POWER && kind <= DEVICES
+        kind >= POWER && kind <= VOLUMES
     }
+    /// The last kind in a `CAPABILITIES` message's data when another
+    /// `CAPABILITIES` message follows (P13 K15: a message carries four
+    /// handles, a program may get six).
+    pub const MORE: u32 = u32::MAX;
 }
 
 /// The exit code of a process ended by `ProcessKill`.
@@ -1503,8 +1513,10 @@ pub mod bootstrap {
     /// `[5]` (P11): standard input, when given (a pipe or a tty's
     /// reading side).
     pub const STDIN: Handle = Handle::new(5, 1);
-    /// `[6]`: reserved.
-    pub const RESERVED: Handle = Handle::new(6, 1);
+    /// `[6]` (P13 K16, `docs/sandbox.md`): the document to open, when
+    /// given (a File handle: Mouseion's "open with", `READ`, and `WRITE`
+    /// when the volume is writable).
+    pub const DOCUMENT: Handle = Handle::new(6, 1);
     /// Number of bootstrap slots.
     pub const COUNT: u32 = 7;
     /// How many of them `ProcessSpawn` fills (`[1]`..`[6]`).
@@ -2144,11 +2156,11 @@ mod tests {
     fn capabilities() {
         use capability::*;
         assert_eq!(
-            (POWER, INPUT, NETWORK, INIT, DEVICES, MAX),
-            (1, 2, 3, 4, 5, 5)
+            (POWER, INPUT, NETWORK, INIT, DEVICES, VOLUMES, MAX),
+            (1, 2, 3, 4, 5, 6, 6)
         );
-        assert!(is_valid(POWER) && is_valid(INIT) && is_valid(DEVICES));
-        assert!(!is_valid(0) && !is_valid(6));
+        assert!(is_valid(POWER) && is_valid(INIT) && is_valid(DEVICES) && is_valid(VOLUMES));
+        assert!(!is_valid(0) && !is_valid(7) && !is_valid(MORE));
         assert_eq!((tag::CAPABILITIES, tag::POWER_REQUEST), (7, 8));
         assert_eq!((tag::DEVICE_IRQ, tag::NET_TX_READY), (11, 12));
         assert_eq!(

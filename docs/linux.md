@@ -220,6 +220,7 @@ Linux 程式的 tty：kernel 在 `spawn_linux` 時看 `[1]`：是 Tty 就用它�
 - `/etc` 只有 `resolv.conf`（唯讀，`open` 時才產生內容；寫入 → `EROFS`）；其他名字 → `ENOENT`（musl 找 `/etc/hosts` 時就是這樣，然後走 DNS）。
 - P11：`socket()` 要行程啟動時拿到 `NETWORK` 能力（`docs/userland.md` §2.3），否則 `EACCES`。
 - Linux 程式在看得到的卷宗裡不受 handle 權限限制（P11 前看得到所有卷宗）；之後的沙箱可以再收緊到 `[3]` 那個資料夾以下（`docs/architecture.md` §4.1）。
+- **P13 K15（使用者尚未審核）**：沒有 `VOLUMES` 能力的 Linux 程式（Mouseion 啟動的）只到得了 `[3]`、`[4]` 那兩個資料夾以下（`linux::State::confined`、`path::within`），根目錄不列任何卷宗；fork、execve 保留限制（`docs/sandbox.md` §4）。shell 啟動的照舊。
 
 ### 7.1 `Tmp`（`vfs/tmpfs.rs`）
 
@@ -512,7 +513,7 @@ Rust std 程式的建置（`make linux-rust`，`make linux-tests` 會做）：`r
 - 行程模型（P12）：P13 起 fork 是 copy-on-write（§16.8）；vfork 不讓父行程等；一個行程的執行緒都在同一顆 CPU；沒有 `mremap`、`inotify`、`signalfd`；P13 的 `MAP_SHARED`、`epoll`、`eventfd`、`timerfd` 的限制見 §16.9；execve 不能換成 STELA 程式、`#!` 只有一層；行程名稱（`ps`）在 execve 後不變；沒有停止／繼續（SIGSTOP、SIGTSTP、SIGCONT 只是忽略，沒有 job control 的停止）；`sigaltstack` 只記錄；`ITIMER_VIRTUAL`／`PROF`、POSIX 計時器（`timer_create`）沒有；沒有 CPU 時間的統計（`times`、`getrusage` 是 0）；父行程先結束時子行程的狀態沒人收。
 - 權限：mode、owner、時間都不能改（`chmod`、`chown`、`utimensat` 成功但什麼都不做）；一般檔案一律報 0755；記錄鎖與 `flock` 一律成功；沒有 netlink（`getifaddrs` 失敗）。
 - pty：master 關掉時程式端不會收到 EOF／SIGHUP。
-- Linux 程式在 `[3]`、`[4]` 的卷宗裡不受 handle 權限限制（整個卷宗，不只那個資料夾以下）。
+- Linux 程式在 `[3]`、`[4]` 的卷宗裡不受 handle 權限限制（整個卷宗，不只那個資料夾以下；P13 起 Mouseion 啟動的只到那兩個資料夾以下，`docs/sandbox.md`）。
 - 時間只有 tick 解析度（沒有 invariant TSC 時 1 ms）。
 - tty：VMIN／VTIME 不看；raw 模式下 `read` 有一個字就回。
 - `PROT_NONE` 頁可以讀；部分 `munmap` 不歸還位址範圍。

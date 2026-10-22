@@ -358,6 +358,33 @@ fn capabilities() -> Result<(), i64> {
             == Some(Error::AccessDenied),
         "NetAttach without DEVICES",
     )?;
+    // P13 K15 (docs/sandbox.md): no other volume without VOLUMES; Initrd,
+    // the read-only system files, is open to all.
+    check(
+        27,
+        fs::volume_open("Data").err() == Some(Error::AccessDenied),
+        "VolumeOpen without VOLUMES",
+    )?;
+    check(
+        27,
+        fs::volume_list(0).err() == Some(Error::AccessDenied),
+        "VolumeList without VOLUMES",
+    )?;
+    let initrd = fs::volume_open("Initrd").map_err(|_| 27i64)?;
+    let by_id = fs::open_by_id(initrd, fs::stat(initrd).map_or(0, |s| s.id));
+    let _ = libstela::ipc::handle_close(initrd);
+    check(
+        27,
+        by_id.err() == Some(Error::AccessDenied),
+        "VolumeOpenById without VOLUMES",
+    )?;
+    let raw = libstela::sys::syscall3(
+        libstela::abi::Syscall::VolumeOpen,
+        b"Data".as_ptr() as u64,
+        4,
+        bootstrap::MAIN_PORT.raw(),
+    );
+    check(27, raw == Err(Error::AccessDenied), "a port is not VOLUMES")?;
     Ok(())
 }
 

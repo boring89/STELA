@@ -66,6 +66,10 @@ pub fn init(info: &'static bootinfo::BootInfo) {
     step("per-CPU area", task::init);
     arch::x86_64::syscall::init();
     arch::x86_64::enable_smep();
+    // P14 K19: mwait (C1) in the idle loop when the processor has it
+    // (the boot option idle=hlt|mwait decides instead).
+    arch::x86_64::choose_idle(abi::sysinfo::cmdline_option(cmdline(), "idle"));
+    kprintln!("idle: {}", arch::x86_64::idle_method());
     step("keyboard and mouse (PS/2)", input::init);
     step("timer", time::init);
     irq::enable();

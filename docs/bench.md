@@ -1,4 +1,4 @@
-# 量測：`make bench`（P11 K31，P12 第二筆；使用者已於 2026-10-22 審核）
+# 量測：`make bench`（P11 K31，P12 第二筆；使用者已於 2026-10-22 審核；P14 第三筆尚未審核）
 
 **比喻**：`docs/architecture.md` §3 訂了幾個目標（kernel 小於 2 MiB、無 KVM 的 QEMU 五秒內到桌面、桌面閒置時 64 MiB 以內）。量尺要先做出來，每個階段量一次，才知道是變好還是變差。
 
@@ -34,6 +34,40 @@
 ## 3. 結果
 
 （每次階段結束時加一節，舊的留著比較）
+
+### 2026-10-23（P14 K19）
+
+QEMU: QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2) (TCG, no KVM; `-machine q35 -m 512M`, one processor, e1000e on user networking, AHCI disk)
+
+| target (docs/architecture.md §3, §3.1) | goal | measured |
+|---|---|---|
+| kernel.elf | ≤ 2 MiB | 1.44 MiB (1504784 bytes) |
+| system image (loader + kernel + initrd on the ESP, plus the System volume) | ≤ 25 MiB | 23.1 MiB: ESP 7.1 MiB (7491600 bytes; the initrd 5.7 MiB) + `system.img` 16 MiB |
+| boot to the desktop, no KVM | ≤ 5 s | 0.87 s from the loader (3.02 s from QEMU's start, firmware included) |
+| memory on the idle desktop | ≤ 32 MiB + 2 × 2560 × 1600 × 4 ≈ 63 MiB | **63.9 MiB**; 63.5 MiB without the heap's unused 0.5 MiB (just over) |
+
+| boot milestone | seconds since QEMU started |
+|---|---|
+| loader starts | 2.15 |
+| kernel starts | 2.30 |
+| kernel ready | 2.80 |
+| window server ready | 2.84 |
+| desktop (Mouseion ready) | 3.02 |
+| shell prompt | 3.08 |
+
+| measurement | result |
+|---|---|
+| memory | used 65444 KiB of 523216 KiB, kernel heap 4652 KiB used of 5120 KiB |
+| syscall | 480 ns (ClockNowNs, 100000 calls) |
+| switch | 163934 per second (two threads, port ping-pong, 20000 switches) |
+| ehfs | write 12.0 MB/s, read 63.5 MB/s (16384 KiB) |
+| tcp | 46.0 MB/s (4194509 bytes) |
+
+- 閒置記憶體 57.0 → 63.9 MiB（P13 與 P14 一起，中間沒有量）：kernel heap 用掉的從 0.5 MiB 變成 4.5 MiB，其餘約 2.9 MiB 是多出的行程與共享記憶體。已知新增的：P13 的輸入法行程（libchewing 與它的字典，桌面起來後一定啟動）、P14 多掛一個 eHFS 卷宗（System：卷宗結構與區塊快取在 heap）、kernel 變大 0.25 MiB。**沒有逐項量**，哪一項佔多少要再查；比目標（≈ 63 MiB）多約 1 MiB。
+- 系統映像：initrd 8.4 → 5.7 MiB（K4 把程式、字型、字典、手冊移到 System），但總量（ESP + System 16 MiB）23.1 MiB，比 P12 的 9.5 MiB 大：System 映像是固定 16 MiB 的 eHFS（裡面 8.6 MiB 有資料：字典 3.6、程式 2.4、命令列工具 1.1、字型 1.0、Linux 函式庫 0.7）。仍在 25 MiB 以內。
+- 開機到桌面 0.78 → 0.87 秒：多了 System 卷宗的簽章檢查與掛載（`vfs: mounted` 在 2.80 秒，比 P12 晚約 0.07 秒）。
+- syscall 510 → 480 ns、切換 170940 → 163934 次／秒、eHFS 與 TCP 都在 TCG 的起伏（幾 %）之內。
+- P14 K19 的 idle `mwait` 在這裡量不到：TCG 單核時 CPUID 不報 MONITOR，idle 仍是 `hlt`（`docs/smp.md` §6.1）。
 
 ### 2026-10-22（P12 K16）
 

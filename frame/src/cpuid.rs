@@ -124,6 +124,20 @@ pub fn decode(cpuid: impl Fn(u32, u32) -> Regs) -> CpuInfo {
     }
 }
 
+/// Whether `mwait` with the C1 hint can replace `hlt` in the idle loop,
+/// from CPUID's highest basic leaf, leaf 01H's ECX and leaf 05H (Intel SDM
+/// Vol. 2A, CPUID: 01H ECX[3] MONITOR/MWAIT; 05H ECX[0] "enumeration of
+/// MONITOR/MWAIT extensions", EDX[7:4] the number of C1 sub-states MWAIT
+/// supports). As Linux's `mwait_usable` (arch/x86/kernel/process.c): when
+/// leaf 05H does not enumerate the extensions, C1 is assumed to work.
+pub fn mwait_c1(max_leaf: u32, leaf1_ecx: u32, leaf5: Regs) -> bool {
+    if leaf1_ecx & (1 << 3) == 0 || max_leaf < 5 {
+        return false;
+    }
+    let [_, _, ecx, edx] = leaf5;
+    ecx & 1 == 0 || (edx >> 4) & 0xF != 0
+}
+
 /// The processor this runs on.
 #[cfg(target_os = "none")]
 pub fn info() -> CpuInfo {
@@ -179,6 +193,19 @@ mod tests {
         assert_eq!(info.brand, "QEMU Virtual CPU version 2.5+");
         assert_eq!((info.family, info.model, info.stepping), (6, 0x6E, 3));
         assert_eq!(info.features, ["sse2", "sse3", "smep", "nx", "hypervisor"]);
+    }
+
+    #[test]
+    fn mwait_for_idle() {
+        let monitor = 1 << 3;
+        // No MONITOR/MWAIT, or no leaf 05H.
+        assert!(!mwait_c1(0xD, 0, [0; 4]));
+        assert!(!mwait_c1(4, monitor, [0; 4]));
+        // Extensions enumerated: C1 needs a sub-state.
+        assert!(mwait_c1(0xD, monitor, [64, 64, 3, 0x0000_1120]));
+        assert!(!mwait_c1(0xD, monitor, [64, 64, 3, 0x0000_1100]));
+        // Extensions not enumerated: assumed to work.
+        assert!(mwait_c1(0xD, monitor, [64, 64, 0, 0]));
     }
 
     #[test]

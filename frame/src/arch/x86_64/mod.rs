@@ -56,13 +56,69 @@ pub(crate) fn breakpoint_count() -> u64 {
     exceptions::breakpoint_count()
 }
 
-/// `sti; hlt`: enables interrupts and sleeps until one arrives.
+/// `sti; hlt` (or `monitor; sti; mwait` with the C1 hint, P14 K19):
+/// enables interrupts and sleeps until one arrives.
 pub(crate) fn halt_until_interrupt() {
     assert!(initialized(), "halt_until_interrupt() before frame::init()");
+    if MWAIT.load(Ordering::Relaxed) {
+        let line = IDLE_LINE.0.as_ptr() as u64;
+        // SAFETY: `monitor` only arms this processor's address monitor on
+        // IDLE_LINE, a static of ordinary write-back memory (Intel SDM Vol.
+        // 2B, MONITOR: RAX the address, ECX extensions 0, EDX hints 0).
+        // Then as `sti; hlt`: every vector has a gate, and `mwait` right
+        // after `sti` is in its interrupt shadow, so no interrupt slips in
+        // between; with EAX 0 (C1, sub-state 0) and ECX 0 it wakes on an
+        // interrupt (or a write to the line, nobody writes it).
+        unsafe {
+            asm!("monitor", in("rax") line, in("ecx") 0, in("edx") 0, options(nostack, preserves_flags));
+            asm!("sti", "mwait", in("eax") 0, in("ecx") 0, options(nomem, nostack));
+        }
+        return;
+    }
     // SAFETY: the IDT has a gate for all 256 vectors (checked above), so
     // any interrupt that arrives is handled. `hlt` only stops this
     // processor until the next interrupt.
     unsafe { asm!("sti", "hlt", options(nomem, nostack)) };
+}
+
+/// Whether the idle loop uses `mwait` (P14 K19).
+static MWAIT: AtomicBool = AtomicBool::new(false);
+
+/// The cache line `monitor` watches while idle (its own 64 bytes).
+#[repr(C, align(64))]
+struct IdleLine([u64; 8]);
+static IDLE_LINE: IdleLine = IdleLine([0; 8]);
+
+/// Uses `mwait` (C1) instead of `hlt` when the processor has it
+/// ([`crate::cpuid::mwait_c1`]), from the boot option `idle=`: `hlt`
+/// keeps `hlt`; `mwait` uses it whenever CPUID has MONITOR/MWAIT, even
+/// without a C1 sub-state in leaf 05H (QEMU's TCG reports none, so its
+/// test needs this); anything else decides by CPUID. All processors are
+/// taken to be alike (the boot processor decides).
+pub fn choose_idle(option: Option<&[u8]>) {
+    let max = core::arch::x86_64::__cpuid(0).eax;
+    let ecx1 = core::arch::x86_64::__cpuid(1).ecx;
+    let leaf5 = if max >= 5 {
+        let r = core::arch::x86_64::__cpuid(5);
+        [r.eax, r.ebx, r.ecx, r.edx]
+    } else {
+        [0; 4]
+    };
+    let use_mwait = match option {
+        Some(b"hlt") => false,
+        Some(b"mwait") => ecx1 & (1 << 3) != 0,
+        _ => crate::cpuid::mwait_c1(max, ecx1, leaf5),
+    };
+    MWAIT.store(use_mwait, Ordering::Relaxed);
+}
+
+/// "mwait" or "hlt": what the idle loop uses.
+pub fn idle_method() -> &'static str {
+    if MWAIT.load(Ordering::Relaxed) {
+        "mwait"
+    } else {
+        "hlt"
+    }
 }
 
 /// Disables maskable interrupts and halts forever.

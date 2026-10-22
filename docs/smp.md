@@ -67,13 +67,30 @@ AP 開機時是 real mode，從 Startup IPI 指定的頁開始執行（Intel SDM
 - `SysInfo(CPUS)`（7）：每顆線上 CPU 一個 u64（它處理過的 timer tick），回傳 CPU 數；libstela `process::cpus()`。
 - `SysInfo(PROCESS_CPUS)`（8）：執行中的行程與它的 CPU（成對的 u64），libstela `process::process_cpus()`。
 
+## 6.1 idle：`mwait`（P14 K19，**使用者尚未審核**）
+
+沒事做的 CPU 停在 idle 執行緒（`kernel/src/task/sched.rs` 的 `idle_entry`），呼叫 `frame::halt_until_interrupt`。以前是 `sti; hlt`；現在處理器有 MONITOR/MWAIT 時改成：
+
+```
+monitor IDLE_LINE        ; 監看一條沒人寫的 cache line（frame/src/arch/x86_64/mod.rs）
+sti                      ; 下一個指令執行完才開中斷（interrupt shadow），中斷不會漏在中間
+mwait eax=0, ecx=0       ; C1（EAX[7:4]=0、子狀態 0），中斷或那條線被寫就醒
+```
+
+比喻：`hlt` 是坐在椅子上打盹，`mwait` 是同一張椅子但告訴 CPU「我在等這個門鈴」，處理器可以照它知道的方式省電（C1 以上的深睡眠要 ACPI 的 `_CST` 才知道代價，STELA 沒有 AML 直譯器，所以只用 C1）。叫醒的方式和 `hlt` 一樣靠中斷（reschedule IPI、timer），所以排程器不用改。
+
+- **偵測**（`frame::cpuid::mwait_c1`，host 測試）：CPUID.01H:ECX[3]（MONITOR/MWAIT）、最高的基本 leaf ≥ 05H；leaf 05H 若列舉了擴充（ECX[0]），EDX[7:4]（C1 的子狀態數）要不是 0——和 Linux 的 `mwait_usable` 同一條規則（出處：Intel SDM Vol. 2A CPUID leaf 05H、Vol. 2B MONITOR／MWAIT）。開機時 BSP 決定、所有 CPU 一樣，serial 印 `idle: mwait` 或 `idle: hlt`。
+- **開機選項** `idle=hlt`：不用 mwait（實機上萬一有問題）；`idle=mwait`：只要有 MONITOR 就用（QEMU 的 TCG 在 leaf 05H 報 EDX=0，照規則會選 hlt，測試需要它）。
+- **TCG 的行為**：多顆 CPU 時 QEMU 的 `mwait` 什麼都不做（立刻返回），idle 迴圈變成空轉——正確但耗 host 的 CPU；只有 `make test-qemu-smp` 打開它。selftest 的 "timer tick" 原本假設「每次 halt 至少等到下一個中斷」，`mwait` 可能提早醒，所以改成次數上限放寬、只看 tick 有沒有增加。
+- 量測：TCG 下看不出省電；實機的差別要在 P520 上量（未驗證）。
+
 ## 7. 測試
 
 | 測試 | 內容 |
 |---|---|
 | selftest "interrupt controllers" | 線上 CPU 數 = MADT 裡 enabled 的處理器數（`nosmp` 時 1） |
 | selftest "smp"（只有多顆時） | 每顆的 tick 50 ms 內增加；CPU 1 上的執行緒（`spawn_on`）叫醒 BSP 的主執行緒；主執行緒叫醒在 CPU 1 上 block 的執行緒；每顆一個 spinner 行程（`jmp $`）、round-robin 分到不同 CPU、主執行緒沒被餓到；從 BSP 殺掉全部，`wait_process` 都是 99 |
-| `make test-qemu-smp` | selftest 全套在 `-smp 4`（所有行程、IPC、Linux、檔案系統的測試都分散在 4 顆上跑） |
+| `make test-qemu-smp` | selftest 全套在 `-smp 4`（所有行程、IPC、Linux、檔案系統的測試都分散在 4 顆上跑）；P14 起 `-cpu qemu64,+monitor` + `idle=mwait`：四個 idle 都在 `mwait`（`idle: mwait`） |
 | `make test-shell` | 改成 `-smp 2`：桌面、terminal、shell 與程式分散在兩顆上 |
 | `make test-qemu-min` | 維持單核（Conroe） |
 

@@ -395,11 +395,20 @@ test-qemu: esp-test $(BUILD)/OVMF_VARS.fd
 # SMP (docs/smp.md): the whole self test on four processors; the "smp"
 # test checks each one's timer, wake-ups across processors, a spinning
 # process per processor and killing them from the boot processor.
+# P14 K19: with MONITOR/MWAIT on and idle=mwait (TCG reports no C1
+# sub-state, so CPUID alone would pick hlt): four idle loops in mwait
+# still wake for timers and each other's IPIs.
+ESP_TEST_MWAIT := $(BUILD)/esp-test-mwait
 test-qemu-smp: esp-test $(BUILD)/OVMF_VARS.fd
+	rm -rf $(ESP_TEST_MWAIT)
+	cp -r $(ESP_TEST) $(ESP_TEST_MWAIT)
+	printf 'selftest\nidle=mwait\n' > $(ESP_TEST_MWAIT)/STELA/boot.cfg
 	python3 tools/qemu_test.py --exit-code 33 $(SEND_KEYS) --log $(BUILD)/test-qemu-smp.log \
+		--expect "idle: mwait" \
 		--expect "smp: 4 processor(s) online" --expect "input: OK" --expect "proctest: OK" \
 		--expect "smp: 4 processors: ticks, wake both ways" --expect "selftest: OK" \
-		-- $(QEMU) $(QEMU_TEST_FLAGS) -smp 4
+		-- $(QEMU) $(subst file=fat:rw:$(ESP_TEST),file=fat:rw:$(ESP_TEST_MWAIT),$(QEMU_TEST_FLAGS)) \
+		-smp 4 -cpu qemu64,+monitor
 
 # The minimal machine also gets the AHCI test disk (a copy of its own):
 # AHCI, GPT, FAT, eHFS and fstest on a Core 2 without NX in 256 MiB.

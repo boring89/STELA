@@ -710,8 +710,10 @@ fn mouse(_: &'static BootInfo) {
 fn timer_tick(_: &'static BootInfo) {
     let start = time::ticks();
     // At 1000 Hz, 10 ticks take 10 ms; each `hlt` ends at the next
-    // interrupt, so 1000 halts are plenty unless the timer is dead.
-    for _ in 0..1000 {
+    // interrupt, so 1000 halts would do. `mwait` may end sooner (QEMU's
+    // TCG does nothing for it with several processors; P14 K19), so the
+    // bound is far larger: it only stops a dead timer from hanging.
+    for _ in 0..10_000_000 {
         if time::ticks() >= start + 10 {
             break;
         }

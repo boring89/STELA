@@ -209,6 +209,7 @@ Claude 依照上方工作規則直接實作。
 - P8（自動排程一次做完，使用者已審核（2026-10-20））：USB、顯示、視窗伺服器、工具箱（`docs/usb.md`、`docs/display.md`、`docs/window.md`、`docs/toolbox.md`）
 - P9（自動排程一次做完，使用者已審核（2026-10-20））：Mouseion 與識別（`docs/mouseion.md`、`docs/identity.md`）
 - P10（自動排程一次做完，使用者已審核（2026-10-21））：實機映像（`docs/p520.md`）、Classic 環境（`docs/classic.md`）、網路（`docs/net.md`）、音效（`docs/sound.md`）、SMP（`docs/smp.md`）
+- P13（自動排程一次做完，**使用者尚未審核**）：注音輸入法（`docs/ime.md`）、動態連結與 COW fork、MAP_SHARED、epoll 等（`docs/linux.md` §16）與更多 ports（`docs/ports.md`）、USB 乙太與換網卡（`docs/usb.md` §13）、使用者空間驅動介面（`docs/devices.md`）、HiDPI 2x（`docs/display.md` §6、`docs/window.md`、`docs/toolbox.md` §7）、沙箱與 powerbox（`docs/sandbox.md`）、混音與音量（`docs/sound.md` §3.2、§4.1）、Find／桌面圖樣／熄屏／Alt-Tab／鍵盤選單（`docs/mouseion.md`、`docs/window.md` §12）、平行測試（`docs/testing.md` §5）、使用手冊（`docs/guide.md`、`docs/guide.en.md`）
 - P12（自動排程一次做完，**使用者尚未審核**）：Linux 相容層補齊（執行緒、fork、execve、wait、訊號、pty、/proc；`docs/linux.md` §11–§12）、ports（`docs/ports.md`）、TLS（`docs/tls.md`）、pkg 與 Setup（`docs/pkg.md`、`docs/setup.md`）、規模（`docs/bench.md`、`docs/architecture.md` §3.1）、PCI 全 bus 掃描與 P520 相容清單（`docs/pci.md` §4.1、`docs/p520.md` §6.5）
 - P11（自動排程一次做完，**使用者尚未審核**）：WaitSet 與 poll（`docs/ipc.md` §13、`docs/linux.md`）、安全收緊（能力、MANAGE、`docs/userland.md` §2.3）、Classic 的 FSM／NuBus／整數放大／多磁碟／cfg／關機測試（`docs/classic.md` §7–12）、效能（`docs/storage.md`、`docs/net.md` §4.3、`docs/window.md`）、Pipe 與 shell（`docs/ipc.md` §14、`docs/userland.md` §6）、terminal（`docs/window.md` §7）、延伸屬性與 Mouseion 完善（`docs/vfs.md` §4.5、`docs/mouseion.md`）、Thread 與 join（`docs/process.md` §8.1）、硬體報告（`docs/hwinfo.md`）、開機診斷（`docs/p520.md` §3.1）、量測（`docs/bench.md`）、工具箱與剪貼簿（`docs/toolbox.md` §6.1–6.2）、命令列工具與應用程式（`docs/apps.md`）、中文顯示（`docs/toolbox.md` §6.3）、時區（`docs/time.md` §5.6）、USB 儲存與 FAT 寫入、VolumeWatch（`docs/usb.md` §12、`docs/vfs.md` §6.2）、垃圾桶與排序、zoom box、選單快捷鍵（`docs/mouseion.md`、`docs/window.md`）、shell 的 Tab 補全與萬用字元（`docs/userland.md` §6.3）、fuzz 與壓力測試（`docs/testing.md`）
 
@@ -226,7 +227,7 @@ Claude 依照上方工作規則直接實作。
 - 位址空間只有 4 KiB 頁、沒有需求分頁／mmap；kernel 半部不能新增 PML4 項目（行程的 PML4 是建立時複製的）；使用者 FPU 只有 FXSAVE（無 XSAVE/AVX）；沒有 SMAP（kernel 不直接解參考使用者指標）。
 - NMI／#MC 若剛好落在 `swapgs` 前後或 `sysret` 前會用錯 GS／堆疊（它們沒有 IST）；行程表的 `Exited` 紀錄永遠不清（P11 K46 起只剩名字與 exit code，約 100 bytes；process handle 只記 id，要改成能回收得先讓 handle 持有紀錄）。
 - 使用者空間：沒有單一執行緒的 kill（Thread handle 只能 join）；shell 的管線與重新導向只接程式（不接內建指令）、沒有引號與 `[abc]`；前景工作執行時打的字它沒讀就會遺失；heap 不還記憶體（docs/userland.md §9）。
-- 應用程式（P11，暫名）：Periplus 只有 HTTP（沒有 TLS）、HTML 子集、單一字型、同步載入；Kalamos 一份文件一個視窗、字型只有 ASCII、Shift-點選不延伸；Monitor 的 CPU 欄是 tick/s 不是使用率；對話框與剪貼簿只有純文字、對話框互動沒有自動測試（docs/apps.md）。
+- 應用程式（P11，暫名）：Periplus 的 HTML 子集、單一字型、同步載入（P12 起有 HTTPS）；Kalamos 一份文件一個視窗、字型只有 ASCII、Shift-點選不延伸；Monitor 的 CPU 欄是 tick/s 不是使用率；對話框與剪貼簿只有純文字、對話框互動沒有自動測試（docs/apps.md）。
 - 量測：2560x1600 下桌面閒置 P11 是 93 MiB，P12（heap 按需成長、桌面視窗只蓋圖示直條）57 MiB；P12 的開機在掛載卷宗時多了約 0.3 秒（TCG，原因未查明，不是 heap 成長）（目標 32 MiB + 畫面緩衝 ≈ 63 MiB，`docs/architecture.md` §3.1、`docs/bench.md`）。
 - TLS（P12）：只有 TLS 1.3、P-256、AES-128-GCM；沒有憑證撤銷檢查；連線被切斷就當作回應結束（docs/tls.md §6）。
 - pkg 與 Setup（P12）：`tools/pkg.pub` 是**測試鍵**（固定種子，任何人都能簽），正式的鑰匙與套件伺服器要使用者決定；index 沒有防重送；安裝不是交易式；Setup 只有鍵盤操作、新的 Data 沒有 pkg.conf；Mouseion 的桌面只是右邊的直條（直條外的空白處不能拉框、放東西）（docs/pkg.md §6、docs/setup.md §6、docs/window.md §11）。
@@ -242,5 +243,5 @@ Claude 依照上方工作規則直接實作。
 - 音效：只有輸出、48 kHz 16 位元雙聲道；P13 起多個程式混音、每會話音量與主音量（線性、只在 kernel 的混音裡、codec 的 amp 不動）；輪詢 LPIB；實機 codec 未驗證（docs/sound.md §7）。
 - IPC：訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；共享記憶體是 eager；WaitSet 的行程成員以 id 記，要自己移除（`docs/ipc.md` §12、§13）。
 - 能力（P11）：`NETWORK` 與 `INIT` 預設往下傳給所有程式（沙箱還沒有拿掉它們的地方）；P13 的 `VOLUMES`：Mouseion 啟動的程式沒有（容器 `Data:/Programs/NAME/container/`、檔案只經 powerbox、拖放、`[6]`；`Initrd` 不需要它），但 shell 啟動的都有（開發者模式），拖放沒有自動測試、Periplus 不收檔案（docs/sandbox.md §9）；P13 的 `DEVICES` 只有 init 給它啟動的驅動，沒有 IOMMU，所以持有它等於持有整台機器（docs/devices.md）；`FilePath` 讓持有資料夾 handle 的程式知道上面各層的名字（docs/userland.md §2.3、docs/vfs.md §4.4）。
-- 中文與時區（P11）：只有 BMP 的 12px 字型（16x32 字型時 2 倍放大）、沒有中文輸入法、kernel 主控台與 panic 畫面只有 ASCII；時區是固定的 UTC 偏移（沒有夏令時間、沒有時區資料庫）（docs/toolbox.md §6.3、docs/time.md §5.6）。
+- 中文與時區（P11）：只有 BMP 的 12px 字型（16x32 字型時 2 倍放大）、中文輸入只有注音（P13，`docs/ime.md` §8 的限制）、kernel 主控台與 panic 畫面只有 ASCII；時區是固定的 UTC 偏移（沒有夏令時間、沒有時區資料庫）（docs/toolbox.md §6.3、docs/time.md §5.6）。
 - eHFS 的效能（P11 K45 的觀察）：每次查詢都讀 16 KiB 的 B-tree 節點並逐位元組算 CRC-32C（沒有節點快取）；`make test-stress` 在 TCG 下建刪 1000 個檔約 35 秒（docs/testing.md）。

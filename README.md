@@ -12,7 +12,7 @@ is a reduced 68k_HAL by definition (see [classic/README.md](classic/README.md)).
 
 ## Status
 
-Early (phase P12 of [the plan](docs/architecture.md); P11 and P12 are not reviewed yet): STELA's own UEFI boot loader loads the
+Early (phase P13 of [the plan](docs/architecture.md); P11, P12 and P13 are not reviewed yet): STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -77,7 +77,19 @@ from RDSEED/RDRAND or timing jitter through ChaCha20); `pkg`, which installs pac
 ed25519-signed index over HTTPS into `Data:/Programs/`; Setup.app on the first start (English
 or Traditional Chinese, time zone, formatting an empty partition as the Data volume, network,
 packages); a kernel heap that grows on demand and a desktop without a full-screen canvas
-(booting to the desktop in 128 MiB); and a PCI scan of every bus. See
+(booting to the desktop in 128 MiB); and a PCI scan of every bus. P13 adds: Zhuyin (bopomofo)
+input through libchewing, with the window server routing keys to an input method; dynamic
+linking and PIE for Linux programs, copy-on-write `fork`, shared file mappings, `epoll`,
+`eventfd` and `timerfd`, and more ports (python3, git, vim, nano, curl, less, file and their
+libraries); USB Ethernet adapters (CDC ECM, NCM, RNDIS, AX88179) and an interface for drivers
+in user space (a user-space e1000); a 2x interface on large screens (the window protocol in
+logical pixels); programs started from the desktop run in a container and get files only
+through a powerbox (the window server's file dialog), drag and drop or the document they were
+opened with; several programs playing sound at once with a volume control in the menu bar;
+Find, desktop patterns, display sleep, Alt-Tab and keyboard menus; QEMU tests that can run in
+parallel (`make test -jN`, CI in shards); and a user guide
+([docs/guide.en.md](docs/guide.en.md), in Chinese [docs/guide.md](docs/guide.md); also in
+Periplus). See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
@@ -89,8 +101,9 @@ packages); a kernel heap that grows on demand and a desktop without a full-scree
 [docs/p520.md](docs/p520.md), [docs/classic.md](docs/classic.md), [docs/net.md](docs/net.md),
 [docs/sound.md](docs/sound.md), [docs/smp.md](docs/smp.md), [docs/hwinfo.md](docs/hwinfo.md),
 [docs/bench.md](docs/bench.md), [docs/apps.md](docs/apps.md), [docs/ports.md](docs/ports.md),
-[docs/tls.md](docs/tls.md), [docs/pkg.md](docs/pkg.md), [docs/setup.md](docs/setup.md) and
-[docs/testing.md](docs/testing.md).
+[docs/tls.md](docs/tls.md), [docs/pkg.md](docs/pkg.md), [docs/setup.md](docs/setup.md),
+[docs/ime.md](docs/ime.md), [docs/devices.md](docs/devices.md),
+[docs/sandbox.md](docs/sandbox.md) and [docs/testing.md](docs/testing.md).
 
 ## Building
 

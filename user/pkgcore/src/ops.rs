@@ -236,6 +236,19 @@ pub fn update() -> Result<usize, Failure> {
     Ok(packages.len())
 }
 
+/// The System image the kept index offers (P14 K6; `pkg update` first).
+pub fn system_release() -> Result<Option<crate::SystemRelease>, Failure> {
+    let data = fs::read_path(&format!("{STATE}/index.json"))
+        .map_err(|_| Failure::Message(String::from("no index: run `pkg update`")))?;
+    Ok(crate::parse_system(&data))
+}
+
+/// `GET url` from the package server (its trusted roots), status 200
+/// only (P14 K6: `stela-update`).
+pub fn fetch(url: &str) -> Result<Vec<u8>, Failure> {
+    download(url, &roots()?)
+}
+
 /// The packages of the kept index (`pkg update` first).
 pub fn index() -> Result<Vec<Package>, Failure> {
     let data = fs::read_path(&format!("{STATE}/index.json"))

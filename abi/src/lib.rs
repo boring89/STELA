@@ -304,7 +304,19 @@ pub enum Syscall {
     /// `SystemStatus(buf, len) -> length` (P14 K5): one line,
     /// `mounted=a slot=a 0 a=0.1.0 b=-`.
     SystemStatus = 78,
+    /// `PartitionWrite(offset, buf, len, power)` (P14 K6): writes whole
+    /// 4 KiB blocks (at most [`PARTITION_WRITE_MAX`] bytes) at byte
+    /// `offset` of the System slot that is **not** mounted. Needs `POWER`.
+    PartitionWrite = 79,
+    /// `SystemUse(which, power) -> version length` (P14 K6): the next
+    /// start uses the slot that is not mounted (`which` 0, after the
+    /// kernel checks its image in full) or the mounted one (1). Needs
+    /// `POWER`.
+    SystemUse = 80,
 }
+
+/// Most bytes one `PartitionWrite` takes.
+pub const PARTITION_WRITE_MAX: u64 = 1 << 20;
 
 /// `DeviceConfig` flags (P13 K11).
 pub mod device {
@@ -317,7 +329,7 @@ pub const RANDOM_MAX: u64 = 64 * 1024;
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 78] = [
+    pub const ALL: [Syscall; 80] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -396,6 +408,8 @@ impl Syscall {
         Syscall::AudioMaster,
         Syscall::BootOk,
         Syscall::SystemStatus,
+        Syscall::PartitionWrite,
+        Syscall::SystemUse,
     ];
 
     /// The call with number `raw`, if any.
@@ -2256,5 +2270,7 @@ mod tests {
         assert_eq!(Syscall::from_raw(76), Some(Syscall::AudioMaster));
         assert_eq!(Syscall::from_raw(77), Some(Syscall::BootOk));
         assert_eq!(Syscall::from_raw(78), Some(Syscall::SystemStatus));
+        assert_eq!(Syscall::from_raw(79), Some(Syscall::PartitionWrite));
+        assert_eq!(Syscall::from_raw(80), Some(Syscall::SystemUse));
     }
 }

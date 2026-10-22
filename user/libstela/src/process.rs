@@ -6,7 +6,7 @@
 //! program got.
 
 use crate::ipc::{FOREVER, Mapping, handle_close, memory_create, port_receive};
-use crate::sys::{syscall0, syscall1, syscall2, syscall3, syscall6};
+use crate::sys::{syscall0, syscall1, syscall2, syscall3, syscall4, syscall6};
 use abi::capability;
 use abi::sysinfo::{self, MemInfo, PROCESS_INFO_SIZE, ProcessInfo};
 use abi::{Error, Handle, MESSAGE_DATA, Message, Rights, Syscall, bootstrap, tag};
@@ -494,6 +494,28 @@ pub fn args() -> Vec<String> {
 pub fn boot_ok() -> Result<(), Error> {
     let power = capability(abi::capability::POWER).ok_or(Error::AccessDenied)?;
     syscall1(Syscall::BootOk, power.raw()).map(|_| ())
+}
+
+/// `PartitionWrite` (P14 K6, `docs/system.md` §6): `data` (whole 4 KiB
+/// blocks, at most 1 MiB) at byte `offset` of the System slot that is not
+/// mounted; needs `POWER`.
+pub fn partition_write(offset: u64, data: &[u8]) -> Result<(), Error> {
+    let power = capability(abi::capability::POWER).ok_or(Error::AccessDenied)?;
+    syscall4(
+        Syscall::PartitionWrite,
+        offset,
+        data.as_ptr() as u64,
+        data.len() as u64,
+        power.raw(),
+    )
+    .map(|_| ())
+}
+
+/// `SystemUse` (P14 K6): the next start uses the slot that is not mounted
+/// (`other`, after the kernel checks it in full) or the mounted one.
+pub fn system_use(other: bool) -> Result<(), Error> {
+    let power = capability(abi::capability::POWER).ok_or(Error::AccessDenied)?;
+    syscall2(Syscall::SystemUse, u64::from(!other), power.raw()).map(|_| ())
 }
 
 /// `SystemStatus` (P14 K5): `mounted=a slot=a 0 a=0.1.0 b=-`.

@@ -17,7 +17,7 @@ USER_DIR    := $(BUILD)/user
 BIN_TOOLS   := echo cat grep wc head tail sort uniq find du df date sleep touch stat hexdump tar true false
 # Programs of their own packages that also go to Initrd:/bin/ (P12: pkg,
 # docs/pkg.md).
-BIN_PROGRAMS := pkg
+BIN_PROGRAMS := pkg stela-update
 INITRD      := $(BUILD)/initrd.tar
 # Programs packed as bundles (docs/mouseion.md): program:Name puts the
 # program at Name.app/exec with Name.app/info.txt; the rest sit in the
@@ -38,7 +38,7 @@ SYSTEM_BUNDLES := $(filter-out $(INITRD_BUNDLES),$(BUNDLES))
 SYSTEM_SINGLES := ifconfig ping fetch tone bench
 SYSTEM_IMG  := $(BUILD)/system.img
 SYSTEM_ROOT := $(BUILD)/system-root
-SYSTEM_IMG_MIB ?= 24
+SYSTEM_IMG_MIB ?= 16
 VERSION     ?= $(shell cat VERSION 2>/dev/null || grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 # Every QEMU run of the normal kernel gets the System image as its own
 # disk (snapshot: never written, shared by tests run side by side).
@@ -115,7 +115,7 @@ USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: test-qemu-all test-qemu-shard
 .PHONY: all boot kernel user initrd system-image musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-update test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp system-image
 
@@ -311,7 +311,7 @@ run: esp $(BUILD)/OVMF_VARS.fd
 # The tests that boot STELA in QEMU. P13 K23 (docs/testing.md §5): they
 # share no port, disk image, ESP copy or file the others write, so
 # `make test -jN` runs them side by side.
-QEMU_TESTS := test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-net-user test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-browser
+QEMU_TESTS := test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-net-user test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-browser test-update
 
 # The host's tests first, then the QEMU ones (in this order, or side by
 # side with -jN).
@@ -442,6 +442,94 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--expect "mounted Boot (FAT, ro" --expect "STELA shell" \
 		--expect "from-the-disk-image" --expect "Welcome.txt" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio $(DISK_IMAGE_FLAGS)
+
+# The System update (P14 K7, docs/system.md §7): a disk image with
+# System A (this build's image) and an empty System B; Data holds the
+# next version (VERSION + 1 in its last number), a copy whose signature is
+# broken and a copy of this build's image. Mouseion's Special > Software
+# Update... (keyboard menu) runs stela-update with POWER:
+#  1. next → slot B; restart.  2. B starts (checked in full) and is
+#  confirmed; the bad image is refused; rollback (the next start uses A);
+#  writing the next version into A again is cut short by killing QEMU at
+#  25%.  3. still B (the cut write pointed the slot file back at B); a
+#  rollback to the half-written A is refused; this build's image into A;
+#  restart.  4. A starts (checked in full).
+TEST_UPDATE_IMAGE = $(IMAGES)/stela-update.img
+UPDATE_NEXT := $(BUILD)/system-next.img
+UPDATE_BAD  := $(BUILD)/system-bad.img
+NEXT_VERSION = $(shell echo "$(VERSION)" | awk -F. -v OFS=. '{$$NF = $$NF + 1; print}')
+UPDATE_MENU := alt-m right right right right down down down down ret
+UPDATE_QEMU = -- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+	-drive if=none,id=disk0,format=raw,file=$(TEST_UPDATE_IMAGE) -device ide-hd,drive=disk0,bus=ide.0,bootindex=0
+test-update: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
+	rm -rf $(BUILD)/system-next-root
+	cp -r $(SYSTEM_ROOT) $(BUILD)/system-next-root
+	printf '%s\n' "$(NEXT_VERSION)" > $(BUILD)/system-next-root/VERSION
+	python3 tools/make_system_image.py $(BUILD)/system-next-root $(UPDATE_NEXT) $(SYSTEM_IMG_MIB) $(EHFS_TOOLS)
+	python3 tools/sysimage.py sign $(UPDATE_NEXT) $(BUILD)/sys-signing.key "$(NEXT_VERSION)"
+	cp $(UPDATE_NEXT) $(UPDATE_BAD)
+	python3 tools/sysimage.py badsig $(UPDATE_BAD)
+	rm -rf $(DISK_ESP)-update
+	cp -r $(ESP) $(DISK_ESP)-update
+	cp tools/boot.cfg $(DISK_ESP)-update/STELA/boot.cfg
+	mkdir -p $(IMAGES)
+	python3 tools/make_disk_image.py --setup-done --system $(SYSTEM_IMG) --system-mib $(SYSTEM_MIB) \
+		$(TEST_UPDATE_IMAGE) $(DISK_ESP)-update $(EHFS_TOOLS) 96
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(TEST_UPDATE_IMAGE) in $(UPDATE_NEXT) /system-next.img
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(TEST_UPDATE_IMAGE) in $(UPDATE_BAD) /system-bad.img
+	$(EHFS_TOOLS)/ehfs-cp --offset $(DATA_SECTOR) $(TEST_UPDATE_IMAGE) in $(SYSTEM_IMG) /system-now.img
+	python3 tools/qemu_test.py --timeout 240 --log $(BUILD)/test-update-1.log \
+		--click "mouseion: started Terminal" 2448 240 1 \
+		--send-keys "mouseion: selected Data" "$(UPDATE_MENU)" \
+		--type "mouseion: asking for the update" "Data:/system-next.img\n" \
+		--send-keys "Restart now?" "ret" \
+		--expect "system: slot a (version $(VERSION))" --expect "system: slot a confirmed" \
+		--expect "mouseion: started stela-update apply --file Data:/system-next.img" \
+		--expect "stela-update: Data:/system-next.img: version $(NEXT_VERSION), signature good" \
+		--expect "stela-update: wrote 100%" \
+		--expect "system: the next start uses slot b (version $(NEXT_VERSION))" \
+		--expect "stela-update: restarting" \
+		$(UPDATE_QEMU)
+	mtype -i $(TEST_UPDATE_IMAGE)@@1M ::/STELA/slot | grep -qx "b 0 new"
+	python3 tools/qemu_test.py --timeout 300 --log $(BUILD)/test-update-2.log \
+		--click "mouseion: started Terminal" 2448 240 1 \
+		--send-keys "mouseion: selected Data" "$(UPDATE_MENU)" \
+		--type "mouseion: asking for the update" "Data:/system-bad.img\n" \
+		--send-keys "Press Enter to close." "ret" \
+		--click "stela-update: closed" 2448 368 1 \
+		--send-keys "mouseion: selected Initrd" "$(UPDATE_MENU)" \
+		--type "mouseion: asking for the update" "rollback\n" \
+		--send-keys "Restart now?" "esc" \
+		--send-keys "Press Enter to close." "ret" \
+		--click "stela-update: closed" 2448 240 1 \
+		--send-keys "mouseion: selected Data" "$(UPDATE_MENU)" \
+		--type "mouseion: asking for the update" "Data:/system-next.img\n" \
+		--expect "system: slot b (version $(NEXT_VERSION), checked in full)" \
+		--expect "system: slot b confirmed" \
+		--expect "stela-update: Data:/system-bad.img: the signature is not STELA's" \
+		--expect "system: the next start uses slot a (version $(VERSION))" \
+		--expect "stela-update: wrote 25%" \
+		$(UPDATE_QEMU)
+	mtype -i $(TEST_UPDATE_IMAGE)@@1M ::/STELA/slot | grep -qx "b 0"
+	python3 tools/qemu_test.py --timeout 300 --log $(BUILD)/test-update-3.log \
+		--click "mouseion: started Terminal" 2448 240 1 \
+		--send-keys "mouseion: selected Data" "$(UPDATE_MENU)" \
+		--type "mouseion: asking for the update" "rollback\n" \
+		--send-keys "Press Enter to close." "ret" \
+		--click "stela-update: closed" 2448 368 1 \
+		--send-keys "mouseion: selected Initrd" "$(UPDATE_MENU)" \
+		--type "mouseion: asking for the update" "Data:/system-now.img\n" \
+		--send-keys "Restart now?" "ret" \
+		--expect "system: slot b (version $(NEXT_VERSION))" \
+		--expect "stela-update: the other slot has no good System image" \
+		--expect "system: the next start uses slot a (version $(VERSION))" \
+		--expect "stela-update: restarting" \
+		$(UPDATE_QEMU)
+	python3 tools/qemu_test.py --timeout 240 --log $(BUILD)/test-update-4.log \
+		--expect "system: slot a (version $(VERSION), checked in full)" \
+		--expect "System (eHFS, ro" --expect "system: slot a confirmed" \
+		$(UPDATE_QEMU)
+	mtype -i $(TEST_UPDATE_IMAGE)@@1M ::/STELA/slot | grep -qx "a 0"
 
 # The Classic environment (docs/classic.md), local only (not in make test
 # or CI: it needs the user's own Mac IIci ROM and System disk, which are

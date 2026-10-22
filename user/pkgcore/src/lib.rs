@@ -138,6 +138,32 @@ pub fn parse_index(data: &[u8]) -> Result<Vec<Package>, PkgError> {
     Ok(out)
 }
 
+/// The System image an index offers (P14 K6, `docs/system.md` §6):
+/// `"system": {"version", "url", "sha256", "size"}` next to the packages.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SystemRelease {
+    /// Its version.
+    pub version: String,
+    /// Where to get it.
+    pub url: String,
+    /// SHA-256 of the whole file (hex).
+    pub sha256: String,
+    /// Its size in bytes.
+    pub size: u64,
+}
+
+/// The System image of an `index.json`, if it offers one.
+pub fn parse_system(data: &[u8]) -> Option<SystemRelease> {
+    let v = json::parse(core::str::from_utf8(data).ok()?).ok()?;
+    let s = v.get("system")?;
+    Some(SystemRelease {
+        version: text(s, "version").ok()?,
+        url: text(s, "url").ok()?,
+        sha256: text(s, "sha256").ok()?,
+        size: s.get("size").and_then(Value::as_i64).unwrap_or(0) as u64,
+    })
+}
+
 /// Bytes from hex text (whitespace around ignored).
 pub fn from_hex(text: &str) -> Option<Vec<u8>> {
     let t = text.trim();
@@ -489,5 +515,19 @@ mod tests {
         assert_eq!(parse_installed(text.as_bytes()), list);
         assert!(parse_installed(b"junk").is_empty());
         assert!(valid_name("rust-hello") && !valid_name("a/b") && !valid_name(".."));
+    }
+
+    #[test]
+    fn system_release() {
+        let index = br#"{"format": 1, "packages": [],
+            "system": {"version": "0.2.1", "url": "https://x/system.img",
+                       "sha256": "ab", "size": 16777216}}"#;
+        let r = parse_system(index).unwrap();
+        assert_eq!(r.version, "0.2.1");
+        assert_eq!(r.url, "https://x/system.img");
+        assert_eq!(r.size, 16 << 20);
+        assert_eq!(parse_index(index).unwrap().len(), 0);
+        assert_eq!(parse_system(br#"{"format": 1, "packages": []}"#), None);
+        assert_eq!(parse_system(br#"{"system": {"version": "1"}}"#), None);
     }
 }

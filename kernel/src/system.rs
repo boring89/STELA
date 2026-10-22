@@ -259,6 +259,75 @@ pub fn boot_ok() -> Result<(), Error> {
     Ok(())
 }
 
+/// `PartitionWrite` (P14 K6): `data` at byte `offset` of the slot that is
+/// **not** mounted (whole 4 KiB blocks). A write at offset 0 first points
+/// the slot file back at the mounted slot when it pointed at the one
+/// being written, so that a write cut short is never started.
+pub fn write_other(offset: u64, data: &[u8]) -> Result<(), Error> {
+    let block = BLOCK_SIZE as u64;
+    if !offset.is_multiple_of(block) || !data.len().is_multiple_of(BLOCK_SIZE) || data.is_empty() {
+        return Err(Error::InvalidArgument);
+    }
+    let (place, mounted, file) = {
+        let s = STATE.lock();
+        let mounted = s.mounted.ok_or(Error::NotSupported)?;
+        let place = s.slots[mounted.other().index()]
+            .clone()
+            .ok_or(Error::NotFound)?;
+        (place, mounted, s.file)
+    };
+    if offset == 0
+        && let Some(f) = file
+        && f.slot != mounted
+    {
+        write_file(SlotFile {
+            slot: mounted,
+            tries: 0,
+            fresh: false,
+        })?;
+    }
+    let part = place.partition().ok_or(Error::IoError)?;
+    let first = offset / block;
+    if first + (data.len() / BLOCK_SIZE) as u64 > part.block_count() {
+        return Err(Error::InvalidArgument);
+    }
+    STATE.lock().versions[mounted.other().index()] = None;
+    part.write(first, data).map_err(|_| Error::IoError)
+}
+
+/// `SystemUse(which)` (P14 K6): start from the slot that is not mounted
+/// (`which` 0; its image is checked in full first: `InvalidArgument` when
+/// it is not a good System image) or from the mounted one (1: undoes a
+/// pending switch). Writes the slot file; returns the slot's version.
+pub fn use_slot(which: u64) -> Result<String, Error> {
+    let (mounted, place) = {
+        let s = STATE.lock();
+        let mounted = s.mounted.ok_or(Error::NotSupported)?;
+        let target = if which == 0 { mounted.other() } else { mounted };
+        (
+            mounted,
+            s.slots[target.index()].clone().ok_or(Error::NotFound)?,
+        )
+    };
+    let target = if which == 0 { mounted.other() } else { mounted };
+    let part = place.partition().ok_or(Error::IoError)?;
+    let version = check(&part, which == 0).map_err(|why| {
+        frame::kprintln!("system: slot {}: not used ({why:?})", target.letter());
+        Error::InvalidArgument
+    })?;
+    write_file(SlotFile {
+        slot: target,
+        tries: 0,
+        fresh: target != mounted,
+    })?;
+    STATE.lock().versions[target.index()] = Some(version.clone());
+    frame::kprintln!(
+        "system: the next start uses slot {} (version {version})",
+        target.letter()
+    );
+    Ok(version)
+}
+
 /// `SystemStatus` text: `mounted=a slot=a 0 a=0.1.0 b=0.1.1` (`-` for
 /// none).
 pub fn status() -> String {

@@ -408,3 +408,33 @@ pub fn system_status(process: &Process, buf: u64, len: u64) -> Result<u64, Error
         .map_err(|_| Error::BadAddress)?;
     Ok(text.len() as u64)
 }
+
+/// `PartitionWrite(offset, buf, len, power)` (P14 K6): writes the System
+/// slot that is not mounted (`crate::system::write_other`). Needs
+/// `POWER`.
+pub fn partition_write(
+    process: &Process,
+    offset: u64,
+    buf: u64,
+    len: u64,
+    power: u64,
+) -> Result<u64, Error> {
+    crate::object::check_capability(process, power, abi::capability::POWER)?;
+    if len > abi::PARTITION_WRITE_MAX {
+        return Err(Error::InvalidArgument);
+    }
+    let mut data = alloc::vec![0u8; len as usize];
+    process
+        .space()
+        .read(buf, &mut data)
+        .map_err(|_| Error::BadAddress)?;
+    crate::system::write_other(offset, &data)?;
+    Ok(0)
+}
+
+/// `SystemUse(which, power)` (P14 K6): which slot the next start uses
+/// (`crate::system::use_slot`). Needs `POWER`.
+pub fn system_use(process: &Process, which: u64, power: u64) -> Result<u64, Error> {
+    crate::object::check_capability(process, power, abi::capability::POWER)?;
+    crate::system::use_slot(which).map(|v| v.len() as u64)
+}

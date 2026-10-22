@@ -9,6 +9,8 @@ sysimage/src/lib.rs).
     sysimage.py show IMAGE                   prints the trailer
     sysimage.py corrupt IMAGE                flips a byte before the trailer
                                              (make test-update)
+    sysimage.py badsig IMAGE                 flips a byte of the signed part of
+                                             the trailer (make test-update)
 
 KEYFILE is a seed in hex as tools/pkgsign.py makes it (`keygen` makes the
 TEST key, whose public half tools/pkg.pub the kernel trusts; replace it
@@ -83,6 +85,14 @@ def corrupt(image):
         f.write(bytes([b[0] ^ 0xFF]))
 
 
+def badsig(image):
+    with open(image, "r+b") as f:
+        f.seek(-BLOCK + 57, os.SEEK_END)
+        b = f.read(1)
+        f.seek(-BLOCK + 57, os.SEEK_END)
+        f.write(bytes([b[0] ^ 0x01]))
+
+
 def main():
     a = sys.argv[1:]
     if len(a) == 4 and a[0] == "sign":
@@ -91,6 +101,8 @@ def main():
         show(a[1])
     elif len(a) == 2 and a[0] == "corrupt":
         corrupt(checked(a[1]))
+    elif len(a) == 2 and a[0] == "badsig":
+        badsig(checked(a[1]))
     else:
         sys.exit(__doc__)
 

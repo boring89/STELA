@@ -1,0 +1,24 @@
+[package]
+name = "stela-update"
+description = "Updates the System volume: writes a signed image into the other slot (P14 K6, docs/system.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "stela-update"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+pkgcore = { path = "../pkgcore" }
+sysimage = { path = "../../sysimage" }
+toolbox = { path = "../toolbox" }
+
+[lints]
+workspace = true

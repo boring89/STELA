@@ -102,13 +102,39 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Initrd (initrd, ro
 - **沒有槽時**：整顆磁碟（或任何分割區）上卷宗名是 System 的 eHFS 照 K4 的方式掛，但也要簽章對（`system: ahci0 (version 0.1.0)`）。
 - **`SystemStatus`**（syscall 78，誰都可以）：`mounted=a slot=a 0 a=0.1.0 b=-`（掛上的槽、slot 檔、兩槽裡簽章對的映像的版本；`-` = 沒有）。
 
+## 6. 更新：`stela-update`（P14 K6）
+
+```
+ stela-update status                  running slot a; slot a: 0.1.0, slot b: -
+ stela-update check [--file IMAGE]    映像（或套件伺服器 index 的 system 項）的版本，驗過簽章與 SHA-256
+ stela-update apply [--file IMAGE]    寫進沒有掛上的那一槽，下次開機用它
+ stela-update rollback                下次開機用另一槽（有尚未生效的切換就取消它）
+```
+
+```
+ Mouseion：Special > Software Update…（ask_text：檔案；空白 = 套件伺服器；rollback）
+   └► Initrd:/bin/stela-update apply --file F --window（帶 POWER）
+        讀整個映像 → 尾端的簽章（Initrd:/certs/pkg.pub）+ SHA-256，不對就一個 byte 都不寫
+        PartitionWrite(offset, 1 MiB) × N（syscall 79，要 POWER；只寫沒掛上的槽）
+            offset 0 那次：slot 檔若指著正要寫的槽，先指回掛著的槽（寫到一半斷電也不會開到半個映像）
+        SystemUse(0)（syscall 80）：kernel 把那一槽整個再驗一次（簽章 + SHA-256）→ slot 檔 "b 0 new"
+        視窗：「Restart now? Enter: restart, Esc: later」→ reboot
+```
+
+- **只能從 Mouseion 用**：`apply`、`rollback` 要 `POWER`，shell 沒有（`status`、`check` 誰都可以）。計畫寫「`stela-update`（要 POWER）」與「Mouseion 的 Software Update… 呼叫它」——指令行版照樣在 `Initrd:/bin/`，但從 shell 執行會說 `no POWER capability`。
+- **從套件伺服器**：`index.json` 可以多一項 `"system": {"version", "url", "sha256", "size"}`（`pkgcore::parse_system`，host 測試）；`stela-update apply`（不給 `--file`）先做 `pkg update`（驗 index 的簽章）、下載 `url`、比對 index 的 SHA-256、再照上面驗映像。整個映像放在記憶體裡（16 MiB）。**沒有自動測試**（`make test-update` 只用檔案）。
+- **rollback**：slot 檔指著掛著的槽 → 換另一槽（kernel 整個驗過才換，另一槽壞了就拒絕：`the other slot has no good System image`）；slot 檔已經指著另一槽（剛 apply 還沒重開）→ 指回掛著的槽（取消）。
+- 計畫外的決定：多了 `SystemUse`（syscall 80）——寫完後由 kernel 再驗一次並改 slot 檔，程式不能直接寫 slot 檔（ESP 對程式唯讀）；`PartitionWrite` 的參數是 (offset, buf, len, power)，沒有名字（只能寫「另一槽」，不能指定分割區）。
+
 ## 7. 測試（K4 的部分）
 
 | 測試 | 內容 |
 |---|---|
 | host `ehfs` | `ehfs::label`、`ehfs::block_count` 不掛載讀出卷宗名與區塊數、不是 eHFS → `None` |
 | host `sysimage`（K5） | 尾端的編碼往返、測試鑰匙的簽章（改一個簽過的 byte 就不對、改沒簽的部分沒關係、別的鑰匙不對）、壞的尾端、分段算 SHA-256；slot 檔的文字往返與壞的；`plan`：沒有檔 → A、`new` 或嘗試 > 0 → 整個算、`verify`、兩次失敗 → 另一槽、boot.cfg 指定；更新後的開機、兩次失敗、退回 A、`BootOk`、指定時不寫 |
-| host `block`（K5） | STELA System／Data 的 GUID 字串 |
+| host `pkgcore`（K6） | index 的 `system` 項 |
+| `make test-update`（K6–K7） | `make_disk_image.py`：System A = 這次的映像、B 空的；Data 放「下一版」（`VERSION` 最後一個數字 +1）、簽章壞掉的一份、這次的映像一份。四次開機，都經 Mouseion 的鍵盤選單（Alt-M → Special → Software Update…）：① apply 下一版 → `wrote 100%`、`the next start uses slot b`、Enter 重開；host 讀 slot 檔 = `b 0 new`。② `slot b (…, checked in full)`、`confirmed`；壞簽章 → `the signature is not STELA's`；rollback → `the next start uses slot a`（Esc：稍後）；再 apply 下一版到 A，`wrote 25%` 時殺掉 QEMU；host：slot 檔 = `b 0`。③ 仍是 `slot b`；rollback → 拒絕（A 只寫了一部分）；apply 這次的映像 → A、重開。④ `slot a (…, checked in full)`、`confirmed`；slot 檔 = `a 0` |
+| `make test-disk-image`（K5） | STELA System／Data 的 GUID 字串 |
 | `make test-disk-image`（K5） | 映像有 ESP + System A（`build/system.img`）+ 空的 System B + Data：`system: slot a (version …)`、`System (eHFS, ro, …)`、桌面起來後 `system: slot a confirmed`；關機後 host 讀 ESP 的 `STELA/slot` 是 `a 0`（mtools） |
 | 每個一般 kernel 的 QEMU 測試 | `QEMU_FLAGS` 多一顆 `build/system.img`（`SYSTEM_DRIVE`：`ide.2`、`snapshot=on`，所以並排的測試共用、從不寫入）；selftest kernel 的測試（`QEMU_TEST_FLAGS`）不接 |
 | `make test-mouseion` | 5 個卷宗；Initrd 視窗裡刪 `Setup.app` 被拒、雙擊 `Terminal.app`；第四次開機雙擊桌面的 System → `Programs` → `Echo.app has its own icon` |

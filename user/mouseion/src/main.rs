@@ -1150,6 +1150,53 @@ impl Mouseion {
         }
     }
 
+    /// Special > Software Update... (P14 K6, `docs/system.md` §6): asks
+    /// where the new System image is (a file; empty: the package server;
+    /// `rollback`: the other slot) and starts `Initrd:/bin/stela-update`
+    /// with `POWER`, in a window of its own.
+    fn software_update(&mut self) {
+        println!("mouseion: asking for the update");
+        let Some(text) = dialog::ask_text(
+            &mut self.conn,
+            "Software Update",
+            "System image (empty: the package server; rollback: the other slot):",
+            "",
+        ) else {
+            return;
+        };
+        let text = text.trim();
+        let mut args = alloc::vec!["stela-update"];
+        match text {
+            "rollback" => args.push("rollback"),
+            "" => args.push("apply"),
+            file => args.extend_from_slice(&["apply", "--file", file]),
+        }
+        args.push("--window");
+        let Ok(initrd) = fs::volume_open("Initrd").map(Owned) else {
+            return;
+        };
+        let Ok(program) = fs::open(initrd.0, "bin/stela-update", open::READ).map(Owned) else {
+            println!("mouseion: no Initrd:/bin/stela-update");
+            return;
+        };
+        let handles = [
+            pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
+            pass(bootstrap::BOOTSTRAP, Rights::SEND | Rights::DUPLICATE),
+            process::pass_dir(bootstrap::CWD),
+        ];
+        let mut caps = process::inherited();
+        if let Some(power) = process::pass_capability(libstela::abi::capability::POWER) {
+            caps.push((libstela::abi::capability::POWER, power));
+        }
+        match process::spawn_with(program.0, &args, &handles, &caps) {
+            Ok(p) => {
+                println!("mouseion: started stela-update {}", args[1..].join(" "));
+                let _ = handle_close(p);
+            }
+            Err(e) => println!("mouseion: cannot run stela-update: {}", describe(e)),
+        }
+    }
+
     /// Starts a terminal (the startup item, Special > Terminal).
     fn terminal(&self) {
         let Ok(initrd) = fs::volume_open("Initrd") else {
@@ -2160,6 +2207,7 @@ impl Mouseion {
             }
             Some("Monitor") => self.monitor(),
             Some("Empty Trash...") => self.empty_trash(),
+            Some("Software Update...") => self.software_update(),
             Some("Restart") => {
                 let all: Vec<usize> = (0..self.panes.len()).collect();
                 for p in all {
@@ -2393,6 +2441,7 @@ fn main() -> i64 {
             "Monitor",
             "Sleep Display",
             "Empty Trash...",
+            "Software Update...",
             "-",
             "Restart",
             "Shut Down",

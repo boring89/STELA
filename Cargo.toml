@@ -47,6 +47,7 @@ members = [
     "user/powerbox",
     "user/sandboxtest",
     "user/setup",
+    "user/stela-update",
     "classic",
     "tools/ehfs",
     "tools/fuzz",

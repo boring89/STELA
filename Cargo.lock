@@ -1098,6 +1098,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "stela-update"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "libstela",
+ "pkgcore",
+ "sysimage",
+ "toolbox",
+]
+
+[[package]]
 name = "stress"
 version = "0.1.0"
 dependencies = [

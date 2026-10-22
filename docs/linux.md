@@ -510,7 +510,7 @@ Rust std 程式的建置（`make linux-rust`，`make linux-tests` 會做）：`r
 
 - P13 起有動態連結與 PIE（§16）；沒有 32 位元（`int 0x80`）、ASLR、`AT_EXECFN`、`LD_LIBRARY_PATH` 以外的搜尋設定（`/etc/ld-musl-x86_64.path` 沒有）。
 - 行程模型（P12）：P13 起 fork 是 copy-on-write（§16.8）；vfork 不讓父行程等；一個行程的執行緒都在同一顆 CPU；沒有 `mremap`、`inotify`、`signalfd`；P13 的 `MAP_SHARED`、`epoll`、`eventfd`、`timerfd` 的限制見 §16.9；execve 不能換成 STELA 程式、`#!` 只有一層；行程名稱（`ps`）在 execve 後不變；沒有停止／繼續（SIGSTOP、SIGTSTP、SIGCONT 只是忽略，沒有 job control 的停止）；`sigaltstack` 只記錄；`ITIMER_VIRTUAL`／`PROF`、POSIX 計時器（`timer_create`）沒有；沒有 CPU 時間的統計（`times`、`getrusage` 是 0）；父行程先結束時子行程的狀態沒人收。
-- 權限：mode、owner、時間都不能改（`chmod`、`chown`、`utimensat` 成功但什麼都不做）；記錄鎖一律成功。
+- 權限：mode、owner、時間都不能改（`chmod`、`chown`、`utimensat` 成功但什麼都不做）；一般檔案一律報 0755；記錄鎖與 `flock` 一律成功；沒有 netlink（`getifaddrs` 失敗）。
 - pty：master 關掉時程式端不會收到 EOF／SIGHUP。
 - Linux 程式在 `[3]`、`[4]` 的卷宗裡不受 handle 權限限制（整個卷宗，不只那個資料夾以下）。
 - 時間只有 tick 解析度（沒有 invariant TSC 時 1 ms）。
@@ -606,3 +606,23 @@ musl 的動態連結器**就是** libc.so 本身：只連 libc 的程式（Alpin
 - 檔案的 `MAP_SHARED`（可讀或可寫）：全域登記表（`memory::SHARES`，弱參考）以（卷宗、檔案、偏移、頁數）找已有的 `FileShare`，沒有就配一份 `SharedMemory` 並從檔案讀入；用 `map_shared` 映射（頁框不屬於位址空間），所以兩個行程（或 fork 後的父子）映射同一段檔案時**共用頁框**，彼此看得到寫入。
 - 寫回：`msync`（26）、`munmap`、`execve`、`exit`／`exit_group`（最後一個執行緒）時把頁寫回檔案（不超過檔案目前的長度）。**不在解構時寫**：那可能在不能等 I/O 的地方；被訊號或例外結束的行程最後一次的修改會丟失。
 - 限制：不能 `MAP_FIXED`、不能可執行；偏移或長度不同的映射不共用（各自一份）；`write()` 寫進檔案的資料不會出現在已有的映射裡（沒有和頁快取的一致性）；部分 `munmap` 共享映射不支援（只認整段的起點）。
+
+### 16.10 零碎的呼叫（P13 K9）
+
+| 呼叫 | 行為 |
+|---|---|
+| `uname` | release 是 `0.1.0-stela`（`x.y.z-stela`：程式把它當版本數字解析） |
+| `prctl(PR_SET_NAME/PR_GET_NAME)` | 名字記下來、讀回（`ps` 仍顯示程式名） |
+| `getpriority`／`setpriority`（140／141） | nice 值記下來（排程器只有一個等級），`getpriority` 照 Linux 傳回 20 − nice |
+| `sched_setaffinity` | 遮罩裡沒有任何上線的 CPU → `EINVAL`；其他都接受（一個行程的執行緒本來就在同一顆 CPU） |
+| `clock_getres`（229） | 有 invariant TSC 時 1 ns，否則 1 ms（tick） |
+| `statfs`／`fstatfs`（137／138） | 卷宗的大小與剩餘（`fs.space()`），f_type `0x53544C41`（"STLA"）、區塊 4096、名字最長 255；合成的地方（/、/dev、/proc）是空的 |
+| `statx`（332） | 以前是 `ENOSYS`（Rust std 會退回 `fstatat`）；現在把 `struct stat` 的欄位排成 `struct statx`，`stx_mask` = `STATX_BASIC_STATS` |
+| `sendfile`（40）、`copy_file_range`（326） | 經 kernel 複製；有輸入偏移指標時從那裡讀並更新指標（不動描述元的偏移）；`copy_file_range` 的輸出偏移不支援（`EINVAL`） |
+| `memfd_create`（319） | `Tmp:/.memfd-PID-N` 的檔案（記憶體），開成讀寫；**不會被刪掉**（直到重開機清空 Tmp） |
+| `flock`（73） | 一律成功（和 `fcntl` 的記錄鎖一樣，不擋人） |
+| `setsockopt`／`getsockopt` | 整數選項記下來、讀回（`SO_REUSEADDR`、`SO_KEEPALIVE`、`TCP_NODELAY`…），不改變行為 |
+| `ioctl` 的 `SIOCGIFCONF`、`SIOCGIFADDR`、`SIOCGIFNETMASK`、`SIOCGIFFLAGS`、`SIOCGIFHWADDR`、`SIOCGIFINDEX`、`SIOCGIFMTU` | 對任何 socket：`lo`（127.0.0.1）與有網卡時的 `eth0`（DHCP 拿到的位址、MAC）。musl 的 `getifaddrs`、`if_nameindex` 用的是 netlink（`AF_NETLINK`，沒有），只有直接用這些 ioctl 的程式受惠 |
+| `stat` 的 mode | 一般檔案是 `0755`（以前 `0644`）：STELA 沒有執行權限，git 這類用 mode 在 PATH 找程式的才找得到（P13 K8） |
+
+測試：`linux/tests/sys.c`（`make test-linux`）。

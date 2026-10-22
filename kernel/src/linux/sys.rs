@@ -199,7 +199,8 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
             Ok(0)
         }
         nr::SCHED_GETAFFINITY => sched_getaffinity(p, a1, a2),
-        nr::SCHED_SETAFFINITY | nr::SCHED_SETSCHEDULER => Ok(0),
+        nr::SCHED_SETAFFINITY => sched_setaffinity(p, a1, a2),
+        nr::SCHED_SETSCHEDULER => Ok(0),
         nr::SCHED_GETSCHEDULER => Ok(0),
         nr::SCHED_GETPARAM => write_user(p, a1, &[0u8; 4]).map(|_| 0),
         nr::GETCPU => getcpu(p, a0, a1),
@@ -225,12 +226,31 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::SHUTDOWN => socket::shutdown(p, a0, a1),
         nr::GETSOCKNAME => socket::name(p, a0, a1, a2, false),
         nr::GETPEERNAME => socket::name(p, a0, a1, a2, true),
-        nr::SETSOCKOPT => socket::setsockopt(p, a0),
-        nr::GETSOCKOPT => socket::getsockopt(p, a0, a3, a4),
+        nr::SETSOCKOPT => socket::setsockopt(p, a0, a1, a2, a3, a4),
+        nr::GETSOCKOPT => socket::getsockopt(p, a0, a1, a2, a3, a4),
+        // P13 K9.
+        nr::STATX => files::statx(p, a0, a1, a2, a4),
+        nr::STATFS => files::statfs(p, a0, a1),
+        nr::FSTATFS => files::fstatfs(p, a0, a1),
+        nr::SENDFILE => files::copy_between(p, a0, a1, a2, a3),
+        nr::COPY_FILE_RANGE => {
+            if a3 != 0 {
+                // An output offset: not supported (the descriptor's is used).
+                Err(EINVAL)
+            } else {
+                files::copy_between(p, a2, a0, a1, a4)
+            }
+        }
+        nr::MEMFD_CREATE => files::memfd_create(p, a0, a1),
+        // Locks are recorded nowhere: every flock succeeds (docs/linux.md §15).
+        nr::FLOCK => file_of(p, a0).map(|_| 0),
+        nr::GETPRIORITY => getpriority(p, a0, a1),
+        nr::SETPRIORITY => setpriority(p, a0, a1, a2),
+        nr::CLOCK_GETRES => clock_getres(p, a0, a1),
         nr::PIPE => files::pipe2(p, a0, 0),
         nr::PIPE2 => files::pipe2(p, a0, a1),
         // Probed by musl (pthread_getattr_np) and Rust's std: "no".
-        nr::MREMAP | nr::RSEQ | nr::MEMBARRIER | nr::STATX => Err(ENOSYS),
+        nr::MREMAP | nr::RSEQ | nr::MEMBARRIER => Err(ENOSYS),
         // No links of either kind.
         nr::SYMLINK | nr::SYMLINKAT | nr::LINK | nr::LINKAT => Err(EPERM),
         _ => unknown(p, number),
@@ -266,12 +286,21 @@ fn getcpu(p: &Process, cpu: u64, node: u64) -> LinuxResult {
 fn prctl(p: &Process, option: u64, arg: u64) -> LinuxResult {
     const PR_SET_NAME: u64 = 15;
     const PR_GET_NAME: u64 = 16;
+    let linux = p.linux().ok_or(EINVAL)?;
     match option {
-        PR_SET_NAME => Ok(0),
+        // P13 K9: the thread name is remembered and read back.
+        PR_SET_NAME => {
+            let raw = read_user(p, arg, 16)?;
+            let end = raw.iter().position(|&c| c == 0).unwrap_or(15).min(15);
+            *linux.comm.lock() = Some(raw[..end].to_vec());
+            Ok(0)
+        }
         PR_GET_NAME => {
             let mut name = [0u8; 16];
-            let n = p.name().len().min(15);
-            name[..n].copy_from_slice(&p.name().as_bytes()[..n]);
+            let comm = linux.comm.lock().clone();
+            let src = comm.as_deref().unwrap_or(p.name().as_bytes());
+            let n = src.len().min(15);
+            name[..n].copy_from_slice(&src[..n]);
             write_user(p, arg, &name)?;
             Ok(0)
         }
@@ -509,10 +538,12 @@ fn prlimit(p: &Process, resource: u64, old: u64) -> LinuxResult {
 
 /// `uname(buf)`: six 65-byte fields.
 fn uname(p: &Process, buf: u64) -> LinuxResult {
+    // P13 K9: the release is x.y.z-stela (programs parse it as numbers).
+    let release = alloc::format!("{}-stela", env!("CARGO_PKG_VERSION"));
     let fields: [&str; 6] = [
         "STELA",
         "stela",
-        env!("CARGO_PKG_VERSION"),
+        &release,
         "STELA (Linux personality)",
         "x86_64",
         "(none)",
@@ -522,6 +553,61 @@ fn uname(p: &Process, buf: u64) -> LinuxResult {
         out[i * 65..i * 65 + f.len()].copy_from_slice(f.as_bytes());
     }
     write_user(p, buf, &out)?;
+    Ok(0)
+}
+
+/// `sched_setaffinity(pid, size, mask)` (P13 K9): the threads of a process
+/// stay on one processor anyway; a mask without any processor that is
+/// online is refused, any other accepted.
+fn sched_setaffinity(p: &Process, size: u64, mask: u64) -> LinuxResult {
+    let n = (size as usize).min(128);
+    let bytes = read_user(p, mask, n)?;
+    let online = frame::cpu::online().max(1);
+    let any = (0..online).any(|cpu| {
+        bytes
+            .get(cpu / 8)
+            .is_some_and(|b| b & (1 << (cpu % 8)) != 0)
+    });
+    if any { Ok(0) } else { Err(EINVAL) }
+}
+
+/// `getpriority(which, who)` (P13 K9): the nice value set with
+/// `setpriority` (only remembered; the scheduler has one level), as Linux
+/// returns it: 20 - nice.
+fn getpriority(p: &Process, which: u64, who: u64) -> LinuxResult {
+    const PRIO_PROCESS: u64 = 0;
+    if which != PRIO_PROCESS || (who != 0 && who != p.id()) {
+        return Err(ESRCH);
+    }
+    let nice = p.linux().map_or(0, |l| l.nice.load(Ordering::Relaxed));
+    Ok((20 - nice) as u64)
+}
+
+/// `setpriority(which, who, nice)` (P13 K9): remembered.
+fn setpriority(p: &Process, which: u64, who: u64, nice: u64) -> LinuxResult {
+    const PRIO_PROCESS: u64 = 0;
+    if which != PRIO_PROCESS || (who != 0 && who != p.id()) {
+        return Err(ESRCH);
+    }
+    let nice = (nice as i64).clamp(-20, 19);
+    if let Some(l) = p.linux() {
+        l.nice.store(nice, Ordering::Relaxed);
+    }
+    Ok(0)
+}
+
+/// `clock_getres(clock, res)` (P13 K9): 1 ns with an invariant TSC, the
+/// tick (1 ms) without (docs/time.md §5.3).
+fn clock_getres(p: &Process, clock: u64, res: u64) -> LinuxResult {
+    clock_ns(clock)?;
+    if res != 0 {
+        let ns = if frame::time::tsc_invariant() {
+            1
+        } else {
+            1_000_000
+        };
+        put_timespec(p, res, ns)?;
+    }
     Ok(0)
 }
 
@@ -691,6 +777,12 @@ fn ioctl(p: &Process, fd: u64, request: u64, arg: u64) -> LinuxResult {
             _ => {}
         }
         return Ok(0);
+    }
+    // P13 K9: the network interfaces, asked through any socket.
+    if matches!(&*file, OpenFile::Socket(_))
+        && let Some(r) = socket::interface_ioctl(p, request, arg)
+    {
+        return r;
     }
     let tty = match &*file {
         OpenFile::Tty(tty) => tty,

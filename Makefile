@@ -52,7 +52,7 @@ CHEWING_DIR := $(BUILD)/chewing
 CHEWING_DATA := $(CHEWING_DIR)/data/index_tree.dat
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
-LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc events
+LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc events sys
 LINUX_DIR   := $(USER_DIR)/linux
 # P13 K5: the dynamically linked test program and its libraries.
 LINUX_DYN   := $(LINUX_DIR)/dyn $(LINUX_DIR)/lib/ld-musl-x86_64.so.1 $(LINUX_DIR)/lib/libdyntest.so
@@ -171,10 +171,13 @@ $(MUSL_GCC): $(MUSL_DOWNLOAD)
 	mkdir -p $(MUSL_DIR)/src
 	tar -xzf $(MUSL_DOWNLOAD) -C $(MUSL_DIR)/src --strip-components=1
 	cd $(MUSL_DIR)/src && ./configure --prefix=$(abspath $(MUSL_DIR))/install \
-		--syslibdir=$(abspath $(MUSL_DIR))/install/lib \
 		--target=x86_64 CC=gcc AR=ar RANLIB=ranlib > ../configure.log
 	$(MAKE) -C $(MUSL_DIR)/src -j$$(nproc) > $(MUSL_DIR)/make.log
-	$(MAKE) -C $(MUSL_DIR)/src install > $(MUSL_DIR)/install.log
+	# The dynamic linker's name stays /lib/ld-musl-x86_64.so.1 (what
+	# musl-gcc writes into dynamic programs: right on STELA, docs/linux.md
+	# §16); only its install symlink goes into build/, not the host's /lib.
+	$(MAKE) -C $(MUSL_DIR)/src install \
+		LDSO_PATHNAME=$(abspath $(MUSL_DIR))/install/lib/ld-musl-x86_64.so.1 > $(MUSL_DIR)/install.log
 
 linux-tests: $(addprefix $(LINUX_DIR)/,$(LINUX_TESTS)) $(LINUX_DYN) linux-rust
 
@@ -838,7 +841,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "misc exited with code" "run linux/hello-std rust\n" \
 		--type "hello-std exited with code" "run linux/dyn\n" \
 		--type "dyn exited with code" "run linux/events\n" \
-		--type "events exited with code" "run linux/signals\n" \
+		--type "events exited with code" "run linux/sys\n" \
+		--type "sys exited with code" "run linux/signals\n" \
 		--send-keys "signals: press Ctrl-C" "ctrl-c" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
@@ -865,6 +869,9 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "events: copy-on-write fork works" --expect "events: MAP_SHARED works" \
 		--expect "events: eventfd works" --expect "events: timerfd works" --expect "events: epoll works" \
 		--expect "events: OK" --expect "events exited with code 0" \
+		--expect "sys: release 0.1.0-stela" --expect "sys: name, priority and clock resolution work" \
+		--expect "sys: statfs, statx and flock work" --expect "sys: sendfile, copy_file_range and memfd work" \
+		--expect "lo is 127.0.0.1" --expect "sys: OK" --expect "sys exited with code 0" \
 		--expect "signals: handlers, mask and timers work" \
 		--expect "signals: children, pipes, faults and restarts work" \
 		--expect "signals: got SIGINT" --expect "signals: OK" --expect "signals exited with code 0" \

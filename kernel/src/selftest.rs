@@ -351,6 +351,10 @@ fn copy_on_write(_: &'static BootInfo) {
         assert_eq!(parent.translate(va + 4096), child.translate(va + 4096));
         assert_eq!(cow::shared_frames(), shared_before + 2);
         assert!(before_clone - pmm::stats().0 <= 4, "fork copied pages");
+        // A shared page that was writable passes the write check (the
+        // write copies it); the read-only one does not.
+        assert!(child.check(va, 6, true));
+        assert!(!child.check(va + 4096, 1, true));
         // The child writes: it gets its own copy, the parent keeps its.
         child.write(va, b"child!").expect("child write");
         assert_ne!(parent.translate(va), child.translate(va));

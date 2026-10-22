@@ -214,6 +214,10 @@ pub struct State {
     pub cwd: SpinLock<String>,
     /// The `brk` area.
     pub memory: SpinLock<Memory>,
+    /// The name `prctl(PR_SET_NAME)` gave (P13 K9).
+    pub comm: SpinLock<Option<Vec<u8>>>,
+    /// The nice value `setpriority` gave (P13 K9; only remembered).
+    pub nice: core::sync::atomic::AtomicI64,
     /// Shared file mappings (P13 K6): where, and the shared pages.
     pub shared_maps: SpinLock<Vec<(u64, Arc<super::memory::FileShare>)>>,
     /// The controlling terminal (`/dev/tty`).
@@ -289,6 +293,8 @@ impl State {
                 exec: Vec::new(),
             }),
             shared_maps: SpinLock::new(Vec::new()),
+            comm: SpinLock::new(None),
+            nice: core::sync::atomic::AtomicI64::new(0),
             tty,
             network: false,
             volumes: Vec::new(),
@@ -325,6 +331,8 @@ impl State {
                 exec: m.exec.clone(),
             }),
             shared_maps: SpinLock::new(self.shared_maps.lock().clone()),
+            comm: SpinLock::new(self.comm.lock().clone()),
+            nice: core::sync::atomic::AtomicI64::new(self.nice.load(Ordering::Relaxed)),
             tty: Arc::clone(&self.tty),
             network: self.network,
             volumes: self.volumes.clone(),

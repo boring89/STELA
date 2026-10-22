@@ -806,10 +806,13 @@ fn stat_of(found: &Found) -> [u8; 144] {
         Found::Proc(Proc::Exe(_) | Proc::Fd(..)) => stat_bytes(0, 15, S_IFLNK | 0o777, 0, 0, 0),
         Found::Proc(_) => stat_bytes(0, 16, S_IFREG | 0o444, 0, 0, 0),
         Found::Item(node, info) => {
+            // P13 K8: STELA has no execute permission (any file can be
+            // started), so files say 0755: programs that look for an
+            // executable on PATH by its mode (git, which) find them.
             let mode = if info.is_dir {
                 S_IFDIR | 0o755
             } else {
-                S_IFREG | 0o644
+                S_IFREG | 0o755
             };
             let dev = u64::from(node.volume.index) + 1;
             stat_bytes(dev, info.id, mode, info.size, info.ctime, info.mtime)
@@ -819,18 +822,59 @@ fn stat_of(found: &Found) -> [u8; 144] {
 
 /// `newfstatat(dirfd, path, buf, flags)` (and `stat`, `lstat`).
 pub fn stat_path(p: &Process, dirfd: u64, ptr: u64, buf: u64, flags: u64) -> LinuxResult {
+    let bytes = stat_at(p, dirfd, ptr, flags)?;
+    write_user(p, buf, &bytes)?;
+    Ok(0)
+}
+
+/// The `struct stat` of `path` relative to `dirfd` (or of `dirfd` itself
+/// with `AT_EMPTY_PATH` and an empty path).
+fn stat_at(p: &Process, dirfd: u64, ptr: u64, flags: u64) -> Result<[u8; 144], i64> {
     const AT_EMPTY_PATH: u64 = 0x1000;
     if flags & AT_EMPTY_PATH != 0 && user_string(p, ptr)?.is_empty() {
-        return fstat(p, dirfd, buf);
+        return fstat_bytes(p, dirfd);
     }
     let parts = parts_of(p, dirfd, ptr)?;
     let found = resolve(p, &parts)?;
-    write_user(p, buf, &stat_of(&found))?;
+    Ok(stat_of(&found))
+}
+
+/// `statx(dirfd, path, flags, mask, buf)` (P13 K9): the `struct stat`
+/// fields in `struct statx`'s layout; every basic field is filled in.
+pub fn statx(p: &Process, dirfd: u64, ptr: u64, flags: u64, buf: u64) -> LinuxResult {
+    let st = stat_at(p, dirfd, ptr, flags)?;
+    let u64_at = |at: usize| u64::from_le_bytes(st[at..at + 8].try_into().unwrap_or([0; 8]));
+    let u32_at = |at: usize| u32::from_le_bytes(st[at..at + 4].try_into().unwrap_or([0; 4]));
+    let mut x = [0u8; 256];
+    const STATX_BASIC_STATS: u32 = 0x7FF;
+    x[0..4].copy_from_slice(&STATX_BASIC_STATS.to_le_bytes()); // stx_mask
+    x[4..8].copy_from_slice(&4096u32.to_le_bytes()); // stx_blksize
+    x[16..20].copy_from_slice(&(u64_at(16) as u32).to_le_bytes()); // stx_nlink
+    x[28..30].copy_from_slice(&(u32_at(24) as u16).to_le_bytes()); // stx_mode
+    x[32..40].copy_from_slice(&u64_at(8).to_le_bytes()); // stx_ino
+    x[40..48].copy_from_slice(&u64_at(48).to_le_bytes()); // stx_size
+    x[48..56].copy_from_slice(&u64_at(64).to_le_bytes()); // stx_blocks
+    // stx_atime @64, stx_btime @80, stx_ctime @96, stx_mtime @112:
+    // { i64 sec; u32 nsec; i32 pad }.
+    for (dst, src) in [(64, 72), (80, 104), (96, 104), (112, 88)] {
+        x[dst..dst + 8].copy_from_slice(&u64_at(src).to_le_bytes());
+        x[dst + 8..dst + 12].copy_from_slice(&(u64_at(src + 8) as u32).to_le_bytes());
+    }
+    // stx_dev_major/minor @136/140: the device number's low byte.
+    x[140..144].copy_from_slice(&(u64_at(0) as u32).to_le_bytes());
+    write_user(p, buf, &x)?;
     Ok(0)
 }
 
 /// `fstat(fd, buf)`.
 pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
+    let bytes = fstat_bytes(p, fd)?;
+    write_user(p, buf, &bytes)?;
+    Ok(0)
+}
+
+/// The `struct stat` of an open descriptor.
+fn fstat_bytes(p: &Process, fd: u64) -> Result<[u8; 144], i64> {
     let file = file_of(p, fd)?;
     let bytes = match &*file {
         OpenFile::Tty(_) => stat_bytes(0, 6, S_IFCHR | 0o620, 0, 0, 0),
@@ -860,8 +904,141 @@ pub fn fstat(p: &Process, fd: u64, buf: u64) -> LinuxResult {
         OpenFile::Dir { path, .. } if path == "/etc" => stat_of(&Found::EtcDir),
         OpenFile::Dir { .. } => stat_of(&Found::Root),
     };
-    write_user(p, buf, &bytes)?;
+    Ok(bytes)
+}
+
+/// The volume a path or descriptor is on (P13 K9, statfs): `None` for
+/// the synthetic places (/, /dev, /proc...).
+fn volume_of_found(found: &Found) -> Option<Arc<Volume>> {
+    match found {
+        Found::Item(node, _) => Some(Arc::clone(&node.volume)),
+        _ => None,
+    }
+}
+
+/// A `struct statfs` (120 bytes) for `volume` (or a memory file system
+/// with nothing in it).
+fn statfs_bytes(volume: Option<&Volume>) -> [u8; 120] {
+    let (total, free, read_only) = volume.map_or((0, 0, false), |v| {
+        let (t, f) = v.fs.space();
+        (t, f, v.fs.read_only())
+    });
+    let mut b = [0u8; 120];
+    let put =
+        |b: &mut [u8; 120], at: usize, v: u64| b[at..at + 8].copy_from_slice(&v.to_le_bytes());
+    // f_type: "STLA"; f_bsize; f_blocks; f_bfree; f_bavail; f_files;
+    // f_ffree; f_fsid; f_namelen; f_frsize; f_flags (ST_RDONLY = 1).
+    put(&mut b, 0, 0x5354_4C41);
+    put(&mut b, 8, 4096);
+    put(&mut b, 16, total / 4096);
+    put(&mut b, 24, free / 4096);
+    put(&mut b, 32, free / 4096);
+    put(&mut b, 40, 1 << 20);
+    put(&mut b, 48, 1 << 19);
+    put(&mut b, 64, 255);
+    put(&mut b, 72, 4096);
+    put(&mut b, 80, u64::from(read_only));
+    b
+}
+
+/// `statfs(path, buf)` (P13 K9).
+pub fn statfs(p: &Process, ptr: u64, buf: u64) -> LinuxResult {
+    let parts = parts_of(p, AT_FDCWD, ptr)?;
+    let found = resolve(p, &parts)?;
+    write_user(p, buf, &statfs_bytes(volume_of_found(&found).as_deref()))?;
     Ok(0)
+}
+
+/// `fstatfs(fd, buf)` (P13 K9).
+pub fn fstatfs(p: &Process, fd: u64, buf: u64) -> LinuxResult {
+    let file = file_of(p, fd)?;
+    let volume = match &*file {
+        OpenFile::File { node, .. }
+        | OpenFile::Dir {
+            node: Some(node), ..
+        } => Some(Arc::clone(&node.volume)),
+        _ => None,
+    };
+    write_user(p, buf, &statfs_bytes(volume.as_deref()))?;
+    Ok(0)
+}
+
+/// `sendfile(out, in, offset_ptr, count)` and `copy_file_range(in,
+/// off_in, out, off_out, len, flags)` (P13 K9): a plain copy through the
+/// kernel. With an offset pointer the input is read there (and the pointer
+/// moved) without moving the descriptor's offset.
+pub fn copy_between(p: &Process, out_fd: u64, in_fd: u64, off_ptr: u64, count: u64) -> LinuxResult {
+    let input = file_of(p, in_fd)?;
+    let output = file_of(p, out_fd)?;
+    let mut offset = if off_ptr != 0 {
+        Some(super::sys::read_u64(p, off_ptr)?)
+    } else {
+        None
+    };
+    let mut done = 0u64;
+    while done < count {
+        let want = ((count - done) as usize).min(CHUNK);
+        let data = match (offset, &*input) {
+            (Some(at), OpenFile::File { node, .. }) => {
+                let mut buf = vec![0u8; want];
+                let n = node
+                    .volume
+                    .fs
+                    .read(node.id, at, &mut buf)
+                    .map_err(errno::from_error)?;
+                buf.truncate(n);
+                buf
+            }
+            (Some(_), _) => return Err(errno::ESPIPE),
+            (None, file) => read_file(file, want)?,
+        };
+        if data.is_empty() {
+            break;
+        }
+        let n = write_file(&output, &data)?;
+        done += n as u64;
+        if let Some(at) = offset.as_mut() {
+            *at += n as u64;
+        }
+        if n < data.len() {
+            break;
+        }
+    }
+    if let Some(at) = offset {
+        write_user(p, off_ptr, &at.to_le_bytes())?;
+    }
+    Ok(done)
+}
+
+/// How many `memfd_create` files there were (their names).
+static MEMFDS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// `memfd_create(name, flags)` (P13 K9): a file on `Tmp` (memory), named
+/// `.memfd-PID-N`; it stays there until `Tmp` is emptied (restart).
+pub fn memfd_create(p: &Process, ptr: u64, flags: u64) -> LinuxResult {
+    const MFD_CLOEXEC: u64 = 1;
+    let _ = user_string(p, ptr)?;
+    let tmp = vfs::find("Tmp").ok_or(ENOENT)?;
+    let n = MEMFDS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let name = alloc::format!(".memfd-{}-{n}", p.id());
+    let info = tmp
+        .fs
+        .create(tmp.fs.root(), &name, false)
+        .map_err(errno::from_error)?;
+    let file = OpenFile::File {
+        node: Node {
+            volume: tmp,
+            id: info.id,
+        },
+        state: SpinLock::new(FileState {
+            offset: 0,
+            append: false,
+            readable: true,
+            writable: true,
+            flags: 2,
+        }),
+    };
+    add_fd(p, file, flags & MFD_CLOEXEC != 0)
 }
 
 /// `faccessat(dirfd, path, mode)` (and `access`): it exists, and is

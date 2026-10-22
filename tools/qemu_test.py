@@ -123,9 +123,11 @@ class Qmp:
 
 SHIFTED = {":": "semicolon", "_": "minus", "!": "1", "?": "slash", "\"": "apostrophe",
            "|": "backslash", ">": "dot", "<": "comma", "&": "7",
-           "*": "8"}
+           "*": "8", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "(": "9", ")": "0",
+           "+": "equal", "{": "bracket_left", "}": "bracket_right", "~": "grave_accent"}
 PLAIN = {" ": "spc", "/": "slash", ".": "dot", "-": "minus", ";": "semicolon",
-         ",": "comma", "=": "equal", "\n": "ret", "'": "apostrophe"}
+         ",": "comma", "=": "equal", "\n": "ret", "'": "apostrophe",
+         "[": "bracket_left", "]": "bracket_right", "`": "grave_accent", "\\": "backslash"}
 
 
 NAMED = {"up", "down", "left", "right", "home", "end", "delete", "pgup", "pgdn", "esc", "tab"}

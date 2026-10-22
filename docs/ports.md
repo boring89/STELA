@@ -1,6 +1,6 @@
-# Ports：在 STELA 上跑的 Linux 程式（P12）
+# Ports：在 STELA 上跑的 Linux 程式（P12、P13）
 
-> P12 由自動排程一次做完，**使用者尚未審核**。
+> P12 由自動排程一次做完，**使用者尚未審核**。P13 的 K7–K8（§6）同樣尚未審核。
 
 ports repo（暫名 `stela-ports`，和 STELA 分開的 git repo，本機在 `~/stela-ports`，還沒有放上 GitHub）收集「把一個現成的 Linux 程式編成 STELA 能跑的樣子」的配方：在哪裡拿原始碼、怎麼編、怎麼打包、在 STELA 裡怎麼測。編出來的套件由 `pkg` 安裝（`docs/pkg.md`）。
 
@@ -68,6 +68,41 @@ Rust：  --target x86_64-unknown-linux-musl
 
 ## 5. 已知限制
 
-- 套件只有 x86-64、靜態 musl；沒有共享函式庫。
+- 套件只有 x86-64；除了 python3（動態連結 musl 的 libc.so，§6.2）都是靜態 musl；函式庫 port 只有靜態的 `.a`。
 - `test` 用 STELA 的測試磁碟映像（128 MiB）；大的套件（tcc 的 libc.a）放得下，但不能太多個一起。
 - 原始碼大多從 68k_HAL 的下載目錄複製（計畫的授權事項）；之後要改成各自的官方網址（`source = ` + SHA-256）。
+
+## 6. P13：函式庫 port 與更多程式（K7–K8，使用者尚未審核）
+
+### 6.1 建置期依賴
+
+`port.toml` 多了 `build-depends = ["ncurses"]`：建置前先確定那些 port 已經建好（沒有就先建），再把它們（與它們的依賴、`depends`）的 `include/`、`lib/` 合併到 `work/NAME/deps`，以 `$DEPS` 給 `build.sh`（`-I$DEPS/include -L$DEPS/lib`）。`depends` 仍是執行期的依賴（測試時一起裝進 `Data:/Programs/`）。
+
+函式庫 port 的套件裝到 `Data:/Programs/NAME/{lib,include}`（tcc 在 STELA 裡也能用）；動態連結的 `/lib` 會找 `Data:/Programs/lib`（`docs/linux.md` §16.3），不是這些資料夾。
+
+| port | 版本 | 授權 | 內容與測試 |
+|---|---|---|---|
+| zlib | 1.3.1 | Zlib | `libz.a`、minigzip；測試程式壓縮往返、CRC-32 |
+| bzip2 | 1.0.8 | bzip2-1.0.6 | `libbz2.a`、bzip2；壓縮並 `-t` 檢查 |
+| xz | 5.6.3 | 0BSD | `liblzma.a`、xz（單執行緒）；壓縮並 `-t` 檢查 |
+| libffi | 3.4.6 | MIT | `libffi.a`；`ffi_call` 整數與浮點；closure 需要匿名可執行記憶體（STELA 拒絕），不能用 |
+| ncurses | 6.5 | X11 | `libncurses.a`（寬字元、terminfo 在同一個庫）；**沒有 terminfo 資料庫**：dumb、vt100、vt220、linux、xterm、xterm-256color、ansi、screen 編進庫裡（`--with-fallbacks`，用建置機的 tic）；cross 時 configure 猜 bool 是 int，改成告訴它原生的答案（stdbool、1 byte） |
+| readline | 8.2 | GPL-3.0-or-later | `libreadline.a`、`libhistory.a`（build-depends ncurses）；測試打一行字 |
+| mbedtls | 3.6.2 | Apache-2.0 | `libmbedtls.a`、`libmbedx509.a`、`libmbedcrypto.a`；SHA-256、AES-GCM 往返與竄改 |
+| sqlite（P12 的） | 3.54.1 | public domain | 也打包 `libsqlite3.a` 與 `sqlite3.h`（python3 用） |
+
+### 6.2 程式
+
+| port | 版本 | 授權 | 說明 | 測試 |
+|---|---|---|---|---|
+| python3 | 3.12.7 | PSF-2.0 | 所有擴充模組編進程式（`MODULE_BUILDTYPE=static`）：zlib、bz2、lzma、ctypes、sqlite3、_decimal…；沒有 ssl、curses、readline、dbm、tkinter；標準庫去掉 test、idlelib、tkinter、lib2to3、ensurepip 後 12 MB。**動態連結** musl 的 `libc.so`（`/lib/ld-musl-x86_64.so.1`）：ctypes 需要 `dlopen(NULL)`，靜態程式沒有。cross 需要同版本的 build python：先建一個 host 用的 3.12 | `-c print(6*7)`、壓縮模組、sqlite3、`ctypes.CDLL(None).strlen`、hashlib、json、`-m http.server --help` |
+| git | 2.47.0 | GPL-2.0-only | zlib、libcurl + Mbed TLS（HTTPS）；沒有 Perl、Python、Tcl、gettext、expat；C17（`thread_local` 在 C23 是關鍵字）；經 shell 的指令（本機傳輸的 `git-upload-pack`）用 **dash port**（`depends = ["dash"]`，編進 `SHELL_PATH`）；`libexec/git-core/` 有 `git-upload-pack`、`git-remote-http(s)` | init、add、commit、`--no-pager log`、`clone --no-hardlinks` |
+| vim | 9.1.0800 | Vim | normal 功能、ncurses、只有終端機、不帶 runtime 檔案；cross 時把 configure 跑不了的答案（`vim_cv_*`）傳進去 | ex 模式（`-u NONE -N -es -S script`）寫檔，cat 讀回 |
+| nano | 8.2 | GPL-3.0-or-later | 寬字元 ncurses；musl 的 `<sys/vt.h>` 要 kernel 的 `<linux/vt.h>`，build 裡放一個只有兩個值的替身 | `--version` |
+| curl | 8.10.1 | curl | Mbed TLS、zlib；`libcurl.a`（git 用）；CA 是 STELA 的 `third_party/mozilla-ca/cacert.pem`（`share/cacert.pem`） | `--version`（mbedTLS/3.6.2）、`file://` 讀檔 |
+| file | 5.45 | BSD-2-Clause | 魔數資料庫要同版本的 file 編：build 裡先建一個 host 用的 | 文字檔、PNG |
+| less | 668 | GPL-3.0-or-later | ncurses | `-dFX`（dumb 終端機、放得下就結束） |
+
+- libtool 會把 `-static` 吞掉（對它只是「不用共享的 libtool 庫」），P13 起 musl 有 `libc.so`，所以 xz、curl、file 在 make 時用 `-all-static`。
+- terminal 只有 SGR 顏色（`docs/window.md` §10），全螢幕的 vim／nano／less 在 STELA 的 terminal 裡畫不對；測試只用不需要游標定址的方式。
+- 下載的 tarball（`~/stela-ports/sources/`）與 SHA-256 在各自的 `port.toml`（計畫的授權事項）。

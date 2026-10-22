@@ -459,13 +459,15 @@ impl AddressSpace {
 
     /// Calls `f(physical address, offset in buf, length)` for each piece of
     /// `virt..virt + len` that falls in one page, after checking that every
-    /// page is a mapped user page (writable too, with `write`). Nothing is
-    /// called if any check fails.
+    /// page is a mapped user page (writable too, with `write`; with
+    /// `cow_ok`, a copy-on-write page that becomes writable once copied
+    /// counts, P13 K6). Nothing is called if any check fails.
     fn pieces(
         &self,
         virt: u64,
         len: usize,
         write: bool,
+        cow_ok: bool,
         mut f: impl FnMut(u64, usize, usize),
     ) -> Result<(), BadAddress> {
         if len == 0 {
@@ -478,7 +480,8 @@ impl AddressSpace {
         let mut page = page_of(virt);
         while page < end {
             let entry = self.leaf(page).ok_or(BadAddress)?;
-            if write && entry & WRITABLE == 0 {
+            let copied_writable = cow_ok && entry & COW != 0 && entry & WAS_WRITABLE != 0;
+            if write && entry & WRITABLE == 0 && !copied_writable {
                 return Err(BadAddress);
             }
             page += 4096;
@@ -494,14 +497,15 @@ impl AddressSpace {
     }
 
     /// Whether `virt..virt + len` is mapped user memory (and writable, with
-    /// `write`).
+    /// `write`: a copy-on-write page that is writable once copied counts;
+    /// [`AddressSpace::write`] copies it).
     pub fn check(&self, virt: u64, len: usize, write: bool) -> bool {
-        self.pieces(virt, len, write, |_, _, _| {}).is_ok()
+        self.pieces(virt, len, write, true, |_, _, _| {}).is_ok()
     }
 
     /// Copies user memory at `virt` into `buf` (copy_from_user).
     pub fn read(&self, virt: u64, buf: &mut [u8]) -> Result<(), BadAddress> {
-        self.pieces(virt, buf.len(), false, |phys, offset, len| {
+        self.pieces(virt, buf.len(), false, false, |phys, offset, len| {
             // SAFETY: `phys..phys + len` is inside one frame owned by this
             // address space (checked by `pieces`); the HHDM maps it. User
             // threads may write it concurrently on another processor; the
@@ -540,7 +544,7 @@ impl AddressSpace {
                 page += 4096;
             }
         }
-        self.pieces(virt, data.len(), need_write, |phys, offset, len| {
+        self.pieces(virt, data.len(), need_write, false, |phys, offset, len| {
             // SAFETY: as in `read`; the frame is RAM owned by this address
             // space and no Rust reference points into it.
             unsafe {

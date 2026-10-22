@@ -10,7 +10,9 @@
 //! endian u16), address (4 bytes), 8 bytes of zero.
 
 use super::errno;
-use super::errno::{EAFNOSUPPORT, EBADF, EINVAL, ENOTCONN, ENOTSOCK, EOPNOTSUPP, EPROTONOSUPPORT};
+use super::errno::{
+    EAFNOSUPPORT, EBADF, EINVAL, ENODEV, ENOTCONN, ENOTSOCK, EOPNOTSUPP, EPROTONOSUPPORT,
+};
 use super::files::add_fd;
 use super::state::OpenFile;
 use super::sys::{LinuxResult, file_of, read_user, write_user};
@@ -36,6 +38,10 @@ pub struct LinuxSocket {
     socket: Arc<crate::net::Socket>,
     kind: Kind,
     nonblock: AtomicBool,
+    /// Options set with `setsockopt` (P13 K9): (level, name) → value. They
+    /// are remembered and read back, not acted on (`SO_REUSEADDR`,
+    /// `SO_KEEPALIVE`, `TCP_NODELAY`...).
+    options: frame::sync::SpinLock<alloc::collections::BTreeMap<(u64, u64), u32>>,
 }
 
 impl LinuxSocket {
@@ -113,6 +119,7 @@ pub fn socket(p: &Process, domain: u64, ty: u64, protocol: u64) -> LinuxResult {
         socket,
         kind,
         nonblock: AtomicBool::new(ty & SOCK_NONBLOCK != 0),
+        options: frame::sync::SpinLock::new(alloc::collections::BTreeMap::new()),
     }));
     add_fd(p, file, ty & SOCK_CLOEXEC != 0)
 }
@@ -158,6 +165,7 @@ pub fn accept(p: &Process, fd: u64, addr: u64, len: u64, flags: u64) -> LinuxRes
         socket: conn,
         kind: Kind::Tcp,
         nonblock: AtomicBool::new(flags & SOCK_NONBLOCK != 0),
+        options: frame::sync::SpinLock::new(alloc::collections::BTreeMap::new()),
     }));
     add_fd(p, file, flags & SOCK_CLOEXEC != 0)
 }
@@ -344,20 +352,164 @@ pub fn name(p: &Process, fd: u64, addr: u64, len: u64, peer: bool) -> LinuxResul
 }
 
 /// `setsockopt`: accepted and ignored (`SO_REUSEADDR`, `TCP_NODELAY`...).
-pub fn setsockopt(p: &Process, fd: u64) -> LinuxResult {
-    socket_of(p, fd).map(|_| 0)
+pub fn setsockopt(
+    p: &Process,
+    fd: u64,
+    level: u64,
+    name: u64,
+    value: u64,
+    len: u64,
+) -> LinuxResult {
+    let s = socket_of(p, fd)?;
+    // Integer options are remembered (P13 K9); others are accepted.
+    if value != 0 && len >= 4 {
+        let b = read_user(p, value, 4)?;
+        let v = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        s.options.lock().insert((level, name), v);
+    }
+    Ok(0)
 }
 
-/// `getsockopt`: every option reads as 0 (`SO_ERROR`: no error).
-pub fn getsockopt(p: &Process, fd: u64, value: u64, len_ptr: u64) -> LinuxResult {
-    socket_of(p, fd)?;
+/// `getsockopt`: what `setsockopt` set, else 0 (`SO_ERROR`: no error).
+pub fn getsockopt(
+    p: &Process,
+    fd: u64,
+    level: u64,
+    name: u64,
+    value: u64,
+    len_ptr: u64,
+) -> LinuxResult {
+    let s = socket_of(p, fd)?;
     if value == 0 || len_ptr == 0 {
         return Err(EINVAL);
     }
     let room = u32::from_le_bytes(read_user(p, len_ptr, 4)?.try_into().map_err(|_| EBADF)?);
     if room >= 4 {
-        write_user(p, value, &0u32.to_le_bytes())?;
+        let v = s.options.lock().get(&(level, name)).copied().unwrap_or(0);
+        write_user(p, value, &v.to_le_bytes())?;
         write_user(p, len_ptr, &4u32.to_le_bytes())?;
     }
     Ok(0)
+}
+
+/// A network interface as the `SIOCGIF*` ioctls describe it.
+struct Iface {
+    name: &'static str,
+    ip: [u8; 4],
+    mask: [u8; 4],
+    /// `IFF_*`.
+    flags: u16,
+    mac: [u8; 6],
+    index: u32,
+    mtu: u32,
+}
+
+/// The network-interface `ioctl`s on a socket (P13 K9): `SIOCGIFCONF`
+/// lists `lo` and `eth0`; `SIOCGIFADDR`, `SIOCGIFNETMASK`,
+/// `SIOCGIFFLAGS`, `SIOCGIFHWADDR`, `SIOCGIFINDEX`, `SIOCGIFMTU` answer for
+/// one of them. `None` when `request` is not one of these.
+pub fn interface_ioctl(p: &Process, request: u64, arg: u64) -> Option<LinuxResult> {
+    const SIOCGIFCONF: u64 = 0x8912;
+    const SIOCGIFFLAGS: u64 = 0x8913;
+    const SIOCGIFADDR: u64 = 0x8915;
+    const SIOCGIFNETMASK: u64 = 0x891B;
+    const SIOCGIFMTU: u64 = 0x8921;
+    const SIOCGIFHWADDR: u64 = 0x8927;
+    const SIOCGIFINDEX: u64 = 0x8933;
+    const IFREQ: usize = 40;
+    let info = crate::net::info();
+    // Flags: IFF_UP 0x1, IFF_RUNNING 0x40, IFF_LOOPBACK 0x8,
+    // IFF_BROADCAST 0x2, IFF_MULTICAST 0x1000.
+    let mut ifaces = alloc::vec![Iface {
+        name: "lo",
+        ip: [127, 0, 0, 1],
+        mask: [255, 0, 0, 0],
+        flags: 0x1 | 0x40 | 0x8,
+        mac: [0; 6],
+        index: 1,
+        mtu: 65536,
+    }];
+    if let Some(i) = info {
+        let up = if i.link { 0x1 | 0x40 } else { 0 };
+        ifaces.push(Iface {
+            name: "eth0",
+            ip: i.ip,
+            mask: i.mask,
+            flags: up | 0x2 | 0x1000,
+            mac: i.mac,
+            index: 2,
+            mtu: 1500,
+        });
+    }
+    let sockaddr = |ip: [u8; 4]| {
+        let mut a = [0u8; 16];
+        a[0..2].copy_from_slice(&2u16.to_le_bytes()); // AF_INET
+        a[4..8].copy_from_slice(&ip);
+        a
+    };
+    let run = || -> LinuxResult {
+        if request == SIOCGIFCONF {
+            // struct ifconf { int len; char *buf; }
+            let b = read_user(p, arg, 16)?;
+            let len = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+            let buf = u64::from_le_bytes(b[8..16].try_into().map_err(|_| EINVAL)?);
+            let mut out = alloc::vec::Vec::new();
+            for i in &ifaces {
+                if buf != 0 && out.len() + IFREQ > len {
+                    break;
+                }
+                let mut r = [0u8; IFREQ];
+                r[..i.name.len()].copy_from_slice(i.name.as_bytes());
+                r[16..32].copy_from_slice(&sockaddr(i.ip));
+                out.extend_from_slice(&r);
+            }
+            if buf != 0 {
+                write_user(p, buf, &out)?;
+            }
+            let n = if buf == 0 {
+                ifaces.len() * IFREQ
+            } else {
+                out.len()
+            };
+            write_user(p, arg, &(n as u32).to_le_bytes())?;
+            return Ok(0);
+        }
+        let req = read_user(p, arg, IFREQ)?;
+        let end = req[..16].iter().position(|&c| c == 0).unwrap_or(16);
+        let name = core::str::from_utf8(&req[..end]).map_err(|_| ENODEV)?;
+        let Some(i) = ifaces.iter().find(|i| i.name == name) else {
+            return Err(ENODEV);
+        };
+        let (ip, mask, flags, mac, index, mtu) = (i.ip, i.mask, i.flags, i.mac, i.index, i.mtu);
+        let mut r = req.clone();
+        let field: alloc::vec::Vec<u8> = match request {
+            SIOCGIFADDR => sockaddr(ip).to_vec(),
+            SIOCGIFNETMASK => sockaddr(mask).to_vec(),
+            SIOCGIFFLAGS => flags.to_le_bytes().to_vec(),
+            SIOCGIFINDEX => index.to_le_bytes().to_vec(),
+            SIOCGIFMTU => mtu.to_le_bytes().to_vec(),
+            _ => {
+                // SIOCGIFHWADDR: sa_family ARPHRD_ETHER (1) or LOOPBACK (772).
+                let mut a = alloc::vec![0u8; 16];
+                let family: u16 = if index == 1 { 772 } else { 1 };
+                a[0..2].copy_from_slice(&family.to_le_bytes());
+                a[2..8].copy_from_slice(&mac);
+                a
+            }
+        };
+        r[16..16 + field.len()].copy_from_slice(&field);
+        write_user(p, arg, &r)?;
+        Ok(0)
+    };
+    matches!(
+        request,
+        SIOCGIFCONF
+            | SIOCGIFFLAGS
+            | SIOCGIFADDR
+            | SIOCGIFNETMASK
+            | SIOCGIFMTU
+            | SIOCGIFHWADDR
+            | SIOCGIFINDEX
+    )
+    .then(run)
 }

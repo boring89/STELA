@@ -129,7 +129,7 @@ third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause；fusion
 docs/          設計文件（每個元件完成後寫 docs/<元件>.md）
 assets/        圖示（PPM／PBM，**草稿**）與產生的 Rust 資料（generated/）（docs/identity.md）
 tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、with_http.py、with_https.py、check_wav.py、hfs_check.py、bench_report.py、font_to_rs.py、bdf_to_cjk.py、make_test_images.py、make_disk_image.py、boot.cfg（映像的預設開機選項）、make_test_disk.py、gen_casefold.py、ehfs_compat.py、make_draft_assets.py、img_to_rs.py；P12：cacert_to_der.py、make_test_certs.py、pkgsign.py、pkg.pub（測試公鑰，要換）、make_test_packages.py）
-~/stela-ports/ P12：ports repo（暫名，另一個 git repo，還沒上 GitHub）：port.toml、build.sh、test.sh、tools/portbuild.py；8 個 port（docs/ports.md）
+~/stela-ports/ P12：ports repo（暫名，另一個 git repo，還沒上 GitHub）：port.toml、build.sh、test.sh、tools/portbuild.py；8 個 port，P13 加 7 個函式庫（build-depends）與 python3、git、vim、nano、curl、file、less（docs/ports.md §6）
   ehfs/             host 工具 crate：mkfs.ehfs、fsck.ehfs、ehfs-cp、ehfs-ls
   fuzz/             host 的 fuzz（make test-fuzz；docs/testing.md §3）
 ```
@@ -225,7 +225,7 @@ Claude 依照上方工作規則直接實作。
 - 量測：2560x1600 下桌面閒置 P11 是 93 MiB，P12（heap 按需成長、桌面視窗只蓋圖示直條）57 MiB；P12 的開機在掛載卷宗時多了約 0.3 秒（TCG，原因未查明，不是 heap 成長）（目標 32 MiB + 畫面緩衝 ≈ 63 MiB，`docs/architecture.md` §3.1、`docs/bench.md`）。
 - TLS（P12）：只有 TLS 1.3、P-256、AES-128-GCM；沒有憑證撤銷檢查；連線被切斷就當作回應結束（docs/tls.md §6）。
 - pkg 與 Setup（P12）：`tools/pkg.pub` 是**測試鍵**（固定種子，任何人都能簽），正式的鑰匙與套件伺服器要使用者決定；index 沒有防重送；安裝不是交易式；Setup 只有鍵盤操作、新的 Data 沒有 pkg.conf；Mouseion 的桌面只是右邊的直條（直條外的空白處不能拉框、放東西）（docs/pkg.md §6、docs/setup.md §6、docs/window.md §11）。
-- ports（P12）：`~/stela-ports` 只在本機；大多數原始碼從 68k_HAL 的下載目錄複製；tcc 要 `-static`、用自己編的非 PIC musl 並打了 PLT32 的 patch（docs/ports.md）。
+- ports（P12、P13）：`~/stela-ports` 只在本機；P12 的原始碼大多從 68k_HAL 的下載目錄複製（P13 的從官方網址下載）；tcc 要 `-static`、用自己編的非 PIC musl 並打了 PLT32 的 patch；python3 動態連結 libc.so、沒有 ssl；全螢幕的 vim／nano／less 在 terminal 畫不對（只有 SGR）（docs/ports.md）。
 - Mouseion：拖曳影子只是外框；沒有複製貼上；垃圾桶是每個卷宗的 `.Trash`（P11）；圖示全是草稿（docs/mouseion.md §8、docs/identity.md）。
 - 視窗：拖外框不即時移動；選單一層；terminal 只有 SGR 顏色、沒有其他 ANSI 序列（docs/window.md §10）。
 - USB：只有第一個 xHCI、USB 2.0 hub 的 port 輪詢、HID boot protocol；儲存只有 Bulk-Only（沒有 UAS）、沒有音訊、電源管理；stall 不復原；未在實機驗證（docs/usb.md §11）。

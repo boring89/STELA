@@ -30,6 +30,7 @@ pub const EISDIR: i64 = 21;
 pub const EINVAL: i64 = 22;
 pub const EMFILE: i64 = 24;
 pub const ENOTTY: i64 = 25;
+pub const ENODEV: i64 = 19;
 pub const EFBIG: i64 = 27;
 pub const ENOSPC: i64 = 28;
 pub const ESPIPE: i64 = 29;

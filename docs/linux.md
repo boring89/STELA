@@ -499,14 +499,16 @@ Rust std 程式的建置（`make linux-rust`，`make linux-tests` 會做）：`r
 | host `kernel::vfs::tmpfs`、`kernel::initrd` | TmpTree（檔案、資料夾、容量、錯誤、改名迴圈）、initrd 的樹 |
 | host `abi` | 編號 33–36、`note::BYTES`、`spawn::FORCE_*`、`tty::MASTER`、`object_kind` |
 | selftest "linux personality" | hello 有 note、裸 ELF 沒有；手組的 Linux 機器碼：write 到 tty（`linux: hello from raw system calls`）、RDX 保留、`io_setup` → `-ENOSYS`（P12 以前是 fork）、exit_group(38)，兩次 PMM 回復；強制 STELA 人格（同一段碼變成 `ThreadExit`，exit 0）；`Initrd:/linux/hello`（musl）exit 3，兩次 PMM 回復；P12：`threads`（exit 4）與 `procs`（exit 0）各兩次，PMM 回復（執行緒、fork、execve 不漏頁框） |
-| `make test-linux` | 一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打 `stela rocks`）、`poll`（打 `poll works`）、`pipe`、P12：`threads`、`procs`、`misc`、`hello-std rust`、`signals`（看到 `press Ctrl-C` 後經 QMP 送 ctrl-c），檢查輸出與 exit code |
+| `make test-linux` | 一般 kernel + AHCI 測試磁碟：shell 依序 `run linux/hello a b`、`files`、`memory`、`time`、`nosys`、`tty`（打 `stela rocks`）、`poll`（打 `poll works`）、`pipe`、P12：`threads`、`procs`、`misc`、`hello-std rust`、P13：`dyn`（§16）、`signals`（看到 `press Ctrl-C` 後經 QMP 送 ctrl-c），檢查輸出與 exit code |
+| `make test-alpine`（P13，本機專用） | Alpine 3.20 的 `musl-1.2.5-r3.apk`、`busybox-1.36.1-r31.apk`（`~/stela-ports/sources/alpine/`，解開在 `build/alpine`）：Alpine 的 ld-musl 放 `Data:/Programs/lib`、busybox 放 `Data:/alpine`；`busybox echo`、`dyn`（這時也用 Alpine 的 ld-musl）、`busybox uname -s`（`STELA`）、`busybox ls /lib`（`Data:/Programs/lib` 優先） |
+| host（P13） | `elfload`：`ET_DYN` 只在 Packed 版面、`PT_INTERP`；`linux::path`：`/lib`、`/usr/lib`；`object::regions`：`reserve`、`containing` |
 | `make test-net`（P10） | `run linux/net PORT host`：BSD socket 抓 host 的 HTTP 檔、`getsockname`／`getpeername`／`getsockopt`、UDP `sendto`、關著的 port → `ECONNREFUSED`、`AF_INET6` → `EAFNOSUPPORT`（`docs/net.md` §7） |
 
 ## 15. 已知限制
 
 - 網路（P10，`docs/net.md` §7）：只有 `AF_INET` 的 `SOCK_STREAM`／`SOCK_DGRAM`；`socket`、`connect`、`bind`、`listen`、`accept`/`accept4`、`sendto`、`recvfrom`、`sendmsg`/`recvmsg`（P11，沒有 control 資料）、`shutdown`、`getsockname`、`getpeername`、`setsockopt`（忽略）、`getsockopt`（一律 0）；socket 上的 `read`/`write` 等於 recv/send。P11 起 musl 的 `getaddrinfo`（DNS）可用：`/etc/resolv.conf` + UDP + `poll` + `recvmsg`；TCP 的 DNS 退路（`MSG_FASTOPEN` 的 `sendmsg`）不支援。
 
-- 只有靜態、非 PIE 的 x86-64 程式（`ET_EXEC`）；沒有動態連結、`ET_DYN`、32 位元（`int 0x80`）。
+- P13 起有動態連結與 PIE（§16）；沒有 32 位元（`int 0x80`）、ASLR、`AT_EXECFN`、`LD_LIBRARY_PATH` 以外的搜尋設定（`/etc/ld-musl-x86_64.path` 沒有）。
 - 行程模型（P12）：fork 全複製（沒有 copy-on-write：大程式 fork 慢、記憶體加倍）；vfork 不讓父行程等；一個行程的執行緒都在同一顆 CPU；沒有 `MAP_FIXED`、可寫的 `MAP_SHARED`、`mremap`、`epoll`、`inotify`、`eventfd`、`timerfd`、`signalfd`；execve 不能換成 STELA 程式、`#!` 只有一層；行程名稱（`ps`）在 execve 後不變；沒有停止／繼續（SIGSTOP、SIGTSTP、SIGCONT 只是忽略，沒有 job control 的停止）；`sigaltstack` 只記錄；`ITIMER_VIRTUAL`／`PROF`、POSIX 計時器（`timer_create`）沒有；沒有 CPU 時間的統計（`times`、`getrusage` 是 0）；父行程先結束時子行程的狀態沒人收。
 - 權限：mode、owner、時間都不能改（`chmod`、`chown`、`utimensat` 成功但什麼都不做）；記錄鎖一律成功。
 - pty：master 關掉時程式端不會收到 EOF／SIGHUP。
@@ -515,3 +517,60 @@ Rust std 程式的建置（`make linux-rust`，`make linux-tests` 會做）：`r
 - tty：VMIN／VTIME 不看；raw 模式下 `read` 有一個字就回。
 - `PROT_NONE` 頁可以讀；部分 `munmap` 不歸還位址範圍。
 - 輸出到沒有 master 的 tty 是同步 `kprint!`；有 master 時超過 64 KiB 未讀的輸出會被丟掉。
+
+## 16. 動態連結（P13 K5，使用者尚未審核）
+
+### 16.1 比喻
+
+靜態程式像一本把所有引用文獻都抄進來的書；動態連結的程式只寫「見《libc》第 3 章」，開書之前要有人（**動態連結器**，ELF 的 `PT_INTERP`）去書架上把那幾本書拿來、翻到對的頁、把頁碼填好（重定位）。kernel 只負責把「書」與「拿書的人」放上桌，之後的事都是動態連結器在使用者空間做的。
+
+### 16.2 kernel 做的事（`program::load_linux`）
+
+```
+ 程式 ELF
+   ET_EXEC → 照它寫的位址載入（bias 0，和 P12 一樣）
+   ET_DYN（PIE）→ 載到 PIE_BASE 0x5555_5555_0000（所有位址 + bias）
+   有 PT_INTERP（例如 /lib/ld-musl-x86_64.so.1）：
+     從 /lib 或 /usr/lib 讀出來（只接受這兩個地方），必須是 ET_DYN、自己沒有 PT_INTERP
+     載到 INTERP_BASE 0x7F00_0000_0000，第一個執行緒從它的 entry 開始
+ auxv：AT_PHDR = 程式標頭在記憶體的位址（+ bias）、AT_PHENT、AT_PHNUM、
+       AT_BASE = 直譯器的 base（沒有直譯器是 0）、AT_ENTRY = 程式的 entry（+ bias）
+ brk：從程式影像的結尾開始；PIE 在 map 區（0x1000_0000_0000–0x7000_0000_0000）裡，
+      所以 PIE 與它的 brk 區（256 MiB）先在 Regions 保留起來（Regions::reserve），mmap 不會選到
+```
+
+沒有 ASLR（位址固定，方便除錯）；`execve` 走同一條路。
+
+### 16.3 `/lib` 與 `/usr/lib`
+
+合成根多了 `/lib`、`/usr/lib`（同一個地方），依序找：
+
+1. `Data:/Programs/lib/`（套件裝的函式庫；`docs/pkg.md`）
+2. `Initrd:/linux/lib/`（`ld-musl-x86_64.so.1` = STELA 自己建的 musl `libc.so`，strip 後約 660 KB；`libdyntest.so` 測試用）
+
+每個 Linux 程式都看得到（不受 `[3]`／`[4]` 卷宗的限制）。`make musl` 現在也建共享版（`--syslibdir` 指到 `build/musl/install/lib`：musl 的 `make install` 預設會在 host 的 `/lib` 建 symlink）。
+
+musl 的動態連結器**就是** libc.so 本身：只連 libc 的程式（Alpine 的 busybox）不需要再載入任何檔案；`libc.musl-x86_64.so.1`、`libpthread.so` 等名字被動態連結器認成自己（musl 的保留名稱），所以不用 symlink。
+
+### 16.4 執行權（W^X 放寬的範圍）
+
+計畫的決定：`PROT_EXEC` 只給 **`MAP_PRIVATE` 的檔案映射**，而且檔案在：
+
+- `Initrd:/linux/lib`（含子資料夾）、`Data:/Programs/lib`、`Data:/Programs/NAME/lib`
+- 或程式自己的資料夾（`/proc/self/exe` 所在的資料夾）
+
+`files::may_execute` 判斷。同時可寫又可執行一律拒絕（`EACCES`）；匿名的可執行記憶體拒絕（JIT 之後另議）。這種映射的範圍記在 `Memory::exec`；`mprotect` 只在這些範圍裡可以加 `PROT_EXEC`（動態連結器的 RELRO 是改成唯讀，不需要）。`munmap` 整段時拿掉紀錄；fork 時複製。
+
+### 16.5 `MAP_FIXED`
+
+動態連結器載入一個 `.so` 的方式（musl `map_library`）：先 `mmap(NULL, 整個範圍, 第一段的 prot, MAP_PRIVATE, fd, 0)` 保留位址（超過檔案長度的頁是 0），再對其餘每一段 `mmap(base + 段位址, …, MAP_PRIVATE | MAP_FIXED, fd, 段偏移)`，`.bss` 用 `MAP_FIXED | MAP_ANONYMOUS`。所以 `MAP_FIXED`：
+
+- 落在一個既有映射裡：換掉那些頁（範圍的紀錄不變）
+- 落在 map 區的空白處：`Regions::reserve` 保留剛好那一段（含保護頁的規則）
+- 其他（重疊兩段、在 map 區外）：`ENOMEM`
+
+### 16.6 測試程式
+
+- `linux/tests/libdyntest.c` → `Initrd:/linux/lib/libdyntest.so`（`-shared -fPIC`；有 `static` 資料與 `__thread` 變數，檢查重定位與 TLS）。
+- `linux/tests/dyn.c` → `Initrd:/linux/dyn`：`-fPIE -pie -Wl,--dynamic-linker=/lib/ld-musl-x86_64.so.1 -ldyntest`。印 `pie yes`（`&main` 在 PIE_BASE 以上）、呼叫函式庫、`dlopen`／`dlsym`、`malloc` 1 MiB。
+- `make test-alpine`（本機）：Alpine 的 ld-musl 與 busybox，證明不是只和自己建的 musl 相容。

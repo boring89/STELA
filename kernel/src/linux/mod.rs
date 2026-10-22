@@ -41,6 +41,10 @@ mod state;
 mod sys;
 
 #[cfg(target_os = "none")]
+pub use files::lib_image;
+#[cfg(target_os = "none")]
+pub use memory::set_image;
+#[cfg(target_os = "none")]
 pub use process::process_ended;
 #[cfg(target_os = "none")]
 pub use signals::{deliver, fault_signal};

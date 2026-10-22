@@ -54,6 +54,8 @@ CHEWING_DATA := $(CHEWING_DIR)/data/index_tree.dat
 # initrd's linux/ folder.
 LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc
 LINUX_DIR   := $(USER_DIR)/linux
+# P13 K5: the dynamically linked test program and its libraries.
+LINUX_DYN   := $(LINUX_DIR)/dyn $(LINUX_DIR)/lib/ld-musl-x86_64.so.1 $(LINUX_DIR)/lib/libdyntest.so
 LINUX_CFLAGS := -static -O2 -no-pie -fno-pie -Wall -Wextra -Werror \
                -Wl,-z,max-page-size=4096 -Wl,--build-id=none
 # A Rust std program (P12, linux/rust/hello-std): x86_64-unknown-linux-musl
@@ -90,7 +92,7 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -169,11 +171,28 @@ $(MUSL_GCC): $(MUSL_DOWNLOAD)
 	mkdir -p $(MUSL_DIR)/src
 	tar -xzf $(MUSL_DOWNLOAD) -C $(MUSL_DIR)/src --strip-components=1
 	cd $(MUSL_DIR)/src && ./configure --prefix=$(abspath $(MUSL_DIR))/install \
-		--target=x86_64 --disable-shared CC=gcc AR=ar RANLIB=ranlib > ../configure.log
+		--syslibdir=$(abspath $(MUSL_DIR))/install/lib \
+		--target=x86_64 CC=gcc AR=ar RANLIB=ranlib > ../configure.log
 	$(MAKE) -C $(MUSL_DIR)/src -j$$(nproc) > $(MUSL_DIR)/make.log
 	$(MAKE) -C $(MUSL_DIR)/src install > $(MUSL_DIR)/install.log
 
-linux-tests: $(addprefix $(LINUX_DIR)/,$(LINUX_TESTS)) linux-rust
+linux-tests: $(addprefix $(LINUX_DIR)/,$(LINUX_TESTS)) $(LINUX_DYN) linux-rust
+
+# Dynamic linking (P13 K5, docs/linux.md §16): musl's libc.so is also its
+# dynamic linker, Initrd:/linux/lib/ld-musl-x86_64.so.1 (= /lib for Linux
+# programs); dyn is a PIE linked against it and libdyntest.so.
+$(LINUX_DIR)/lib/ld-musl-x86_64.so.1: $(MUSL_GCC)
+	mkdir -p $(LINUX_DIR)/lib
+	strip --strip-unneeded -o $@ $(MUSL_DIR)/install/lib/libc.so
+
+$(LINUX_DIR)/lib/libdyntest.so: linux/tests/libdyntest.c $(MUSL_GCC)
+	mkdir -p $(LINUX_DIR)/lib
+	$(MUSL_GCC) -shared -fPIC -O2 -Wall -Wextra -Werror -Wl,-z,max-page-size=4096 \
+		-Wl,--build-id=none -o $@ $<
+
+$(LINUX_DIR)/dyn: linux/tests/dyn.c $(LINUX_DIR)/lib/libdyntest.so $(LINUX_DIR)/lib/ld-musl-x86_64.so.1
+	$(MUSL_GCC) -O2 -fPIE -pie -Wall -Wextra -Werror -Wl,-z,max-page-size=4096 -Wl,--build-id=none \
+		-Wl,--dynamic-linker=/lib/ld-musl-x86_64.so.1 -o $@ $< -L$(LINUX_DIR)/lib -ldyntest
 
 linux-rust:
 	RUSTFLAGS="$(LINUX_RUSTFLAGS)" cargo build --release --target x86_64-unknown-linux-musl \
@@ -817,7 +836,8 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "threads exited with code" "run linux/procs\n" \
 		--type "procs exited with code" "run linux/misc\n" \
 		--type "misc exited with code" "run linux/hello-std rust\n" \
-		--type "hello-std exited with code" "run linux/signals\n" \
+		--type "hello-std exited with code" "run linux/dyn\n" \
+		--type "dyn exited with code" "run linux/signals\n" \
 		--send-keys "signals: press Ctrl-C" "ctrl-c" \
 		--expect "hello from linux: 3 args" --expect "hello: uname STELA" \
 		--expect "hello: thread-local value 7" --expect "hello exited with code 3" \
@@ -839,11 +859,40 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "misc: OK" --expect "misc exited with code 0" \
 		--expect "hello-std: 8 threads added up to 36000" --expect "hello-std: channel [0, 1, 4, 9, 16]" \
 		--expect "hello-std: OK" --expect "hello-std exited with code 0" \
+		--expect "dyn: hello from a dynamic program" --expect "dyn: pie yes" --expect "dyn: 2 + 3 = 5" \
+		--expect "dyn: dlsym add(4, 5) = 9, calls 42" --expect "dyn: malloc ok 7" --expect "dyn exited with code 0" \
 		--expect "signals: handlers, mask and timers work" \
 		--expect "signals: children, pipes, faults and restarts work" \
 		--expect "signals: got SIGINT" --expect "signals: OK" --expect "signals exited with code 0" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-linux.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+
+# P13 K5, local only (not in make test or CI): Alpine Linux's own dynamic
+# linker and its dynamically linked busybox (PIE), from the packages in
+# ALPINE_DIR (downloaded once, docs/linux.md §16; they stay in build/).
+# Alpine's ld-musl goes to Data:/Programs/lib (searched before
+# Initrd:/linux/lib), busybox to Data:/alpine.
+ALPINE_DIR ?= $(HOME)/stela-ports/sources/alpine
+test-alpine: esp test-images ehfs-tools $(BUILD)/OVMF_VARS.fd
+	rm -rf $(BUILD)/alpine && mkdir -p $(BUILD)/alpine
+	for p in $(ALPINE_DIR)/musl-*.apk $(ALPINE_DIR)/busybox-*.apk; do tar -xzf $$p -C $(BUILD)/alpine 2>/dev/null; done
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-alpine.img
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-alpine.img mkdir /Programs
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-alpine.img mkdir /Programs/lib
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-alpine.img mkdir /alpine
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-alpine.img in $(BUILD)/alpine/lib/ld-musl-x86_64.so.1 /Programs/lib/ld-musl-x86_64.so.1
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-alpine.img in $(BUILD)/alpine/bin/busybox /alpine/busybox
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-alpine.log \
+		--type "STELA shell" "run /alpine/busybox echo alpine busybox runs\n" \
+		--type "busybox exited with code" "run linux/dyn\n" \
+		--type "dyn exited with code" "run /alpine/busybox uname -s\n" \
+		--type "busybox exited with code" "run /alpine/busybox ls /lib\n" \
+		--expect "alpine busybox runs" --expect "busybox exited with code 0" \
+		--expect "dyn: 2 + 3 = 5" --expect "dyn exited with code 0" \
+		--expect "uname -s" --expect "STELA" --expect "ld-musl-x86_64.so.1" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-alpine.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 
 # USB: the normal kernel without PS/2 (i8042=off) and with an xHCI

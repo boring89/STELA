@@ -51,6 +51,40 @@ impl Regions {
         Some(at)
     }
 
+    /// Reserves exactly `start..start + size` (page aligned; P13 K5: a
+    /// PIE program and its `brk` area, `MAP_FIXED`); false if it is not
+    /// inside the area or overlaps a range in use (guard pages
+    /// included).
+    pub fn reserve(&mut self, start: u64, size: u64) -> bool {
+        if size == 0 || !start.is_multiple_of(PAGE) {
+            return false;
+        }
+        let Some(size) = size.checked_next_multiple_of(PAGE) else {
+            return false;
+        };
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
+        if start < self.base || end > self.end {
+            return false;
+        }
+        let clash = self
+            .used
+            .iter()
+            .any(|(&s, &len)| s < end + PAGE && start < s + len + PAGE);
+        if clash {
+            return false;
+        }
+        self.used.insert(start, size);
+        true
+    }
+
+    /// The range in use that contains `addr`: (start, size).
+    pub fn containing(&self, addr: u64) -> Option<(u64, u64)> {
+        let (&s, &len) = self.used.range(..=addr).next_back()?;
+        (addr < s + len).then_some((s, len))
+    }
+
     /// Releases the range that starts at `start`; returns its size.
     pub fn free(&mut self, start: u64) -> Option<u64> {
         self.used.remove(&start)
@@ -110,5 +144,25 @@ mod tests {
         assert!(r.is_empty());
         assert_eq!(r.alloc(4 * PAGE), None);
         assert_eq!(r.alloc(3 * PAGE + 1), None);
+    }
+
+    #[test]
+    fn reserving_exact_ranges() {
+        let mut r = Regions::new(0x10000, 0x100000);
+        assert!(r.reserve(0x50000, 0x2000));
+        assert_eq!(r.containing(0x51FFF), Some((0x50000, 0x2000)));
+        assert_eq!(r.containing(0x52000), None);
+        // Overlaps, or touches the guard page.
+        assert!(!r.reserve(0x51000, 0x1000));
+        assert!(!r.reserve(0x52000, 0x1000));
+        assert!(!r.reserve(0x4F000, 0x1000));
+        assert!(r.reserve(0x53000, 0x1000));
+        // Outside the area, unaligned, empty.
+        assert!(!r.reserve(0x8000, 0x1000));
+        assert!(!r.reserve(0xFF000, 0x2000));
+        assert!(!r.reserve(0x60001, 0x1000));
+        assert!(!r.reserve(0x60000, 0));
+        // alloc goes around them.
+        assert_eq!(r.alloc(0x1000), Some(0x10000));
     }
 }

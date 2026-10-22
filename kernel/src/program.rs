@@ -73,14 +73,39 @@ fn map_zeroed(
     Ok(())
 }
 
+/// Where a position-independent Linux program (`ET_DYN`) is loaded
+/// (P13 K5, `docs/linux.md` §16; no ASLR).
+pub const PIE_BASE: u64 = 0x5555_5555_0000;
+/// Where the program interpreter (the dynamic linker) is loaded.
+pub const INTERP_BASE: u64 = 0x7F00_0000_0000;
+
 /// Copies the segments of `elf` into `space` and maps the stack. A page
 /// that two segments share (Linux programs) gets both permissions; a page
 /// that would be writable and executable is refused (W^X).
 pub(crate) fn load(space: &AddressSpace, elf: &Elf) -> Result<(), LoadError> {
+    load_segments(space, elf, 0)?;
+    map_stack(space)
+}
+
+/// The stack below `STACK_TOP`.
+fn map_stack(space: &AddressSpace) -> Result<(), LoadError> {
+    let stack = UserFlags {
+        writable: true,
+        executable: false,
+    };
+    map_zeroed(space, STACK_TOP - STACK_SIZE, STACK_TOP, stack)
+}
+
+/// Copies the segments of `elf`, moved up by `bias` (0 for `ET_EXEC`).
+fn load_segments(space: &AddressSpace, elf: &Elf, bias: u64) -> Result<(), LoadError> {
     let mut pages: BTreeMap<u64, UserFlags> = BTreeMap::new();
     for segment in elf.segments() {
-        let start = segment.vaddr & !0xFFF;
-        let end = segment.vaddr_end().next_multiple_of(4096);
+        let start = segment
+            .vaddr
+            .checked_add(bias)
+            .ok_or(LoadError::BadSegment)?
+            & !0xFFF;
+        let end = (segment.vaddr_end() + bias).next_multiple_of(4096);
         if start == 0 || end > STACK_GUARD {
             return Err(LoadError::BadSegment);
         }
@@ -102,14 +127,66 @@ pub(crate) fn load(space: &AddressSpace, elf: &Elf) -> Result<(), LoadError> {
     }
     for segment in elf.segments() {
         space
-            .load(segment.vaddr, elf.segment_data(&segment))
+            .load(segment.vaddr + bias, elf.segment_data(&segment))
             .map_err(|_| LoadError::BadSegment)?;
     }
-    let stack = UserFlags {
-        writable: true,
-        executable: false,
+    Ok(())
+}
+
+/// A Linux program in memory (P13 K5): where it starts and what its
+/// auxiliary vector says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinuxImage {
+    /// Where the first thread starts: the interpreter's entry, or the
+    /// program's.
+    pub start: u64,
+    /// `AT_ENTRY`: the program's entry point.
+    pub entry: u64,
+    /// `AT_PHDR`: the program headers in memory (0: not mapped).
+    pub phdr: u64,
+    /// `AT_PHNUM`, `AT_PHENT`.
+    pub phnum: u64,
+    /// `AT_PHENT`.
+    pub phent: u64,
+    /// `AT_BASE`: the interpreter's base (0: none).
+    pub base: u64,
+    /// The end of the program's pages (the `brk` area starts there).
+    pub image_end: u64,
+}
+
+/// Loads a Linux program: an `ET_EXEC` where it says, an `ET_DYN` at
+/// [`PIE_BASE`]; its `PT_INTERP` (under `/lib` or `/usr/lib`, read with
+/// `interpreter`) at [`INTERP_BASE`]; and the stack.
+pub(crate) fn load_linux(
+    space: &AddressSpace,
+    elf: &Elf,
+    interpreter: impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<LinuxImage, LoadError> {
+    let bias = if elf.is_dynamic() { PIE_BASE } else { 0 };
+    load_segments(space, elf, bias)?;
+    let (phnum, phent) = elf.program_headers();
+    let (_, end) = elf.image_span();
+    let mut image = LinuxImage {
+        start: elf.entry() + bias,
+        entry: elf.entry() + bias,
+        phdr: elf.program_headers_address().map_or(0, |a| a + bias),
+        phnum: phnum as u64,
+        phent: phent as u64,
+        base: 0,
+        image_end: end + bias,
     };
-    map_zeroed(space, STACK_TOP - STACK_SIZE, STACK_TOP, stack)
+    if let Some(path) = elf.interpreter() {
+        let bytes = interpreter(path).ok_or(LoadError::NotFound)?;
+        let interp = Elf::parse_with(&bytes, Layout::Packed).map_err(LoadError::BadElf)?;
+        if !interp.is_dynamic() || interp.interpreter().is_some() {
+            return Err(LoadError::BadElf(elfload::Error::UnsupportedType));
+        }
+        load_segments(space, &interp, INTERP_BASE)?;
+        image.base = INTERP_BASE;
+        image.start = interp.entry() + INTERP_BASE;
+    }
+    map_stack(space)?;
+    Ok(image)
 }
 
 /// Starts the ELF executable `image` as a new STELA process named `name`
@@ -319,15 +396,14 @@ fn spawn_linux(
         volumes.push(String::from(&cwd[1..]));
     }
     volumes.dedup();
-    let (_, image_end) = elf.image_span();
-    let mut state =
-        crate::linux::State::with_streams(Arc::clone(&tty), stdin, stdout, cwd, image_end);
+    let mut state = crate::linux::State::with_streams(Arc::clone(&tty), stdin, stdout, cwd, 0);
     state.network = network;
     state.volumes = volumes;
     let process = task::process::create_with(name, initial, Some(state))?;
-    load(process.space(), elf)?;
+    let image = load_linux(process.space(), elf, crate::linux::lib_image)?;
+    crate::linux::set_image(&process, &image);
     let argv = message_args(args);
-    let stack = crate::linux::initial_stack(elf, &argv, None, process.linux());
+    let stack = crate::linux::initial_stack(&image, &argv, None, process.linux());
     process
         .space()
         .write(stack.rsp, &stack.bytes)
@@ -350,7 +426,7 @@ fn spawn_linux(
         };
         linux.threads.lock().push(Arc::clone(&main));
     }
-    match task::spawn_user_linux(&process, elf.entry(), stack.rsp, main) {
+    match task::spawn_user_linux(&process, image.start, stack.rsp, main) {
         Ok(_) => Ok(process),
         Err(SpawnError::OutOfMemory | SpawnError::Exiting) => Err(LoadError::OutOfMemory),
     }

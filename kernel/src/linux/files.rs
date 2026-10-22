@@ -167,6 +167,10 @@ fn resolve(p: &Process, parts: &[String]) -> Result<Found, i64> {
             }
             Ok(Found::Proc(proc))
         }
+        Target::Lib(rest) => {
+            let (node, info) = lib_node(&rest)?;
+            Ok(Found::Item(node, info))
+        }
         Target::Volume(name, rest) => {
             let volume = volume(p, &name)?;
             let info = walk(&volume, &rest)?;
@@ -179,6 +183,80 @@ fn resolve(p: &Process, parts: &[String]) -> Result<Found, i64> {
             ))
         }
     }
+}
+
+/// `rest` under the first library folder that has it (`/lib`, P13 K5;
+/// every program sees them).
+fn lib_node(rest: &[String]) -> Result<(Node, NodeInfo), i64> {
+    for (volume, top, lib) in path::LIB_FOLDERS {
+        let Some(volume) = vfs::find(volume) else {
+            continue;
+        };
+        let mut parts = alloc::vec![String::from(top), String::from(lib)];
+        parts.extend_from_slice(rest);
+        if let Ok(info) = walk(&volume, &parts) {
+            return Ok((
+                Node {
+                    volume,
+                    id: info.id,
+                },
+                info,
+            ));
+        }
+    }
+    Err(ENOENT)
+}
+
+/// The bytes of a program interpreter or library named by an absolute
+/// path under `/lib` or `/usr/lib` (P13 K5; `None` otherwise).
+pub fn lib_image(path: &str) -> Option<Vec<u8>> {
+    let parts = path::normalize("/", path).ok()?;
+    let Target::Lib(rest) = path::target(&parts) else {
+        return None;
+    };
+    let (node, info) = lib_node(&rest).ok()?;
+    if info.is_dir {
+        return None;
+    }
+    crate::program::read_program(&node.volume, node.id)
+        .ok()
+        .map(|(_, image)| image)
+}
+
+/// Whether file `node` may be mapped executable (P13 K5, `docs/linux.md`
+/// §16): it is in a library folder (`Initrd:/linux/lib`,
+/// `Data:/Programs/lib`, `Data:/Programs/NAME/lib`) or in the program's
+/// own folder.
+pub(super) fn may_execute(p: &Process, node: &Node) -> bool {
+    let Ok(path) = vfs::path_of(&node.volume, node.id) else {
+        return false;
+    };
+    let folder = path.rsplit_once('/').map_or("", |(f, _)| f);
+    let volume = node.volume.name.as_str();
+    let in_lib = match volume {
+        "Initrd" => folder == "/linux/lib" || folder.starts_with("/linux/lib/"),
+        "Data" => {
+            folder == "/Programs/lib"
+                || folder.starts_with("/Programs/lib/")
+                || folder
+                    .strip_prefix("/Programs/")
+                    .and_then(|r| r.split_once('/'))
+                    .is_some_and(|(_, sub)| sub == "lib" || sub.starts_with("lib/"))
+        }
+        _ => false,
+    };
+    if in_lib {
+        return true;
+    }
+    // The program's own folder (its /proc/self/exe without the name).
+    let Some(linux) = p.linux() else {
+        return false;
+    };
+    let exe = linux.exe.lock().clone();
+    let own = String::from(exe.rsplit_once('/').map_or("", |(f, _)| f));
+    let top = if volume == "Tmp" { "tmp" } else { volume };
+    let here = alloc::format!("/{top}{folder}");
+    !own.is_empty() && own == here
 }
 
 /// The parent folder (on a volume) and the last name of `parts`.

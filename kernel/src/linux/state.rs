@@ -93,6 +93,10 @@ pub struct Memory {
     pub current: u64,
     /// The end of the mapped pages (page aligned, ≥ `current`).
     pub mapped: u64,
+    /// Mappings that may be executable (P13 K5): the ranges of `mmap`s of
+    /// library files (`files::may_execute`); `mprotect` adds `PROT_EXEC`
+    /// only inside them.
+    pub exec: Vec<(u64, u64)>,
 }
 
 /// A thread's signal state.
@@ -274,6 +278,7 @@ impl State {
                 start,
                 current: start,
                 mapped: start,
+                exec: Vec::new(),
             }),
             tty,
             network: false,
@@ -308,6 +313,7 @@ impl State {
                 start: m.start,
                 current: m.current,
                 mapped: m.mapped,
+                exec: m.exec.clone(),
             }),
             tty: Arc::clone(&self.tty),
             network: self.network,

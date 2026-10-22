@@ -7,7 +7,9 @@
 //! Only the file header, the program headers of type `PT_LOAD` and the
 //! notes of `PT_NOTE` segments are read; sections, symbols and relocations
 //! are ignored (everything is a statically linked `ET_EXEC` at a fixed
-//! address). Field offsets follow the "ELF-64
+//! address; P13 K5: with [`Layout::Packed`], also `ET_DYN` — a
+//! position-independent program or a shared library, which the loader
+//! places at a base of its choosing — and the `PT_INTERP` path). Field offsets follow the "ELF-64
 //! Object File Format" version 1.5 and the System V ABI AMD64 Architecture
 //! Processor Supplement (`EM_X86_64` = 62).
 //!
@@ -28,6 +30,8 @@ const EV_CURRENT: u8 = 1;
 
 /// `e_type`: executable file.
 const ET_EXEC: u16 = 2;
+/// `e_type`: shared object (a PIE program or a library; P13 K5).
+const ET_DYN: u16 = 3;
 /// `e_machine`: AMD x86-64.
 const EM_X86_64: u16 = 62;
 
@@ -38,6 +42,8 @@ const PHDR_SIZE: usize = 56;
 
 /// `p_type`: loadable segment.
 const PT_LOAD: u32 = 1;
+/// `p_type`: the program interpreter's path (P13 K5).
+const PT_INTERP: u32 = 3;
 /// `p_type`: notes (System V ABI, "Note Section").
 const PT_NOTE: u32 = 4;
 
@@ -50,7 +56,7 @@ pub enum Error {
     BadMagic,
     /// Not a 64-bit, little-endian, version 1 file.
     UnsupportedFormat,
-    /// Not an `ET_EXEC` for x86-64.
+    /// Not an `ET_EXEC` for x86-64 (or `ET_DYN` with `Layout::Packed`).
     UnsupportedType,
     /// A program header is malformed (sizes, alignment, overflow, overlap).
     BadSegment,
@@ -109,6 +115,7 @@ impl Segment {
 #[derive(Clone, Copy, Debug)]
 pub struct Elf<'a> {
     data: &'a [u8],
+    dynamic: bool,
     entry: u64,
     phoff: usize,
     phnum: usize,
@@ -203,7 +210,12 @@ impl<'a> Elf<'a> {
         }
         // Elf64_Ehdr: e_type @16, e_machine @18, e_entry @24, e_phoff @32,
         // e_phentsize @54, e_phnum @56.
-        if read_u16(data, 16)? != ET_EXEC || read_u16(data, 18)? != EM_X86_64 {
+        let dynamic = match read_u16(data, 16)? {
+            ET_EXEC => false,
+            ET_DYN if layout == Layout::Packed => true,
+            _ => return Err(Error::UnsupportedType),
+        };
+        if read_u16(data, 18)? != EM_X86_64 {
             return Err(Error::UnsupportedType);
         }
         let entry = read_u64(data, 24)?;
@@ -223,6 +235,7 @@ impl<'a> Elf<'a> {
 
         let elf = Elf {
             data,
+            dynamic,
             entry,
             phoff,
             phnum,
@@ -296,9 +309,33 @@ impl<'a> Elf<'a> {
         }))
     }
 
-    /// The entry point's virtual address.
+    /// The entry point's virtual address (relative to the load base for
+    /// an `ET_DYN` file).
     pub const fn entry(&self) -> u64 {
         self.entry
+    }
+
+    /// Whether it is `ET_DYN` (placed at a base the loader chooses; its
+    /// addresses are offsets from that base).
+    pub const fn is_dynamic(&self) -> bool {
+        self.dynamic
+    }
+
+    /// The program interpreter (`PT_INTERP`, without the NULs), if any and
+    /// valid UTF-8.
+    pub fn interpreter(&self) -> Option<&'a str> {
+        (0..self.phnum).find_map(|index| {
+            let at = self.phoff + index * self.phentsize;
+            if read_u32(self.data, at).ok()? != PT_INTERP {
+                return None;
+            }
+            let offset = usize::try_from(read_u64(self.data, at + 8).ok()?).ok()?;
+            let size = usize::try_from(read_u64(self.data, at + 32).ok()?).ok()?;
+            let bytes = self.data.get(offset..offset.checked_add(size)?)?;
+            core::str::from_utf8(bytes)
+                .ok()
+                .map(|p| p.trim_end_matches('\0'))
+        })
     }
 
     /// Number of program headers and the size of each (for the auxiliary
@@ -613,5 +650,38 @@ mod tests {
             elf.segments()
                 .all(|s| !(s.flags.writable() && s.flags.executable()))
         );
+    }
+
+    #[test]
+    fn dynamic_programs_and_their_interpreter() {
+        // A PIE: ET_DYN at vaddr 0, an interpreter path in the file.
+        let mut f = build(
+            0x1010,
+            &[
+                Phdr {
+                    p_type: PT_INTERP,
+                    flags: 4,
+                    offset: 0x200,
+                    vaddr: 0x200,
+                    filesz: 28,
+                    memsz: 28,
+                },
+                load(4, 0, 0, 0x300, 0x300),
+                load(5, 0x1000, 0x1000, 0x100, 0x100),
+            ],
+            0x1100,
+        );
+        f[16..18].copy_from_slice(&ET_DYN.to_le_bytes());
+        f[0x200..0x21C].copy_from_slice(b"/lib/ld-musl-x86_64.so.1\0\0\0\0");
+        let elf = Elf::parse_with(&f, Layout::Packed).expect("an ET_DYN with Packed");
+        assert!(elf.is_dynamic());
+        assert_eq!(elf.interpreter(), Some("/lib/ld-musl-x86_64.so.1"));
+        assert_eq!(elf.image_span(), (0, 0x2000));
+        // Not with the strict layout (the kernel, STELA programs).
+        assert_eq!(Elf::parse(&f).err(), Some(Error::UnsupportedType));
+        // A static program has no interpreter.
+        let s = kernel_like();
+        assert!(!Elf::parse(&s).expect("static").is_dynamic());
+        assert_eq!(Elf::parse(&s).expect("static").interpreter(), None);
     }
 }

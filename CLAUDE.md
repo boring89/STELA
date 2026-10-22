@@ -23,8 +23,8 @@ STELA：從零開始的獨立作業系統（Rust，x86-64，UEFI），繼承 Cla
 ```bash
 make            # 建置 loader、kernel、使用者程式與 initrd → build/esp/（EFI/BOOT/BOOTX64.EFI、STELA/kernel.elf、STELA/initrd.tar）
 make chewing    # P13：libchewing 0.5.1（LGPL-2.1，從 ~/stela-ports/sources/ 複製或下載，檢查 SHA-256）解開到 build/chewing/src，host 的 init_database 造字典 → build/chewing/data（Initrd:/chewing/）
-make musl       # 複製 68k_HAL 已下載的 musl-1.2.5.tar.gz、檢查 SHA-256、建在 build/musl/（MIT；只用來建 Linux 測試程式）
-make linux-tests # linux/tests/*.c（hello、files、memory、time、tty、nosys、net、poll、pipe、threads、signals、procs、misc） → build/user/linux/（musl-gcc -static），與 Rust std 的 linux/rust/hello-std（make linux-rust：x86_64-unknown-linux-musl、relocation-model=static），打包進 initrd 的 linux/
+make musl       # 複製 68k_HAL 已下載的 musl-1.2.5.tar.gz、檢查 SHA-256、建在 build/musl/（MIT；只用來建 Linux 測試程式；P13 起也建 libc.so，--syslibdir 指在 build 裡）
+make linux-tests # linux/tests/*.c（hello、files、memory、time、tty、nosys、net、poll、pipe、threads、signals、procs、misc；P13：dyn（PIE + libdyntest.so）與 linux/lib/ld-musl-x86_64.so.1（musl 的 libc.so）） → build/user/linux/（musl-gcc -static），與 Rust std 的 linux/rust/hello-std（make linux-rust：x86_64-unknown-linux-musl、relocation-model=static），打包進 initrd 的 linux/
 make user       # 建置 user/ 的程式（hello、spin、fault、ipc_server、ipc_client、keyecho、fstest、proctest、init、shell、windowserver、terminal、echo_win、mouseion、viewer、ifconfig、ping、fetch、tone、hwinfo、bench、kalamos、monitor、periplus、stress、setup、ime）與 classic/（Classic.app）→ build/user/；user/bin 的命令列工具與 pkg → build/user/bin/（initrd 的 bin/）
 make classic    # 同 make user（Classic.app 的 C 由 classic/build.rs 用 gcc 編）
 make initrd     # 把 build/user/ 排成 build/initrd-root/（linux/、Terminal.app 等 bundle）再打包成 build/initrd.tar（GNU tar --format=ustar）
@@ -36,6 +36,7 @@ make assets     # assets/*.ppm、*.pbm → assets/generated/（Rust 資料；換
 make draft-assets # 重畫草稿圖示（會覆蓋 assets/；使用者的圖放進去之後不要跑）
 make test-classic # 本機專用：MAC_ROM、MAC_DISK（預設 ~/mac/，只讀）複製進 build/images/classic-data.img 的 Data:/Classic/，開機五次：Finder 截圖（放大 2 倍）、聲音、800x600 卡 + disk2（hfsutils 的 hformat 造空白 HFS）、FSM 卷宗、Restart → Shut Down 與 System 卷宗正常卸載（tools/hfs_check.py）（不在 make test／CI）
 make bench      # 無 KVM 的量測（kernel 大小、開機時間、閒置記憶體、syscall、切換、eHFS、TCP）→ build/bench.md；值得留的貼進 docs/bench.md（P11）
+make test-alpine # 本機專用（P13）：~/stela-ports/sources/alpine/ 的 Alpine musl、busybox 套件（只解開在 build/）：Alpine 的 ld-musl + 動態連結的 busybox 在 STELA 跑（docs/linux.md §16）
 make test-ehfs-compat  # 本機專用：與 68k_HAL 的 eHFS 工具交叉檢查（不在 make test／CI）
 make test-fuzz  # host 的 fuzz（tools/fuzz：eHFS、FAT、GPT、MBR、ustar、網路、HTTP、DNS、HTML、設定檔、路徑；最多 60 秒；進 make test）（docs/testing.md §3）
 make test-stress # 本機專用：-smp 4 的壓力測試（100 行程、1000 檔、64 MiB pipe、50 條 TCP、20 視窗，三輪），檢查頁框、kernel heap、handle、行程回到原值（docs/testing.md §4）
@@ -231,7 +232,7 @@ Claude 依照上方工作規則直接實作。
 - 儲存：一個 port 一次一個請求（但一個請求一次發出多個命令；沒有 NCQ）；MSI 一個 message、MSI-X 只用 entry 0、向量不回收；FAT 在 USB 上可寫（`Boot` 唯讀）、沒有 FAT12；USB 隨身碟只有 Bulk-Only、一次 4 KiB（docs/usb.md §12）；RTC 只在開機讀一次、當成 UTC（docs/time.md §5.5）；FAT／Initrd／Tmp 的 `DirRead` 仍每次重新列出；一個卷宗一次一個操作（docs/storage.md §12、docs/vfs.md §8）。
 - 實機：kernel 會把看到的任何 GPT 磁碟上的 eHFS 分割區掛成可寫，包括 P520 上 68k_HAL 磁碟（sda）的 Data 分割區（格式相容，不會損壞，但 Mouseion 會寫入 Finder 資訊）；實機測試時留意或先拔掉（docs/p520.md §1）。
 - 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；有 `INIT` 能力的程式（預設所有人）都能請 init 關機；關機前不通知程式（docs/acpi.md §9）。
-- Linux 人格（P12 起有執行緒、fork、execve、wait、訊號、pty、/proc）：只有靜態非 PIE 的程式；fork 全複製（沒有 COW）、一個行程的執行緒都在同一顆 CPU；沒有 epoll、eventfd、timerfd、inotify、`MAP_FIXED`、可寫的 `MAP_SHARED`、停止／繼續（job control 的 stop）；`sigaltstack` 只記錄；mode／owner／時間不能改；Linux 程式看得到 `[3]`、`[4]` 的整個卷宗（不只那個資料夾以下）；`PROT_NONE` 可讀；被訊號或例外結束的 exit code 是 128 + 訊號（docs/linux.md §15）。
+- Linux 人格（P12 起有執行緒、fork、execve、wait、訊號、pty、/proc；P13 起有動態連結與 PIE，`docs/linux.md` §16）：沒有 ASLR，可執行的映射只限 lib 資料夾與程式自己資料夾的檔案；fork 全複製（沒有 COW）、一個行程的執行緒都在同一顆 CPU；沒有 epoll、eventfd、timerfd、inotify、可寫的 `MAP_SHARED`、停止／繼續（job control 的 stop）；`sigaltstack` 只記錄；mode／owner／時間不能改；Linux 程式看得到 `[3]`、`[4]` 的整個卷宗（不只那個資料夾以下）；`PROT_NONE` 可讀；被訊號或例外結束的 exit code 是 128 + 訊號（docs/linux.md §15）。
 - 網路：一次一張網卡；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 的等待者被任何事件全部叫醒；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
 - 音效：只有輸出、48 kHz 16 位元雙聲道、一次一個程式、沒有混音與音量、輪詢 LPIB；實機 codec 未驗證（docs/sound.md §7）。
 - IPC：訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；共享記憶體是 eager；WaitSet 的行程成員以 id 記，要自己移除（`docs/ipc.md` §12、§13）。

@@ -11,6 +11,8 @@
 //!  /tmp/x            Tmp:/x (the kernel's memory file system)
 //!  /dev              null, zero, tty, urandom, random, ptmx, pts/N (P12)
 //!  /etc              resolv.conf (made from the network's DNS server)
+//!  /lib, /usr/lib    shared libraries (P13 K5): Data:/Programs/lib, else
+//!                    Initrd:/linux/lib
 //!  /proc             self (or the process id): exe, maps, stat, status,
 //!                    cmdline, fd/; cpuinfo, meminfo, uptime (P12)
 //! ```
@@ -148,7 +150,15 @@ pub enum Target {
     /// An item on a volume: its name (`tmp` means the `Tmp` volume) and
     /// the path inside it (empty for its root).
     Volume(String, Vec<String>),
+    /// Under `/lib` or `/usr/lib` (P13 K5): the path inside the library
+    /// folders ([`LIB_FOLDERS`]).
+    Lib(Vec<String>),
 }
+
+/// Where `/lib` and `/usr/lib` lead, in the order they are searched:
+/// volume and folder (P13 K5). Libraries a package installs come first.
+pub const LIB_FOLDERS: [(&str, &str, &str); 2] =
+    [("Data", "Programs", "lib"), ("Initrd", "linux", "lib")];
 
 /// Why a path was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +226,8 @@ pub fn target(parts: &[String]) -> Target {
         [proc, rest @ ..] if proc == "proc" => {
             proc_target(rest).map_or(Target::Missing, Target::Proc)
         }
+        [lib, rest @ ..] if lib == "lib" => Target::Lib(rest.to_vec()),
+        [usr, lib, rest @ ..] if usr == "usr" && lib == "lib" => Target::Lib(rest.to_vec()),
         [etc] if etc == "etc" => Target::EtcDir,
         [etc, name] if etc == "etc" && name == "resolv.conf" => Target::Config(Config::ResolvConf),
         [etc, rest @ ..] if etc == "etc" => Target::Volume(String::from("etc"), rest.to_vec()),
@@ -289,6 +301,20 @@ mod tests {
         assert_eq!(
             target(&s(&["Initrd", "linux", "hello"])),
             Target::Volume(String::from("Initrd"), s(&["linux", "hello"]))
+        );
+        // P13 K5: the library folders.
+        assert_eq!(
+            target(&s(&["lib", "ld-musl-x86_64.so.1"])),
+            Target::Lib(s(&["ld-musl-x86_64.so.1"]))
+        );
+        assert_eq!(
+            target(&s(&["usr", "lib", "libz.so.1"])),
+            Target::Lib(s(&["libz.so.1"]))
+        );
+        assert_eq!(target(&s(&["lib"])), Target::Lib(vec![]));
+        assert_eq!(
+            target(&s(&["usr", "bin"])),
+            Target::Volume(String::from("usr"), s(&["bin"]))
         );
     }
 

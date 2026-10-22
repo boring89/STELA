@@ -15,7 +15,6 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use elfload::Elf;
 use frame::sync::SpinLock;
 use frame::syscall::SyscallFrame;
 
@@ -329,18 +328,19 @@ fn setsid(p: &Process) -> LinuxResult {
 /// The initial stack of a Linux program: its arguments, the environment
 /// (`env`, or a few standard variables) and the auxiliary vector.
 pub fn initial_stack(
-    elf: &Elf,
+    image: &crate::program::LinuxImage,
     argv: &[Vec<u8>],
     env: Option<&[Vec<u8>]>,
     state: Option<&super::State>,
 ) -> stack::Image {
-    let (phnum, phent) = elf.program_headers();
     let aux = [
-        (at::PHDR, elf.program_headers_address().unwrap_or(0)),
-        (at::PHENT, phent as u64),
-        (at::PHNUM, phnum as u64),
+        (at::PHDR, image.phdr),
+        (at::PHENT, image.phent),
+        (at::PHNUM, image.phnum),
         (at::PAGESZ, 4096),
-        (at::ENTRY, elf.entry()),
+        // P13 K5: the interpreter's base (0 without one).
+        (at::BASE, image.base),
+        (at::ENTRY, image.entry),
         (at::UID, 0),
         (at::EUID, 0),
         (at::GID, 0),

@@ -29,6 +29,7 @@ pub mod at {
     pub const PHENT: u64 = 4;
     pub const PHNUM: u64 = 5;
     pub const PAGESZ: u64 = 6;
+    pub const BASE: u64 = 7;
     pub const ENTRY: u64 = 9;
     pub const UID: u64 = 11;
     pub const EUID: u64 = 12;

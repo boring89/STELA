@@ -497,11 +497,12 @@ pub fn execve(
         return Err(ENOEXEC);
     }
     let space = AddressSpace::new().map_err(|_| ENOMEM)?;
-    program::load(&space, &elf).map_err(|e| match e {
+    let image = program::load_linux(&space, &elf, super::lib_image).map_err(|e| match e {
         program::LoadError::OutOfMemory => ENOMEM,
+        program::LoadError::NotFound => super::errno::ENOENT,
         _ => ENOEXEC,
     })?;
-    let stack = super::initial_stack(&elf, &argv, Some(&env), Some(linux));
+    let stack = super::initial_stack(&image, &argv, Some(&env), Some(linux));
     space.write(stack.rsp, &stack.bytes).map_err(|_| ENOMEM)?;
 
     // No way back from here: the other threads go, the new image comes.
@@ -513,14 +514,7 @@ pub fn execve(
     drop(space);
     *p.maps().lock() =
         crate::object::regions::Regions::new(abi::layout::MAP_BASE, abi::layout::MAP_END);
-    {
-        let (_, image_end) = elf.image_span();
-        let start = image_end.next_multiple_of(4096);
-        let mut m = linux.memory.lock();
-        m.start = start;
-        m.current = start;
-        m.mapped = start;
-    }
+    super::set_image(p, &image);
     let closed = linux.fds.lock().take_cloexec();
     drop(closed);
     for a in linux.actions.lock().iter_mut() {
@@ -549,7 +543,7 @@ pub fn execve(
     let _ = frame::task::set_fs_base(0);
     frame::task::reset_fpu();
     let regs = UserRegs {
-        rip: elf.entry(),
+        rip: image.start,
         rsp: stack.rsp,
         rflags: 0x202,
         ..UserRegs::default()

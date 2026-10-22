@@ -126,6 +126,10 @@ vfs: mounted Boot (FAT, ro, 39 MiB), Data (eHFS, rw, 86 MiB), Initrd (initrd, ro
 - **rollback**：slot 檔指著掛著的槽 → 換另一槽（kernel 整個驗過才換，另一槽壞了就拒絕：`the other slot has no good System image`）；slot 檔已經指著另一槽（剛 apply 還沒重開）→ 指回掛著的槽（取消）。
 - 計畫外的決定：多了 `SystemUse`（syscall 80）——寫完後由 kernel 再驗一次並改 slot 檔，程式不能直接寫 slot 檔（ESP 對程式唯讀）；`PartitionWrite` 的參數是 (offset, buf, len, power)，沒有名字（只能寫「另一槽」，不能指定分割區）。
 
+### 6.1 安裝到磁碟（P14 K7）
+
+Setup 的 install 頁把 ESP、System A（掛著的槽的映像）、空的 System B、空的 Data 寫到一整顆空白的磁碟（`vfs::mount::install`，`docs/setup.md` §4.2）。所以「安裝」也只是複製簽好的 System 映像，和更新是同一套格式。
+
 ## 7. 測試（K4 的部分）
 
 | 測試 | 內容 |

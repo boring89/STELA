@@ -790,6 +790,36 @@ test-setup: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--expect "windowserver: scale 1" --expect "mouseion: ready" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/setup.img -device ide-hd,drive=sata1,bus=ide.1
+	# P14 K7: Setup from a disk image with System slots installs STELA on a
+	# second, empty disk (typing its name); that disk then starts by itself
+	# (slot A of its own) into its own Setup.
+	rm -rf $(DISK_ESP)-install
+	cp -r $(ESP) $(DISK_ESP)-install
+	cp tools/boot.cfg $(DISK_ESP)-install/STELA/boot.cfg
+	python3 tools/make_disk_image.py --system $(SYSTEM_IMG) --system-mib $(SYSTEM_MIB) \
+		$(IMAGES)/install-src.img $(DISK_ESP)-install $(EHFS_TOOLS) 64
+	rm -f $(IMAGES)/install-target.img
+	truncate -s 512M $(IMAGES)/install-target.img
+	python3 tools/qemu_test.py --timeout 300 --log $(BUILD)/test-setup-install.log \
+		--send-keys "setup: page language" "ret" \
+		--send-keys "setup: page timezone" "ret" \
+		--type "setup: page install" "ahci0p1\n" \
+		--send-keys "setup: installed on ahci0p1" "ret" \
+		--send-keys "setup: page data" "ret" \
+		--expect "system: slot a (version" --expect "setup: can install on: ahci0p1 (512 MiB)" \
+		--expect "setup: page install" --expect "vfs: installing STELA on ahci0p1" \
+		--expect "vfs: installed STELA on ahci0p1: ESP 64 MiB, System A and B 64 MiB" \
+		--expect "setup: installed on ahci0p1" --expect "setup: page data" --expect "setup: page network" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(IMAGES)/install-src.img -device ide-hd,drive=disk0,bus=ide.0,bootindex=0 \
+		-drive if=none,id=disk1,format=raw,file=$(IMAGES)/install-target.img -device ide-hd,drive=disk1,bus=ide.1
+	sgdisk -v $(IMAGES)/install-target.img | grep -q "No problems found"
+	mtype -i $(IMAGES)/install-target.img@@1M ::/STELA/slot | grep -qx "a 0"
+	python3 tools/qemu_test.py --timeout 180 --log $(BUILD)/test-setup-installed.log \
+		--expect "system: slot a (version" --expect "System (eHFS, ro" \
+		--expect "init: first start: Setup.app" --expect "setup: page language" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(IMAGES)/install-target.img -device ide-hd,drive=disk0,bus=ide.0,bootindex=0
 
 # Measurements (P11, docs/bench.md): the normal kernel with the AHCI test
 # disk and user networking, no KVM; the shell runs bench (memory on the

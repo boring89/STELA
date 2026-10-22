@@ -222,10 +222,169 @@ pub fn read(device: &dyn BlockDevice) -> Result<Gpt, GptError> {
     })
 }
 
+/// A partition to write (P14 K7): type, unique GUID, first block and
+/// blocks (4 KiB), name.
+#[derive(Clone, Debug)]
+pub struct NewPartition<'a> {
+    /// The type GUID.
+    pub kind: Guid,
+    /// The partition's own GUID.
+    pub unique: Guid,
+    /// First 4 KiB block.
+    pub start: u64,
+    /// 4 KiB blocks.
+    pub blocks: u64,
+    /// Its name (at most 36 UTF-16 units are kept).
+    pub name: &'a str,
+}
+
+/// Entries in a table this writes (the usual 128).
+const ENTRIES: usize = 128;
+/// Bytes of one entry.
+const ENTRY_SIZE: usize = 128;
+
+/// The first 4 KiB block a partition may use on a device of `blocks`
+/// blocks with `sector`-byte sectors, and the block after the last one
+/// (before the backup table).
+pub fn usable(sector: u32, blocks: u64) -> (u64, u64) {
+    let s = u64::from(sector);
+    let array_sectors = (ENTRIES * ENTRY_SIZE) as u64 / s;
+    let total = blocks * BLOCK_SIZE as u64 / s;
+    // Primary: MBR, header, array; backup: array, header.
+    let first = ((2 + array_sectors) * s).div_ceil(BLOCK_SIZE as u64);
+    let last = (total - 1 - array_sectors) * s / BLOCK_SIZE as u64;
+    (first, last)
+}
+
+/// Writes a new GPT (UEFI 2.10 §5.3: protective MBR, primary header and
+/// entry array, backup array and header) on `device` with `sector`-byte
+/// sectors (512 or 4096), with `parts` (which must lie in [`usable`]).
+/// Everything before the first usable block and after the last is
+/// overwritten.
+pub fn write(
+    device: &dyn BlockDevice,
+    sector: u32,
+    disk_guid: Guid,
+    parts: &[NewPartition<'_>],
+) -> Result<(), GptError> {
+    let s = sector as usize;
+    if (s != 512 && s != 4096) || parts.len() > ENTRIES {
+        return Err(GptError::Corrupt);
+    }
+    let blocks = device.block_count();
+    let (first_usable, end_usable) = usable(sector, blocks);
+    let per_block = (BLOCK_SIZE / s) as u64;
+    let total = blocks * per_block;
+    let mut array = vec![0u8; ENTRIES * ENTRY_SIZE];
+    for (i, p) in parts.iter().enumerate() {
+        if p.start < first_usable || p.blocks == 0 || p.start + p.blocks > end_usable {
+            return Err(GptError::Corrupt);
+        }
+        let e = &mut array[i * ENTRY_SIZE..(i + 1) * ENTRY_SIZE];
+        e[..16].copy_from_slice(&p.kind.0);
+        e[16..32].copy_from_slice(&p.unique.0);
+        e[32..40].copy_from_slice(&(p.start * per_block).to_le_bytes());
+        e[40..48].copy_from_slice(&((p.start + p.blocks) * per_block - 1).to_le_bytes());
+        for (j, u) in p.name.encode_utf16().take(36).enumerate() {
+            e[56 + 2 * j..58 + 2 * j].copy_from_slice(&u.to_le_bytes());
+        }
+    }
+    let array_crc = crc32(&array);
+    let array_sectors = (ENTRIES * ENTRY_SIZE / s) as u64;
+    let header = |mine: u64, other: u64, array_lba: u64| -> Vec<u8> {
+        let mut h = vec![0u8; 92];
+        h[..8].copy_from_slice(b"EFI PART");
+        h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        h[12..16].copy_from_slice(&92u32.to_le_bytes());
+        h[24..32].copy_from_slice(&mine.to_le_bytes());
+        h[32..40].copy_from_slice(&other.to_le_bytes());
+        h[40..48].copy_from_slice(&(2 + array_sectors).to_le_bytes());
+        h[48..56].copy_from_slice(&(total - 2 - array_sectors).to_le_bytes());
+        h[56..72].copy_from_slice(&disk_guid.0);
+        h[72..80].copy_from_slice(&array_lba.to_le_bytes());
+        h[80..84].copy_from_slice(&(ENTRIES as u32).to_le_bytes());
+        h[84..88].copy_from_slice(&(ENTRY_SIZE as u32).to_le_bytes());
+        h[88..92].copy_from_slice(&array_crc.to_le_bytes());
+        let crc = crc32(&h);
+        h[16..20].copy_from_slice(&crc.to_le_bytes());
+        h
+    };
+    // The start: MBR (one 0xEE partition over the disk), header, array.
+    let mut head = vec![0u8; first_usable as usize * BLOCK_SIZE];
+    let mbr = &mut head[446..462];
+    mbr[4] = 0xEE;
+    mbr[8..12].copy_from_slice(&1u32.to_le_bytes());
+    mbr[12..16].copy_from_slice(&((total - 1).min(u64::from(u32::MAX)) as u32).to_le_bytes());
+    head[510] = 0x55;
+    head[511] = 0xAA;
+    let h = header(1, total - 1, 2);
+    head[s..s + 92].copy_from_slice(&h);
+    head[2 * s..2 * s + array.len()].copy_from_slice(&array);
+    device.write(0, &head).map_err(GptError::Device)?;
+    // The end: array, then the header in the last sector.
+    let tail_blocks = blocks - end_usable;
+    let mut tail = vec![0u8; tail_blocks as usize * BLOCK_SIZE];
+    let tail_first = end_usable * per_block;
+    let array_at = ((total - 1 - array_sectors - tail_first) as usize) * s;
+    tail[array_at..array_at + array.len()].copy_from_slice(&array);
+    let h = header(total - 1, 1, total - 1 - array_sectors);
+    let at = ((total - 1 - tail_first) as usize) * s;
+    tail[at..at + 92].copy_from_slice(&h);
+    device.write(end_usable, &tail).map_err(GptError::Device)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::mem::MemDisk;
+
+    #[test]
+    fn written_tables_read_back() {
+        for sector in [512u32, 4096] {
+            let disk = MemDisk::new(8192);
+            let (first, end) = usable(sector, 8192);
+            assert!(first <= 6 && end < 8192);
+            let parts = [
+                NewPartition {
+                    kind: Guid::ESP,
+                    unique: Guid([1; 16]),
+                    start: 256,
+                    blocks: 256,
+                    name: "EFI system",
+                },
+                NewPartition {
+                    kind: Guid::STELA_SYSTEM,
+                    unique: Guid([2; 16]),
+                    start: 512,
+                    blocks: 1024,
+                    name: "System A",
+                },
+                NewPartition {
+                    kind: Guid::STELA_DATA,
+                    unique: Guid([3; 16]),
+                    start: 1536,
+                    blocks: end - 1536,
+                    name: "Data",
+                },
+            ];
+            write(&disk, sector, Guid([9; 16]), &parts).unwrap();
+            let gpt = read(&disk).unwrap();
+            assert_eq!(gpt.sector_size, sector);
+            assert_eq!(gpt.partitions.len(), 3);
+            assert_eq!(gpt.partitions[1].kind, Guid::STELA_SYSTEM);
+            assert_eq!(gpt.partitions[1].name, "System A");
+            assert_eq!(gpt.blocks_of(&gpt.partitions[1]), Some((512, 1024)));
+            assert_eq!(gpt.blocks_of(&gpt.partitions[2]), Some((1536, end - 1536)));
+            // A partition outside the usable range is refused.
+            let bad = [NewPartition {
+                start: end - 1,
+                blocks: 2,
+                ..parts[0].clone()
+            }];
+            assert!(write(&disk, sector, Guid([9; 16]), &bad).is_err());
+        }
+    }
 
     fn utf16(name: &str) -> Vec<u8> {
         name.encode_utf16().flat_map(u16::to_le_bytes).collect()

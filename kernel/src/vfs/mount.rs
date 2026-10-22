@@ -266,13 +266,19 @@ fn mount_partition(
         ));
     }
     if kind == Some(Guid::ESP) {
+        let place = crate::system::Place {
+            disk_name: String::from(disk_name),
+            disk: Arc::clone(_disk),
+            start: part.start(),
+            count: part.block_count(),
+        };
         let device: VolumeDevice = CachedDevice::new(part, FAT_CACHE);
         match FatFs::mount(device, true) {
             Ok((fs, _label)) => {
                 let (total, _) = super::FileSystem::space(&fs);
                 // P14 K5: the kernel itself writes the slot file there.
                 let fs = Arc::new(fs);
-                crate::system::set_boot(Arc::clone(&fs));
+                crate::system::set_boot(Arc::clone(&fs), place);
                 let volume = mount("Boot", fs);
                 return Some(alloc::format!("{} (FAT, ro, {})", volume.name, mib(total)));
             }
@@ -381,4 +387,135 @@ pub fn format_data(name: &str) -> Result<(), abi::Error> {
         }
     }
     Err(abi::Error::NotFound)
+}
+
+/// 4 KiB blocks in a MiB.
+const MIB_BLOCKS: u64 = (1 << 20) / BLOCK_SIZE as u64;
+/// The size of each System slot an installation makes (P14 K7; as `make
+/// disk-image`'s default).
+const INSTALL_SLOT: u64 = 64 * MIB_BLOCKS;
+/// The smallest Data volume an installation makes.
+const INSTALL_DATA_MIN: u64 = 64 * MIB_BLOCKS;
+
+/// Whole disks STELA may be installed on (P14 K7, Setup's "Install to
+/// disk", `docs/setup.md` §4.2): not removable, no partition table,
+/// block 0 all zeros (never used), room for the ESP, two System slots and
+/// a Data volume; with their size in bytes. The same rule as Data's
+/// formatting: nothing that was ever used is offered.
+pub fn install_candidates() -> Vec<(String, u64)> {
+    let mut out = Vec::new();
+    for (disk_name, disk) in disks() {
+        if removable(&disk_name) {
+            continue;
+        }
+        let parts = partitions(&disk_name, &disk);
+        if !(parts.len() == 1 && parts[0].1 == 0 && parts[0].0.is_none()) {
+            continue;
+        }
+        let mut first = vec![0u8; BLOCK_SIZE];
+        if disk.read(0, &mut first).is_err() || first.iter().any(|&b| b != 0) {
+            continue;
+        }
+        let need = 2 * MIB_BLOCKS + 64 * MIB_BLOCKS + 2 * INSTALL_SLOT + INSTALL_DATA_MIN;
+        if disk.block_count() < need {
+            continue;
+        }
+        out.push((disk_name, disk.block_count() * BLOCK_SIZE as u64));
+    }
+    out
+}
+
+/// Copies `blocks` blocks from `from` to `to` (64 at a time).
+fn copy_blocks(
+    from: &dyn BlockDevice,
+    to: &dyn BlockDevice,
+    blocks: u64,
+) -> Result<(), abi::Error> {
+    let mut buf = vec![0u8; 64 * BLOCK_SIZE];
+    let mut at = 0;
+    while at < blocks {
+        let n = (blocks - at).min(64);
+        let piece = &mut buf[..n as usize * BLOCK_SIZE];
+        from.read(at, piece).map_err(|_| abi::Error::IoError)?;
+        to.write(at, piece).map_err(|_| abi::Error::IoError)?;
+        at += n;
+    }
+    Ok(())
+}
+
+/// Installs STELA on the whole disk `name` (one of
+/// [`install_candidates`]; P14 K7): a GPT with an ESP (a copy of the one
+/// this start came from), System A (a copy of the mounted System image),
+/// an empty System B and an empty Data volume; the new ESP's slot file
+/// says `a 0`. Nothing is mounted from it: it is for the next start.
+pub fn install(name: &str) -> Result<(), abi::Error> {
+    if !install_candidates().iter().any(|(n, _)| n == name) {
+        return Err(abi::Error::NotFound);
+    }
+    let (_, disk) = disks()
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .ok_or(abi::Error::NotFound)?;
+    let (esp, system, system_blocks) = crate::system::install_sources()?;
+    let sector = disk.sector_size();
+    let (_, end) = gpt::usable(sector, disk.block_count());
+    let esp_start = MIB_BLOCKS;
+    let esp_blocks = esp.count;
+    let slot_a = (esp_start + esp_blocks).next_multiple_of(MIB_BLOCKS);
+    let slot = INSTALL_SLOT.max(system_blocks.next_multiple_of(MIB_BLOCKS));
+    let slot_b = slot_a + slot;
+    let data = slot_b + slot;
+    if data + INSTALL_DATA_MIN > end {
+        return Err(abi::Error::NoSpace);
+    }
+    let mut ids = [[0u8; 16]; 5];
+    for id in ids.iter_mut() {
+        frame::random::fill(id);
+    }
+    let new = |kind, i: usize, start, blocks, name| gpt::NewPartition {
+        kind,
+        unique: Guid(ids[i]),
+        start,
+        blocks,
+        name,
+    };
+    let parts = [
+        new(Guid::ESP, 1, esp_start, esp_blocks, "EFI system"),
+        new(Guid::STELA_SYSTEM, 2, slot_a, slot, "System A"),
+        new(Guid::STELA_SYSTEM, 3, slot_b, slot, "System B"),
+        new(Guid::STELA_DATA, 4, data, end - data, "Data"),
+    ];
+    frame::kprintln!("vfs: installing STELA on {name}");
+    gpt::write(&*disk, sector, Guid(ids[0]), &parts).map_err(|_| abi::Error::IoError)?;
+    let part = |start, count| {
+        Partition::new(Arc::clone(&disk), start, count, false).ok_or(abi::Error::IoError)
+    };
+    let source_esp = esp.partition_for_copy().ok_or(abi::Error::IoError)?;
+    copy_blocks(&source_esp, &part(esp_start, esp_blocks)?, esp_blocks)?;
+    let source_system = system.partition_for_copy().ok_or(abi::Error::IoError)?;
+    copy_blocks(&source_system, &part(slot_a, slot)?, system_blocks)?;
+    // Slot B: an empty first block (a fresh disk is zeros; to be sure).
+    part(slot_b, slot)?
+        .write(0, &vec![0u8; BLOCK_SIZE])
+        .map_err(|_| abi::Error::IoError)?;
+    let mut uuid = [0u8; 16];
+    frame::random::fill(&mut uuid);
+    let options = ehfs::FormatOptions {
+        name: "Data",
+        uuid,
+        now: frame::time::wall_clock_ns(),
+        journal_blocks: 0,
+    };
+    ehfs::format(part(data, end - data)?, &options).map_err(|_| abi::Error::IoError)?;
+    // The new ESP's slot file: slot A, never tried.
+    let device: VolumeDevice = CachedDevice::new(part(esp_start, esp_blocks)?, FAT_CACHE);
+    let (fat, _) = FatFs::mount(device, true).map_err(|_| abi::Error::IoError)?;
+    fat.kernel_write("STELA", "slot", b"a 0\n")?;
+    frame::kprintln!(
+        "vfs: installed STELA on {name}: ESP {} MiB, System A and B {} MiB, Data {}",
+        esp_blocks / MIB_BLOCKS,
+        slot / MIB_BLOCKS,
+        mib((end - data) * BLOCK_SIZE as u64)
+    );
+    Ok(())
 }

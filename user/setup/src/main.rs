@@ -47,6 +47,7 @@ libstela::entry!(main);
 enum Page {
     Language,
     TimeZone,
+    Install,
     Data,
     Network,
     Packages,
@@ -60,6 +61,7 @@ impl Page {
         match self {
             Page::Language => "language",
             Page::TimeZone => "timezone",
+            Page::Install => "install",
             Page::Data => "data",
             Page::Network => "network",
             Page::Packages => "packages",
@@ -72,7 +74,8 @@ impl Page {
     fn next(self) -> Page {
         match self {
             Page::Language => Page::TimeZone,
-            Page::TimeZone => Page::Data,
+            Page::TimeZone => Page::Install,
+            Page::Install => Page::Data,
             Page::Data => Page::Network,
             Page::Network => Page::Packages,
             Page::Packages => Page::Classic,
@@ -84,7 +87,8 @@ impl Page {
     fn back(self) -> Page {
         match self {
             Page::Language | Page::TimeZone => Page::Language,
-            Page::Data => Page::TimeZone,
+            Page::Install => Page::TimeZone,
+            Page::Data => Page::Install,
             Page::Network => Page::Data,
             Page::Packages => Page::Network,
             Page::Classic => Page::Packages,
@@ -102,6 +106,8 @@ struct Setup {
     zone_minutes: i32,
     /// Places that can become Data: (name, bytes).
     candidates: Vec<(String, u64)>,
+    /// Whole empty disks STELA can be installed on (P14 K7): (name, bytes).
+    disks: Vec<(String, u64)>,
     confirm: TextField,
     /// The network page's lines (made when it is shown).
     network: Vec<String>,
@@ -142,6 +148,7 @@ impl Setup {
             zone,
             zone_minutes: abi::time::DEFAULT_OFFSET_MINUTES,
             candidates: Vec::new(),
+            disks: Vec::new(),
             confirm: TextField::new(Rect::new(0, 0, 1, 1), 32),
             network: Vec::new(),
             packages: Vec::new(),
@@ -156,6 +163,25 @@ impl Setup {
 
     /// Prepares `page` and shows it.
     fn enter(&mut self, page: Page) {
+        // P14 K7: the install page only when there is a disk for it (and a
+        // System volume to copy); otherwise on in the same direction.
+        if page == Page::Install {
+            self.disks = fs::install_candidates().unwrap_or_default();
+            if self.disks.is_empty() || fs::volume_open("System").is_err() {
+                let skip = if self.page == Page::Data {
+                    Page::TimeZone
+                } else {
+                    Page::Data
+                };
+                self.page = page;
+                return self.enter(skip);
+            }
+            for (name, bytes) in &self.disks {
+                println!("setup: can install on: {name} ({} MiB)", bytes >> 20);
+            }
+            self.confirm.text.clear();
+            self.confirm.cursor = 0;
+        }
         self.page = page;
         self.cursor = 0;
         self.status.clear();
@@ -240,6 +266,22 @@ impl Setup {
                 out.push(String::new());
                 out.push(format!("UTC{}_", self.zone.text));
                 tr("Time zone")
+            }
+            Page::Install => {
+                out.push(String::from(tr(
+                    "STELA can be copied to a whole empty disk (ESP, System, Data).",
+                )));
+                out.push(String::new());
+                for (i, (name, bytes)) in self.disks.iter().enumerate() {
+                    let mark = if i == self.cursor { ">" } else { " " };
+                    out.push(format!("{mark} {name} ({} MiB)", bytes >> 20));
+                }
+                out.push(String::new());
+                out.push(String::from(tr(
+                    "Type the disk's name to install there, or press Enter to go on.",
+                )));
+                out.push(format!("{}_", self.confirm.text));
+                tr("Install to disk")
             }
             Page::Data => {
                 out.push(String::from(tr(
@@ -356,6 +398,7 @@ impl Setup {
     fn list_len(&self) -> usize {
         match self.page {
             Page::Language => 2,
+            Page::Install => self.disks.len(),
             Page::Data => self.candidates.len(),
             Page::Packages => self.packages.len(),
             Page::Classic => self.images.len(),
@@ -409,6 +452,30 @@ impl Setup {
                     return false;
                 }
             },
+            Page::Install if !self.confirm.text.is_empty() => {
+                let Some((name, _)) = self.disks.get(self.cursor).cloned() else {
+                    return false;
+                };
+                if self.confirm.text != name {
+                    self.status = format!("{}: {}", tr("Error"), name);
+                    return false;
+                }
+                println!("setup: installing on {name}");
+                self.status = match fs::install_to(&name) {
+                    Ok(()) => {
+                        println!("setup: installed on {name}");
+                        self.disks.retain(|(n, _)| *n != name);
+                        format!(
+                            "{name}: {}",
+                            tr("installed; start from it without the installer")
+                        )
+                    }
+                    Err(e) => format!("{}: {}", tr("Error"), e.name()),
+                };
+                self.confirm.text.clear();
+                self.confirm.cursor = 0;
+                return false;
+            }
             Page::Data if !has_data() && !self.candidates.is_empty() => {
                 let Some((name, _)) = self.candidates.get(self.cursor).cloned() else {
                     return false;
@@ -685,7 +752,7 @@ fn main() -> i64 {
             _ => {
                 let field = match setup.page {
                     Page::TimeZone => &mut setup.zone,
-                    Page::Data => &mut setup.confirm,
+                    Page::Data | Page::Install => &mut setup.confirm,
                     _ => continue,
                 };
                 if matches!(field.key(&key), FieldResult::None) {

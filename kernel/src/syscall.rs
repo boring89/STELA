@@ -67,6 +67,33 @@ fn volume_format(op: u64, buf: u64, len: u64, power: u64) -> Result<u64, Error> 
             let name = core::str::from_utf8(&name).map_err(|_| Error::InvalidArgument)?;
             crate::vfs::mount::format_data(name).map(|()| 0)
         }
+        // P14 K7: the whole disks STELA may be installed on, and the
+        // installation (needs POWER).
+        2 => {
+            let mut text = alloc::string::String::new();
+            for (name, bytes) in crate::vfs::mount::install_candidates() {
+                text.push_str(&alloc::format!("{name} {bytes}\n"));
+            }
+            let n = text.len().min(len as usize);
+            process
+                .space()
+                .write(buf, &text.as_bytes()[..n])
+                .map_err(|_| Error::BadAddress)?;
+            Ok(n as u64)
+        }
+        3 => {
+            crate::object::check_capability(&process, power, abi::capability::POWER)?;
+            if len > 64 {
+                return Err(Error::InvalidArgument);
+            }
+            let mut name = alloc::vec![0u8; len as usize];
+            process
+                .space()
+                .read(buf, &mut name)
+                .map_err(|_| Error::BadAddress)?;
+            let name = core::str::from_utf8(&name).map_err(|_| Error::InvalidArgument)?;
+            crate::vfs::mount::install(name).map(|()| 0)
+        }
         _ => Err(Error::InvalidArgument),
     }
 }

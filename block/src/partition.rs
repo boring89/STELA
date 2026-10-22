@@ -55,6 +55,10 @@ impl<D: BlockDevice> BlockDevice for Partition<D> {
         self.read_only || self.device.read_only()
     }
 
+    fn sector_size(&self) -> u32 {
+        self.device.sector_size()
+    }
+
     fn flush(&self) -> Result<(), BlockError> {
         self.device.flush()
     }

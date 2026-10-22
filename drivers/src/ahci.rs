@@ -355,6 +355,10 @@ mod system {
     }
 
     impl BlockDevice for AhciDisk {
+        fn sector_size(&self) -> u32 {
+            self.port.identity.sector_size
+        }
+
         fn block_count(&self) -> u64 {
             let id = self.port.identity;
             id.sectors * u64::from(id.sector_size) / BLOCK_SIZE as u64

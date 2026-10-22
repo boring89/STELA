@@ -258,6 +258,8 @@ pub enum Syscall {
     /// formatted, none while Data exists) into `buf` and returns the
     /// bytes; op 1 formats the place named in `buf` as Data and mounts it
     /// (needs the `POWER` capability `power`; refuses anything not empty).
+    /// P14 K7: op 2 lists whole empty disks STELA may be installed on (as
+    /// op 0); op 3 installs it on the one named in `buf` (needs `POWER`).
     VolumeFormat = 65,
     /// `DeviceOpen(path, len, devices) -> handle` (P13 K11,
     /// `docs/devices.md`): the PCI function `BB:DD.F` (or `SSSS:BB:DD.F`)

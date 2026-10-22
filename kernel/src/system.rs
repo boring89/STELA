@@ -44,12 +44,19 @@ impl Place {
     fn partition(&self) -> Option<Partition<Disk>> {
         Partition::new(Arc::clone(&self.disk), self.start, self.count, false)
     }
+
+    /// The place, read only (an installation copies it).
+    pub fn partition_for_copy(&self) -> Option<Partition<Disk>> {
+        Partition::new(Arc::clone(&self.disk), self.start, self.count, true)
+    }
 }
 
 /// What the kernel knows about the System slots.
 struct State {
     /// The ESP's FAT (for the slot file), when there is one.
     boot: Option<Arc<FatFs>>,
+    /// Where that ESP is (P14 K7: Setup copies it).
+    boot_place: Option<Place>,
     /// Slot A and B (`None`: no such partition).
     slots: [Option<Place>; 2],
     /// Their images' versions, when their trailers verified.
@@ -62,18 +69,39 @@ struct State {
 
 static STATE: SpinLock<State> = SpinLock::new(State {
     boot: None,
+    boot_place: None,
     slots: [None, None],
     versions: [None, None],
     mounted: None,
     file: None,
 });
 
-/// Records the ESP's FAT volume (`vfs::mount`).
-pub fn set_boot(fat: Arc<FatFs>) {
+/// Records the ESP's FAT volume and where it is (`vfs::mount`).
+pub fn set_boot(fat: Arc<FatFs>, place: Place) {
     let mut s = STATE.lock();
     if s.boot.is_none() {
         s.boot = Some(fat);
+        s.boot_place = Some(place);
     }
+}
+
+/// What an installation copies (P14 K7, `vfs::mount::install`): the ESP
+/// this start came from, the mounted System slot and how many of its
+/// blocks hold the image (the volume and the trailer).
+pub fn install_sources() -> Result<(Place, Place, u64), Error> {
+    let (esp, system) = {
+        let s = STATE.lock();
+        let mounted = s.mounted.ok_or(Error::NotSupported)?;
+        (
+            s.boot_place.clone().ok_or(Error::NotFound)?,
+            s.slots[mounted.index()].clone().ok_or(Error::NotFound)?,
+        )
+    };
+    let part = system.partition().ok_or(Error::IoError)?;
+    let mut block = vec![0u8; BLOCK_SIZE];
+    part.read(0, &mut block).map_err(|_| Error::IoError)?;
+    let blocks = ehfs::block_count(&block).ok_or(Error::IoError)?;
+    Ok((esp, system, blocks + 1))
 }
 
 fn key() -> [u8; 32] {

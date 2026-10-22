@@ -151,6 +151,20 @@ const ZH_TW: &[(&str, &str)] = &[
         "空白鍵選擇，Enter 把它們複製到 Data:/Classic/（或繼續）。",
     ),
     ("None found. Press Enter.", "沒有找到。按 Enter。"),
+    // P14 K7: the install page.
+    ("Install to disk", "安裝到磁碟"),
+    (
+        "STELA can be copied to a whole empty disk (ESP, System, Data).",
+        "可以把 STELA 複製到一整顆空白的磁碟（ESP、System、Data）。",
+    ),
+    (
+        "Type the disk's name to install there, or press Enter to go on.",
+        "輸入磁碟的名稱安裝到那裡，或按 Enter 繼續。",
+    ),
+    (
+        "installed; start from it without the installer",
+        "已安裝；拿掉安裝用的磁碟後從它開機",
+    ),
     // P14 K2: the display page.
     ("Display", "顯示"),
     (

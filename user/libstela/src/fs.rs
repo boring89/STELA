@@ -400,6 +400,42 @@ pub fn format_candidates() -> Result<alloc::vec::Vec<(alloc::string::String, u64
         .collect())
 }
 
+/// Whole empty disks STELA may be installed on: (name, bytes)
+/// (`VolumeFormat` op 2, P14 K7).
+pub fn install_candidates() -> Result<alloc::vec::Vec<(alloc::string::String, u64)>, Error> {
+    let mut buf = alloc::vec![0u8; 2048];
+    let n = syscall4(
+        Syscall::VolumeFormat,
+        2,
+        buf.as_mut_ptr() as u64,
+        buf.len() as u64,
+        0,
+    )?;
+    buf.truncate(n as usize);
+    let text = core::str::from_utf8(&buf).map_err(|_| Error::InvalidArgument)?;
+    Ok(text
+        .lines()
+        .filter_map(|l| {
+            let (name, size) = l.split_once(' ')?;
+            Some((alloc::string::String::from(name), size.parse().ok()?))
+        })
+        .collect())
+}
+
+/// Installs STELA on the whole disk `name` (`VolumeFormat` op 3; needs
+/// the `POWER` capability): ESP, System A and B, Data.
+pub fn install_to(name: &str) -> Result<(), Error> {
+    let power = crate::process::capability(abi::capability::POWER).ok_or(Error::AccessDenied)?;
+    syscall4(
+        Syscall::VolumeFormat,
+        3,
+        name.as_ptr() as u64,
+        name.len() as u64,
+        power.raw(),
+    )
+    .map(|_| ())
+}
+
 /// Formats the place `name` as the Data volume and mounts it
 /// (`VolumeFormat` op 1; needs the `POWER` capability).
 pub fn format_volume(name: &str) -> Result<(), Error> {

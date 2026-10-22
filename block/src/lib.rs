@@ -62,6 +62,12 @@ pub trait BlockDevice {
         false
     }
 
+    /// The device's logical sector size in bytes (P14 K7: a new GPT is
+    /// written in it); 512 unless the device says otherwise.
+    fn sector_size(&self) -> u32 {
+        512
+    }
+
     /// Makes earlier writes durable (a cache flush on the device).
     fn flush(&self) -> Result<(), BlockError> {
         Ok(())

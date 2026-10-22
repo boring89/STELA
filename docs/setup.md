@@ -58,12 +58,31 @@
 - 安全規則：**只有從沒用過的地方**（全 0）會被提出、會被格式化；有任何資料的分割區、ESP、USB 磁碟、已經有 Data 時一律不會。實機上也一樣：Setup 不會自動格式化任何東西，一定要使用者選擇並打出名稱。
 - 測試只用 `build/images/setup.img`（64 MiB，一個從沒格式化的 GPT 分割區）。
 
+### 4.2 安裝到磁碟（P14 K7，自動排程一次做完，**使用者尚未審核**）
+
+從安裝用的磁碟（`make disk-image` 的映像寫到隨身碟，或 QEMU 的第一顆磁碟）開機時，時區之後多一頁 **install**——只有在「有 System 卷宗（從槽掛上的）」而且「有可以安裝的整顆空白磁碟」時才出現，否則直接跳過：
+
+```
+ VolumeFormat op 2（列出，誰都可以）：每顆不是 USB、沒有分割表、第一個 4 KiB 全是 0、
+   至少 2 + 64 + 2×64 + 64 MiB 的整顆磁碟
+ VolumeFormat op 3（安裝，要 POWER）：名稱必須在清單裡（再檢查一次）
+   GPT（block::gpt::write）：ESP（複製這次開機的 ESP，同樣大小）、System A（複製掛著的 System 槽：
+   卷宗 + 尾端）、System B（64 MiB，第一塊清 0）、Data（其餘，ehfs::format，空的）
+   新 ESP 的 STELA/slot = "a 0"；什麼都不掛（是給下次開機用的）
+```
+
+- 和格式化 Data 同樣的規則：**只有從沒用過的整顆磁碟**會被提出，要**打出它的名稱**（`ahci0p1`）才裝；有任何資料的磁碟、USB 磁碟、有分割表的磁碟一律不會。實機上也一樣（計畫：實機要打裝置名確認）。
+- 裝好後印 `setup: installed on NAME`，頁面顯示「已安裝；拿掉安裝用的磁碟後從它開機」；Enter 繼續 Setup（設定寫在安裝用的磁碟的 Data 上）。新磁碟的 Data 是空的，所以從它開機時會再跑一次 Setup。
+- 新磁碟的 GPT 用它自己的扇區大小（`BlockDevice::sector_size`：AHCI 從 IDENTIFY，NVMe 從 LBA 格式）；扇區大小與 4 KiB 區塊的換算在 `block::gpt::write`／`usable`（host 測試：512 與 4096 扇區寫了再讀回）。
+- **只在 QEMU 測過**。
+
 ## 5. 測試
 
 | 測試 | 內容 |
 |---|---|
 | host `toolbox::i18n` | 語言代碼、`tr`、`tr_menu` 保留快捷鍵、沒有翻譯的回原文 |
 | `make test-setup` | `boot.cfg` = `setup`、只有 `setup.img`：init 印 `first start: Setup.app`；QMP 按鍵：↓ Enter（繁體中文）、Enter（時區 +08:00）、打 `ahci0p1.1` Enter（格式化：`vfs: ahci0p1.1 formatted as Data`、掛上）、Enter、network 顯示「套件伺服器：沒有設定」（中文）、Enter（沒有套件）、Enter（沒有 Classic 映像）、Enter → display 頁：Right、Down、Right、Down、Right、Enter（`scale=1 blank=30 pattern=meander`）→ Enter → `setup: done`、`mouseion: ready`；host 的 fsck、讀出 `.stela/language` = `zh-TW`、`setup-done`、`display`、`desktop`；P14 K2：同一顆磁碟用一般的 ESP 再開機，`windowserver: scale 1`（設定檔生效；2560 寬本來是 2） |
+| `make test-setup`（P14 K7） | `install-src.img`（`make_disk_image.py`：System A + 沒有 setup-done 的 Data）+ 一顆 512 MiB 全 0 的 `install-target.img`：Setup 的 install 頁列出 `ahci0p1 (512 MiB)`、打 `ahci0p1` → `vfs: installed STELA on ahci0p1: ESP 64 MiB, System A and B 64 MiB, Data …`；host 的 `sgdisk -v` 說表沒問題、新 ESP 的 slot 檔是 `a 0`；只接新磁碟開機：`system: slot a`、System 掛上、`init: first start: Setup.app` |
 
 套件頁的安裝和 `pkg install` 是同一段程式（`make test-pkg`）；新格式化的 Data 沒有 `pkg.conf`，所以 test-setup 的套件頁是空的（計畫外的簡化）。
 

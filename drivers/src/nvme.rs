@@ -355,6 +355,10 @@ mod system {
             self.blocks
         }
 
+        fn sector_size(&self) -> u32 {
+            (BLOCK_SIZE as u64 / self.lbas_per_block.max(1)) as u32
+        }
+
         fn read(&self, block: u64, buf: &mut [u8]) -> Result<(), BlockError> {
             self.transfer(&mut [(block, buf)], &[])
         }

@@ -44,6 +44,8 @@ P9 起 init 啟動的是 `windowserver mouseion`：Mouseion 畫桌面（`DESKTOP
 
 ## 3. 協定（`abi::window`，經 port 的訊息）
 
+**版本 3（P13 K13，使用者尚未審核）**：所有座標與大小都是**邏輯像素**；`CONNECTED` 的螢幕寬高、選單列高度是邏輯的，scale 是 1 或 2（`docs/display.md` §6）；伺服器收到 `CREATE_WINDOW`、`DAMAGE`、`MOVE_WINDOW`、`RESIZE_WINDOW`、`SET_CARET` 時 ×scale，送出 `MOUSE`、`WINDOW_EVENT`、`WINDOW_CREATED`／`WINDOW_RESIZED` 時 ÷scale（`Server::to_physical`／`to_logical`），裡面全用實體像素；視窗的 Memory 是邏輯寬 × scale × 邏輯高 × scale × 4 bytes。版本不符的 `CONNECT` 得到 `NotSupported`。
+
 **版本 2（P11，使用者尚未審核）**：每個 client 有自己的請求 port，伺服器**從訊息來的 port 認出 client**，不再看訊息內容（版本 1 的 client id 可以被冒用）。
 
 ```

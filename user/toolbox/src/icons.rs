@@ -44,6 +44,13 @@ impl Canvas<'_> {
     /// Draws `icon` with its top-left corner at (x, y); `selected`
     /// darkens it (as Classic Mac OS showed a selected icon).
     pub fn icon(&mut self, x: i32, y: i32, icon: &Icon, selected: bool) {
+        // P13 K13: at scale 2 the image twice as large, pixel for pixel.
+        if self.scale() == 2
+            && let Some(big) = find(icon.name, icon.size * 2)
+        {
+            self.icon_phys(x * 2, y * 2, big, selected);
+            return;
+        }
         let size = icon.size as i32;
         let mut at = 0i32;
         for pair in icon.runs.as_chunks::<2>().0 {
@@ -59,11 +66,35 @@ impl Canvas<'_> {
         }
     }
 
+    /// `icon` in physical pixels.
+    fn icon_phys(&mut self, x: i32, y: i32, icon: &Icon, selected: bool) {
+        let size = icon.size as i32;
+        let mut row = alloc::vec![0u32; (size * size) as usize];
+        let mut at = 0usize;
+        for pair in icon.runs.as_chunks::<2>().0 {
+            let (count, index) = (usize::from(pair[0]), usize::from(pair[1]));
+            let c: Color = if index == 0 {
+                TRANSPARENT
+            } else {
+                let c = icon.palette.get(index).copied().unwrap_or(color::BLACK);
+                if selected { darken(c) } else { c }
+            };
+            for p in row.iter_mut().skip(at).take(count) {
+                *p = c;
+            }
+            at += count;
+        }
+        self.image_phys(x, y, size, size, &row, Some(TRANSPARENT));
+    }
+
     /// Draws the 1-bit image of `icon` in `fg`.
     pub fn icon_mono(&mut self, x: i32, y: i32, icon: &Icon, fg: Color) {
         self.bitmap(x, y, icon.size as i32, icon.mono, fg, None);
     }
 }
+
+/// A value no icon colour has (they are 24-bit): the transparent pixel.
+const TRANSPARENT: Color = 0xFF00_0000;
 
 /// A colour at half brightness.
 fn darken(c: Color) -> Color {

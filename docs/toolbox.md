@@ -115,3 +115,10 @@ host `toolbox`：`draw`（矩形運算、填色與裁切、stride 外的像素�
 - `TextField::insert_text`、`TextView::insert_text`：插入一串字（唯讀的 TextView 不收）；`TextField::caret(font)`、`TextView::caret()`：游標在視窗座標的位置與高度（中文字算兩格）。
 - `Connection::set_caret(window, x, y, h)`：告訴伺服器文字游標在哪裡，組字區畫在它下面。Kalamos 每次重畫、terminal 在游標移動時送。
 - 細節見 `docs/ime.md`。
+
+## 7. P13：scale（HiDPI 2x，使用者尚未審核）
+
+- `Connection::scale`（`CONNECTED` 給的 1 或 2）；`Connection::screen`、`menubar` 是邏輯像素。
+- `Window::scale`：緩衝是 `width * scale` × `height * scale`；`Window::canvas()` 給一個 `Canvas::scaled`。
+- `Canvas` 的方法都吃邏輯座標；`size`、`bounds`、`clip` 傳回邏輯值；`pixels`、`stride` 是實體緩衝。scale 2 時：8x16 的字改用 16x32 的字型畫在 2 倍的位置（`char_phys`）；`Canvas::icon` 用兩倍大的圖（沒有就放大）；其他一律放大成 2×2 的方塊。`Canvas::image_phys` 不放大（圖示用）。
+- 程式不用改：版面用 `font.width`／`font.height` 與邏輯座標排，`font_for(conn.screen.0)` 在 2x 的 2560 螢幕（邏輯 1280）給 8x16。

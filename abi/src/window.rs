@@ -22,7 +22,11 @@
 //!
 //! Protocol version 2 (P11): each client has its own request port, and
 //! the server knows the client by the port a request came on; the first
-//! word of every request is reserved (0). Numbers are little endian; coordinates are i32 in screen
+//! word of every request is reserved (0). Version 3 (P13 K13): every
+//! coordinate and size is in **logical** pixels; `CONNECTED` gives the
+//! scale (physical pixels per logical one, 1 or 2) and the logical screen;
+//! a window's Memory is its logical size times the scale in each
+//! direction. Numbers are little endian; coordinates are i32 in screen
 //! pixels, window positions name the top-left corner of the content (the
 //! server draws the frame around it). Pixels are u32 `0x00RRGGBB`.
 
@@ -30,7 +34,7 @@ use crate::key::{KEY_EVENT_SIZE, KeyEvent};
 use crate::{MESSAGE_DATA, Message};
 
 /// The protocol version a client gives in `CONNECT`.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// Client to server.
 pub mod request {
@@ -543,7 +547,7 @@ mod tests {
     fn values_are_fixed() {
         assert_eq!((request::CONNECT, request::FOCUS_WINDOW), (0x100, 0x108));
         assert_eq!((event::CONNECTED, event::ERROR), (0x180, 0x187));
-        assert_eq!(VERSION, 2);
+        assert_eq!(VERSION, 3);
         assert_eq!(word(&connect(), 0), VERSION);
         assert_eq!(flags::DOCUMENT, 7);
         assert_eq!(flags::ALL, 63);

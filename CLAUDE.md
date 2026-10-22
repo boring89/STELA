@@ -216,7 +216,7 @@ Claude 依照上方工作規則直接實作。
 - 計時器只有週期模式 1000 Hz；依賴 8254 PIT 校準；沒有 invariant TSC 時 `now_ns()` 只有 1 ms 解析度，且長時間關中斷（例如主控台捲動）會少算 tick。
 - 鍵盤與滑鼠：PS/2（i8042，兩個 port）與 USB HID boot protocol；US 配置；沒有數字鍵台、LED、按住重複、滾輪的用途、滑鼠加速度（docs/keyboard.md、docs/usb.md §11）。
 - PAT entry 4 = WC：視窗伺服器的 framebuffer 映射是 write-combining；kernel 自己的文字主控台仍經 HHDM（write-back，捲動要讀 framebuffer），同一塊記憶體有兩種別名（docs/display.md §8）。
-- loader 選面積最大的橫向 GOP 模式（OVMF：2560×1600）；不支援 Bitmask 像素格式；HiDPI scale 固定 1。
+- loader 選面積最大的橫向 GOP 模式（OVMF：2560×1600）；不支援 Bitmask 像素格式；P13 起介面 scale 1 或 2（`boot.cfg` 的 `scale=`，預設 2560 寬以上是 2；視窗協定 v3 是邏輯像素，docs/display.md §6），Setup 沒有設定的地方（Boot 卷宗唯讀）。
 - 記憶體表合併後最多 256 個區段（`regions_truncated`）；`KernelAndBoot`（含 loader 自己）與 identity map 用過的分頁表不回收。
 - kernel heap 開機 4 MiB、按需成長到最多 64 MiB、不縮回（P12；之前固定 32 MiB）；空掉的中間分頁表不回收；`alloc_contiguous` 是線性 first-fit；PCI 的 ECAM 每個有裝置的 bus 映射 1 MiB、不回收。
 - 排程：每顆 CPU 單一等級 round-robin（10 ms 時間片），`priority` 只存不用；沒有 tickless；睡眠解析度 1 ms。

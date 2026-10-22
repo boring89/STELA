@@ -449,8 +449,11 @@ fn main() -> i64 {
         }
     };
     let (mut w, mut h) = mac.screen_size();
-    let mut scale = config.scale_for(conn.screen, (w, h));
-    println!("classic: screen {w}x{h} (scale {scale})");
+    // P13 K13: the window's own scale times the interface's (the screen
+    // here is logical) is at most 2; the log shows the product.
+    let ui = conn.scale.max(1);
+    let mut scale = config.scale_for(conn.screen, (w, h)).min((2 / ui).max(1));
+    println!("classic: screen {w}x{h} (scale {})", scale * ui);
     let Ok(mut window) = conn.create_window(
         w * scale,
         h * scale,
@@ -546,11 +549,11 @@ fn main() -> i64 {
         // The Monitors control panel switched the card's resolution: the
         // window follows.
         let (nw, nh) = mac.screen_size();
-        let ns = config.scale_for(conn.screen, (nw, nh));
+        let ns = config.scale_for(conn.screen, (nw, nh)).min((2 / ui).max(1));
         if (nw, nh) != (w, h) && conn.resize(&mut window, nw * ns, nh * ns).is_ok() {
             (w, h, scale) = (nw, nh, ns);
             view = View::new(w, h, scale);
-            println!("classic: screen {w}x{h} (scale {scale})");
+            println!("classic: screen {w}x{h} (scale {})", scale * ui);
         }
         if frame.is_multiple_of(2) && mac.render(&mut view.picture) {
             view.show(&conn, &mut window);

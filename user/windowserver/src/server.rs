@@ -137,7 +137,11 @@ struct Server {
     back: Vec<u32>,
     font: &'static Font,
     m: Metrics,
+    /// The pointer's size factor (2 with the 16x32 font).
     scale: i32,
+    /// The protocol scale (P13 K13): physical pixels per logical one.
+    /// Clients speak logical pixels; everything in here is physical.
+    ui: i32,
     stack: Stack,
     surfaces: BTreeMap<u32, Surface>,
     clients: Vec<Client>,
@@ -202,11 +206,74 @@ impl Server {
         self.clients.iter().find(|c| c.id == id)
     }
 
+    /// `msg` with its words `words` changed by `f` (handles kept).
+    fn rewrite(msg: &Message, words: &[usize], f: impl Fn(u32) -> u32) -> Message {
+        let mut data = msg.payload().to_vec();
+        for &i in words {
+            if let Some(b) = data.get_mut(i * 4..i * 4 + 4) {
+                let v = f(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                b.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        let mut out = Message::with_data(msg.tag, &data);
+        for &h in msg.carried() {
+            out.push_handle(h);
+        }
+        out
+    }
+
+    /// An event or reply in logical pixels (P13 K13).
+    fn to_logical(&self, msg: &Message) -> Message {
+        let ui = self.ui;
+        if ui == 1 {
+            return *msg;
+        }
+        let down = |v: u32| ((v as i32) / ui) as u32;
+        match msg.tag {
+            event::MOUSE => Self::rewrite(msg, &[1, 2], down),
+            event::WINDOW_EVENT => Self::rewrite(msg, &[2, 3, 4, 5], down),
+            event::WINDOW_CREATED | event::WINDOW_RESIZED => Self::rewrite(msg, &[1, 2], down),
+            _ => *msg,
+        }
+    }
+
+    /// A request in physical pixels (P13 K13).
+    fn to_physical(&self, msg: &Message) -> Message {
+        let ui = self.ui;
+        if ui == 1 {
+            return *msg;
+        }
+        let up = |v: u32| ((v as i32).saturating_mul(ui)) as u32;
+        match msg.tag {
+            request::CREATE_WINDOW => {
+                // AUTO places stay AUTO; a desktop window of width 1 means
+                // the whole screen.
+                let desktop = proto::word(msg, 3) & flags::DESKTOP != 0;
+                let mut words = alloc::vec![2usize];
+                if !(desktop && proto::word(msg, 1) <= 1) {
+                    words.push(1);
+                }
+                if proto::signed(msg, 4) != proto::AUTO {
+                    words.push(4);
+                }
+                if proto::signed(msg, 5) != proto::AUTO {
+                    words.push(5);
+                }
+                Self::rewrite(msg, &words, up)
+            }
+            request::DAMAGE => Self::rewrite(msg, &[2, 3, 4, 5], up),
+            request::MOVE_WINDOW | request::RESIZE_WINDOW => Self::rewrite(msg, &[2, 3], up),
+            request::SET_CARET => Self::rewrite(msg, &[2, 3, 4], up),
+            _ => *msg,
+        }
+    }
+
     /// Sends `msg` to client `id`; a client that went away is removed.
     fn send(&mut self, id: u32, msg: &Message) {
         let Some(reply) = self.client(id).map(|c| c.reply) else {
             return;
         };
+        let msg = &self.to_logical(msg);
         if port_send(reply, msg) == Err(Error::PeerClosed) {
             self.drop_client(id);
         }
@@ -1203,6 +1270,7 @@ impl Server {
             release(msg);
             return;
         }
+        let msg = &self.to_physical(msg);
         let result = match msg.tag {
             request::CREATE_WINDOW => self.create_window(client, msg),
             request::DAMAGE => self.damage_window(client, msg),
@@ -1274,12 +1342,14 @@ impl Server {
             menus: Vec::new(),
             may_ime,
         });
+        // P13 K13: the screen in logical pixels and the scale.
+        let ui = self.ui;
         let mut m = proto::connected(
             id,
-            self.width as u32,
-            self.height as u32,
-            self.scale as u32,
-            self.m.menubar as u32,
+            (self.width / ui) as u32,
+            (self.height / ui) as u32,
+            ui as u32,
+            (self.m.menubar / ui) as u32,
         );
         m.push_handle(give);
         if port_send(reply, &m).is_err() {
@@ -1833,6 +1903,7 @@ pub fn main() -> i64 {
         size,
         ..
     } = info;
+    println!("windowserver: scale {}", info.scale.clamp(1, 2));
     let fb = match Mapping::new(bootstrap::BOOTSTRAP, u64::from(size), true) {
         Ok(fb) => fb,
         Err(e) => {
@@ -1854,7 +1925,15 @@ pub fn main() -> i64 {
         println!("windowserver: cannot wait on the main port: {}", e.name());
         return 1;
     }
-    let font = font_for(width);
+    // P13 K13: the scale the kernel chose (boot option scale=, or 2 from
+    // 2560 pixels wide); at 2 the server's own text is the 16x32 font,
+    // as the clients' is.
+    let ui = info.scale.clamp(1, 2) as i32;
+    let font = if ui == 2 {
+        &toolbox::draw::LARGE
+    } else {
+        font_for(width)
+    };
     let mut server = Server {
         fb,
         fb_stride: pitch as usize / 4,
@@ -1865,6 +1944,7 @@ pub fn main() -> i64 {
         font,
         m: Metrics::for_font(font.height),
         scale: if font.height >= 32 { 2 } else { 1 },
+        ui,
         stack: Stack::new(),
         surfaces: BTreeMap::new(),
         clients: Vec::new(),

@@ -203,17 +203,38 @@ pub fn font_for(width: u32) -> &'static Font {
 /// A pixel buffer to draw on: `height` rows of `stride` pixels, of which
 /// `width` are visible. Everything is clipped to the buffer and to
 /// [`Canvas::clip`].
+///
+/// P13 K13 (`docs/toolbox.md` §7): a canvas has a scale (1 or 2). Its
+/// methods take **logical** coordinates; every logical pixel covers
+/// `scale` x `scale` physical ones. Text in the 8x16 font is drawn with
+/// the 16x32 font at scale 2, and icons with their twice-as-large image,
+/// so they stay sharp; [`Canvas::pixels`] and [`Canvas::stride`] are the
+/// physical buffer.
 pub struct Canvas<'a> {
     pixels: &'a mut [u32],
+    /// Physical size.
     width: i32,
     height: i32,
     stride: usize,
+    /// Physical clip.
     clip: Rect,
+    scale: i32,
 }
 
 impl<'a> Canvas<'a> {
-    /// A canvas over `pixels` (at least `stride * height` of them).
+    /// A canvas over `pixels` (at least `stride * height` of them), scale 1.
     pub fn new(pixels: &'a mut [u32], width: u32, height: u32, stride: usize) -> Canvas<'a> {
+        Canvas::scaled(pixels, width, height, stride, 1)
+    }
+
+    /// A canvas over `width` x `height` physical pixels drawn at `scale`.
+    pub fn scaled(
+        pixels: &'a mut [u32],
+        width: u32,
+        height: u32,
+        stride: usize,
+        scale: u32,
+    ) -> Canvas<'a> {
         let height = height.min((pixels.len() / stride.max(1)) as u32);
         Canvas {
             pixels,
@@ -221,51 +242,71 @@ impl<'a> Canvas<'a> {
             height: height as i32,
             stride,
             clip: Rect::new(0, 0, width as i32, height as i32),
+            scale: scale.clamp(1, 4) as i32,
         }
     }
 
-    /// Visible size.
-    pub fn size(&self) -> (i32, i32) {
-        (self.width, self.height)
+    /// The scale (physical pixels per logical one).
+    pub fn scale(&self) -> i32 {
+        self.scale
     }
 
-    /// The whole canvas.
-    pub fn bounds(&self) -> Rect {
+    /// `r` in physical pixels.
+    fn phys(&self, r: Rect) -> Rect {
+        let s = self.scale;
+        Rect::new(r.x * s, r.y * s, r.w * s, r.h * s)
+    }
+
+    fn phys_bounds(&self) -> Rect {
         Rect::new(0, 0, self.width, self.height)
+    }
+
+    /// Visible size (logical).
+    pub fn size(&self) -> (i32, i32) {
+        (self.width / self.scale, self.height / self.scale)
+    }
+
+    /// The whole canvas (logical).
+    pub fn bounds(&self) -> Rect {
+        let (w, h) = self.size();
+        Rect::new(0, 0, w, h)
     }
 
     /// Limits drawing to `clip` (within the canvas).
     pub fn set_clip(&mut self, clip: Rect) {
-        self.clip = clip.intersect(&self.bounds());
+        self.clip = self.phys(clip).intersect(&self.phys_bounds());
     }
 
-    /// The current clip rectangle.
+    /// The current clip rectangle (logical).
     pub fn clip(&self) -> Rect {
-        self.clip
+        let s = self.scale;
+        let c = self.clip;
+        Rect::new(c.x / s, c.y / s, c.w / s, c.h / s)
     }
 
     /// Removes the clip (the whole canvas).
     pub fn reset_clip(&mut self) {
-        self.clip = self.bounds();
+        self.clip = self.phys_bounds();
     }
 
     /// The pixel at (x, y), if inside the canvas.
     pub fn get(&self, x: i32, y: i32) -> Option<Color> {
+        let (x, y) = (x * self.scale, y * self.scale);
         if x < 0 || y < 0 || x >= self.width || y >= self.height {
             return None;
         }
         Some(self.pixels[y as usize * self.stride + x as usize])
     }
 
-    /// Sets one pixel (if inside the clip).
-    pub fn pixel(&mut self, x: i32, y: i32, color: Color) {
+    /// Sets one physical pixel (if inside the clip).
+    fn pixel_phys(&mut self, x: i32, y: i32, color: Color) {
         if self.clip.contains(x, y) {
             self.pixels[y as usize * self.stride + x as usize] = color;
         }
     }
 
-    /// Fills `rect`.
-    pub fn fill(&mut self, rect: Rect, color: Color) {
+    /// Fills a physical rectangle.
+    fn fill_phys(&mut self, rect: Rect, color: Color) {
         let r = rect.intersect(&self.clip);
         if r.is_empty() {
             return;
@@ -274,6 +315,22 @@ impl<'a> Canvas<'a> {
             let row = y as usize * self.stride;
             self.pixels[row + r.x as usize..row + r.right() as usize].fill(color);
         }
+    }
+
+    /// Sets one pixel (if inside the clip).
+    pub fn pixel(&mut self, x: i32, y: i32, color: Color) {
+        if self.scale == 1 {
+            self.pixel_phys(x, y, color);
+        } else {
+            let s = self.scale;
+            self.fill_phys(Rect::new(x * s, y * s, s, s), color);
+        }
+    }
+
+    /// Fills `rect`.
+    pub fn fill(&mut self, rect: Rect, color: Color) {
+        let r = self.phys(rect);
+        self.fill_phys(r, color);
     }
 
     /// A horizontal line of `len` pixels from (x, y).
@@ -322,9 +379,31 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// A 1-bit bitmap in physical pixels.
+    fn bitmap_phys(&mut self, x: i32, y: i32, w: i32, rows: &[u8], fg: Color, bg: Option<Color>) {
+        let row_bytes = (w as usize).div_ceil(8);
+        if row_bytes == 0 {
+            return;
+        }
+        for (ry, row) in rows.chunks(row_bytes).enumerate() {
+            for rx in 0..w {
+                let on = row[rx as usize / 8] & (0x80 >> (rx % 8)) != 0;
+                match (on, bg) {
+                    (true, _) => self.pixel_phys(x + rx, y + ry as i32, fg),
+                    (false, Some(bg)) => self.pixel_phys(x + rx, y + ry as i32, bg),
+                    (false, None) => {}
+                }
+            }
+        }
+    }
+
     /// A 1-bit bitmap (`rows` of `w.div_ceil(8)` bytes, MSB first) at
     /// (x, y): set bits in `fg`, clear bits in `bg` (or left alone).
     pub fn bitmap(&mut self, x: i32, y: i32, w: i32, rows: &[u8], fg: Color, bg: Option<Color>) {
+        if self.scale == 1 {
+            self.bitmap_phys(x, y, w, rows, fg, bg);
+            return;
+        }
         let row_bytes = (w as usize).div_ceil(8);
         if row_bytes == 0 {
             return;
@@ -342,8 +421,36 @@ impl<'a> Canvas<'a> {
     }
 
     /// A 32-bit image of `w` x `h` pixels (rows of `w`) at (x, y); pixels
-    /// equal to `transparent` are skipped.
+    /// equal to `transparent` are skipped. At scale 2 every pixel is
+    /// doubled.
     pub fn image(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        pixels: &[u32],
+        transparent: Option<Color>,
+    ) {
+        if pixels.len() < (w * h) as usize {
+            return;
+        }
+        if self.scale == 1 {
+            self.image_phys(x, y, w, h, pixels, transparent);
+            return;
+        }
+        for py in 0..h {
+            for px in 0..w {
+                let p = pixels[(py * w + px) as usize];
+                if Some(p) != transparent {
+                    self.pixel(x + px, y + py, p);
+                }
+            }
+        }
+    }
+
+    /// [`Canvas::image`] in physical pixels (no scaling).
+    pub fn image_phys(
         &mut self,
         x: i32,
         y: i32,
@@ -369,8 +476,27 @@ impl<'a> Canvas<'a> {
     }
 
     /// Copies the `src` rectangle of another buffer (rows of `src_stride`
-    /// pixels) to (x, y), clipped. Used to composite windows.
+    /// pixels) to (x, y), clipped; at scale 2 every pixel is doubled. Used
+    /// to composite windows (scale 1) and by Classic.
     pub fn copy_from(&mut self, x: i32, y: i32, src: &[u32], src_stride: usize, src_rect: Rect) {
+        if self.scale == 1 {
+            self.copy_phys(x, y, src, src_stride, src_rect);
+            return;
+        }
+        let s = self.scale;
+        for ry in 0..src_rect.h {
+            let from = (src_rect.y + ry) as usize * src_stride + src_rect.x as usize;
+            let Some(row) = src.get(from..from + src_rect.w as usize) else {
+                return;
+            };
+            for (rx, &p) in row.iter().enumerate() {
+                self.fill_phys(Rect::new((x + rx as i32) * s, (y + ry) * s, s, s), p);
+            }
+        }
+    }
+
+    /// [`Canvas::copy_from`] without scaling.
+    fn copy_phys(&mut self, x: i32, y: i32, src: &[u32], src_stride: usize, src_rect: Rect) {
         let dest = Rect::new(x, y, src_rect.w, src_rect.h).intersect(&self.clip);
         if dest.is_empty() {
             return;
@@ -388,11 +514,8 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// One character at (x, y): a cell, or two for a CJK character (P11:
-    /// beyond ASCII the 12-pixel font of `cjk`, 1x in a 16-pixel row, 2x
-    /// in a 32-pixel row, centred; a character no font has is a box).
-    /// With `bg`, the cells are filled first. Returns the cells it took.
-    pub fn char(
+    /// One character in physical pixels with `font` (no scaling).
+    fn char_phys(
         &mut self,
         x: i32,
         y: i32,
@@ -402,7 +525,7 @@ impl<'a> Canvas<'a> {
         bg: Option<Color>,
     ) -> usize {
         if (c as u32) < 0x80 {
-            self.bitmap(x, y, font.width, font.glyph(c), fg, bg);
+            self.bitmap_phys(x, y, font.width, font.glyph(c), fg, bg);
             return 1;
         }
         let glyph = crate::cjk::font().and_then(|f| f.glyph(c));
@@ -412,7 +535,7 @@ impl<'a> Canvas<'a> {
         };
         let w = font.width * cells as i32;
         if let Some(bg) = bg {
-            self.fill(Rect::new(x, y, w, font.height), bg);
+            self.fill_phys(Rect::new(x, y, w, font.height), bg);
         }
         let scale = (font.height / 16).max(1);
         match glyph {
@@ -423,7 +546,7 @@ impl<'a> Canvas<'a> {
                 for (ry, row) in g.rows.iter().enumerate() {
                     for rx in 0..i32::from(g.advance) {
                         if row & (0x8000 >> rx) != 0 {
-                            self.fill(
+                            self.fill_phys(
                                 Rect::new(ox + rx * scale, oy + ry as i32 * scale, scale, scale),
                                 fg,
                             );
@@ -439,8 +562,44 @@ impl<'a> Canvas<'a> {
                     w - 2 * scale,
                     font.height - 4 * scale,
                 );
-                self.frame(b, fg);
+                self.fill_phys(Rect::new(b.x, b.y, b.w, 1), fg);
+                self.fill_phys(Rect::new(b.x, b.bottom() - 1, b.w, 1), fg);
+                self.fill_phys(Rect::new(b.x, b.y, 1, b.h), fg);
+                self.fill_phys(Rect::new(b.right() - 1, b.y, 1, b.h), fg);
             }
+        }
+        cells
+    }
+
+    /// One character at (x, y): a cell, or two for a CJK character (P11:
+    /// beyond ASCII the 12-pixel font of `cjk`, 1x in a 16-pixel row, 2x
+    /// in a 32-pixel row, centred; a character no font has is a box).
+    /// With `bg`, the cells are filled first. Returns the cells it took.
+    /// At scale 2 the 8x16 font becomes the 16x32 one (P13 K13).
+    pub fn char(
+        &mut self,
+        x: i32,
+        y: i32,
+        c: char,
+        font: &Font,
+        fg: Color,
+        bg: Option<Color>,
+    ) -> usize {
+        let s = self.scale;
+        if s == 1 {
+            return self.char_phys(x, y, c, font, fg, bg);
+        }
+        if s == 2 && font.width == SMALL.width && font.height == SMALL.height {
+            return self.char_phys(x * 2, y * 2, c, &LARGE, fg, bg);
+        }
+        // No font of that size: the glyph's pixels doubled.
+        if (c as u32) < 0x80 {
+            self.bitmap(x, y, font.width, font.glyph(c), fg, bg);
+            return 1;
+        }
+        let cells = crate::cjk::cells(c);
+        if let Some(bg) = bg {
+            self.fill(Rect::new(x, y, font.width * cells as i32, font.height), bg);
         }
         cells
     }
@@ -464,12 +623,12 @@ impl<'a> Canvas<'a> {
         at
     }
 
-    /// The pixels (rows of [`Canvas::stride`]).
+    /// The physical pixels (rows of [`Canvas::stride`]).
     pub fn pixels(&self) -> &[u32] {
         self.pixels
     }
 
-    /// Pixels per row.
+    /// Physical pixels per row.
     pub fn stride(&self) -> usize {
         self.stride
     }
@@ -572,5 +731,49 @@ mod tests {
         assert_eq!(SMALL.text_width("中a"), 24);
         // A character no font has: a box of one cell.
         assert_eq!(c.char(40, 0, '\u{378}', &SMALL, 1, None), 1);
+    }
+
+    #[test]
+    fn a_scaled_canvas_takes_logical_coordinates() {
+        // 8 x 4 logical pixels on 16 x 8 physical ones.
+        let mut px = vec![0u32; 16 * 8];
+        {
+            let mut c = Canvas::scaled(&mut px, 16, 8, 16, 2);
+            assert_eq!(c.scale(), 2);
+            assert_eq!(c.size(), (8, 4));
+            assert_eq!(c.bounds(), Rect::new(0, 0, 8, 4));
+            c.fill(Rect::new(1, 1, 2, 1), 7);
+            assert_eq!(c.get(1, 1), Some(7));
+            assert_eq!(c.get(3, 1), Some(0));
+        }
+        // Physical (2..6, 2..4).
+        for y in 0..8 {
+            for x in 0..16 {
+                let inside = (2..6).contains(&x) && (2..4).contains(&y);
+                assert_eq!(px[y * 16 + x] == 7, inside, "({x}, {y})");
+            }
+        }
+        let mut c = Canvas::scaled(&mut px, 16, 8, 16, 2);
+        c.set_clip(Rect::new(0, 0, 2, 2));
+        assert_eq!(c.clip(), Rect::new(0, 0, 2, 2));
+        c.pixel(3, 3, 9);
+        assert_eq!(c.get(3, 3), Some(0));
+        c.pixel(1, 0, 9);
+        assert_eq!(c.get(1, 0), Some(9));
+    }
+
+    #[test]
+    fn scaled_text_uses_the_large_font() {
+        // One 8x16 cell at scale 2 is a 16x32 glyph from the large font.
+        let mut a = vec![0u32; 16 * 32];
+        Canvas::scaled(&mut a, 16, 32, 16, 2).char(0, 0, 'A', &SMALL, 1, None);
+        let mut b = vec![0u32; 16 * 32];
+        Canvas::new(&mut b, 16, 32, 16).char(0, 0, 'A', &LARGE, 1, None);
+        assert_eq!(a, b);
+        assert!(a.contains(&1));
+        // The advance is logical.
+        let mut c = vec![0u32; 64 * 32];
+        let end = Canvas::scaled(&mut c, 64, 32, 64, 2).text(0, 0, "ab", &SMALL, 1, None);
+        assert_eq!(end, 16);
     }
 }

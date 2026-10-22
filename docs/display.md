@@ -82,11 +82,20 @@ abi/src/lib.rs                   sysinfo::FramebufferInfo、object_kind::FRAMEBU
 - 映射之後：只有映射它的行程（視窗伺服器）能 attach（其他 → `AccessDenied`）；它結束後恢復開放。
 - 計畫寫的是「持有 Framebuffer handle 的行程」；實作成「映射它的行程」，效果相同、不必掃 handle 表。
 
-## 6. HiDPI（D5）
+## 6. HiDPI（D5；P13 K13–K14 實作，使用者尚未審核）
 
-`FramebufferInfo::scale` 固定 1，欄位先有。文字：寬 ≥ 1920 用 16x32（`toolbox::draw::font_for`），游標在 16x32 時放大 2 倍。
+介面有一個 **scale**（1 或 2）：一個邏輯像素是 scale × scale 個實體像素。
+
+- **來源**（`abi::sysinfo::ui_scale`，kernel 的 `SysInfo(FRAMEBUFFER)` 放進 `FramebufferInfo::scale`）：`boot.cfg` 的 `scale=1`／`scale=2`；沒有就看寬度：2560 以上是 2，否則 1。QEMU 的 OVMF 給 2560×1600，所以測試預設是 2。
+- **視窗協定 v3**（`docs/window.md` §3）：程式看到的一切座標與大小都是邏輯像素；伺服器在協定的邊界換算（收到請求 ×scale、送出事件 ÷scale），裡面全是實體像素；視窗的 Memory 是邏輯大小 × scale。
+- **toolbox**（`docs/toolbox.md` §7）：`Canvas` 帶 scale，方法吃邏輯座標；8x16 的字在 2x 時用 16x32 的字型畫（清楚，不是放大的點陣），圖示用兩倍大的那張（`icons::find(name, size * 2)`），其他（線、填色、點陣、影像）放大成 scale × scale 的方塊。程式的版面全用邏輯像素：`font_for(conn.screen.0)` 在邏輯 1280 寬時給 8x16，2x 畫出來就是以前直接用 16x32 的樣子。
+- 伺服器自己的字（選單列、標題列）在 scale 2 時是 16x32。游標 2 倍。
+- Classic：它自己的倍數 × 介面的 scale 最多 2（`docs/classic.md` §10）；log 印出相乘的結果。
+- **計畫外**：Setup 沒有顯示頁（`boot.cfg` 在唯讀的 Boot 卷宗上，STELA 改不了它；要改 scale 得在別的機器上編輯 `boot.cfg`）。
 
 ## 7. 測試
+
+- P13 K14：`make test-window` 與 `make test-mouseion` 各跑 scale 2（預設）與 scale 1（`boot.cfg` 的 `scale=1`，用原本的座標）；host 的 `toolbox::draw` 測試放大後的填色、clip、字型。
 
 | 測試 | 內容 |
 |---|---|

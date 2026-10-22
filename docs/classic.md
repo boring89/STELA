@@ -227,3 +227,7 @@ depth=8
 - **拔插頭的後果**：Mac 自己的快取（System 的 disk cache）沒寫回，`System.img` 的 HFS 卷宗留著「使用中」的標記；下次開機 System 7.5 會先跳「上次沒有正常關機」的警告（要按 OK），並可能檢查磁碟。所以**用 Special > Shut Down 結束比較好**；關閉框沒有改成「請 Mac 關機」（要模擬 Mac 的電源鍵或選單，留給之後）。
 - 測試：`Classic.app --test-power`（本機 `make test-classic` 的第五次開機）：Finder 桌面出現三秒後用滑鼠拉下 Special 選單（`SPECIAL_TITLE` (232, 10)；項目 16 列一格：Clean Up Desktop、Empty Trash…、—、Eject Disk、Erase Disk…、—、Restart、Shut Down）放在 Restart 上 → `classic: restarting` → 第二個桌面 → Shut Down → `classic: the Mac was shut down` → shell `shutdown`；host 把 `System.img` 用 `ehfs-cp out` 拿出來，`tools/hfs_check.py` 檢查 MDB 的 `drAtrb` bit 8（已正常卸載）、`fsck.ehfs` 檢查 STELA 的 Data。這次開機用的是**第一次開機前**複製的映像（`classic-power.img`）：前幾次開機都是拔插頭結束，System 7.5 的警告會擋住測試的點擊。Mac 掛上卷宗時就會清掉 bit 8 並寫回 MDB（前幾次開機後是 0x0000），所以檢查通過代表 Mac 的卸載確實寫到了 STELA 的檔案。
 - 滑鼠腳本的步驟（`Step::Mouse`）與鍵盤腳本（`Step::Key`，`--test-fs`）共用一個清單，時間以「桌面出現後的影格數」計；Restart 之後清單清空，第二個桌面出現時再排 Shut Down。超過 600 影格還沒有結果就印 `classic: power test: still running`（除錯時用來截圖）。
+
+## P13：介面的 scale
+
+STELA 的介面有 scale（`docs/display.md` §6）時，Classic 的畫面座標是邏輯的：它自己的倍數（`scale_for` 或 `classic.cfg` 的 `scale=`）乘上介面的 scale 最多 2；log 的 `classic: screen WxH (scale N)` 印相乘的結果。2560 螢幕預設 2x：Classic 自己 1 倍、toolbox 放大 2 倍，看起來和以前一樣。

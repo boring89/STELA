@@ -396,9 +396,10 @@ CLASSIC_CHECKS := --expect-rect 610,146,400,20,\#ffffff \
 # The first boot has no classic.cfg: on QEMU's 2560x1600 screen the
 # window is doubled (P11 K24, content at 70,138; the pattern in 2x2
 # squares). With the NuBus card at 800x600 and scale=1 (P11): the menu bar
-# and the pattern beyond the built-in 640x480.
+# and the pattern beyond the built-in 640x480 (P13 K13: Classic's scale 1
+# times the interface's 2: 2x2 squares again).
 CLASSIC_CARD_CHECKS := --expect-rect 600,142,250,10,\#ffffff \
-	--expect-pattern 400,640,200,80,\#000000,\#ffffff
+	--expect-pattern 100,1000,400,200,\#000000,\#ffffff,2
 classic: user
 
 test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
@@ -442,7 +443,7 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--type "STELA shell" "run Classic.app\n" \
 		--expect "classic: disk2 Applications.img (4096 KiB, read only)" \
 		--expect "classic: started (ROM 368CADFE, 32 MiB" \
-		--expect "classic: screen 800x600 (scale 1)" \
+		--expect "classic: screen 800x600 (scale 2)" \
 		--expect "classic: volume \"Applications\" (drive 9)" --expect "classic: finder desktop shown" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
 		-drive if=none,id=disk0,format=raw,file=$(CLASSIC_IMAGE) \
@@ -740,29 +741,40 @@ test-textmode: esp $(BUILD)/OVMF_VARS.fd
 # it back with Ctrl-V (P11: the clipboard), then save the screen and check
 # the desktop, the menu bar, the terminal's (inactive) title bar and its
 # text, echo_win's (active) title bar and its contents. The geometry is
-# that of the 2560x1600 OVMF mode: 16x32 font, menu bar 40, title bar 38;
-# the terminal's content at 40,108 (1288x808), echo_win's at 1844,140
-# (656x448).
+# that of the 2560x1600 OVMF mode: 16x32 font, menu bar 40, title bar 38.
+# P13 K13: there the interface scale is 2 (logical 1280x800, 8x16 font
+# drawn as 16x32): the terminal's content at 40,108, echo_win's title bar
+# at y 202-238 from x 1768. A second run with scale=1 (boot.cfg) in 128 MiB
+# keeps the old geometry (echo_win's content at 1844,140, 656x448).
 WINDOW_CHECKS := --expect-rect 1000,1100,300,300,\#5b7b86 --expect-rect 1300,8,400,20,\#f2e8d5 \
 	--expect-rect 300,72,100,10,\#d8cdb8 --expect-text 44,112,1280,800,\#f2e8d5,4 \
+	--expect-rect 1880,206,80,8,\#c8763c --expect-text 1784,250,640,420,\#f2e8d5,3
+WINDOW_CHECKS_1X := --expect-rect 1000,1100,300,300,\#5b7b86 --expect-rect 1300,8,400,20,\#f2e8d5 \
+	--expect-rect 300,72,100,10,\#d8cdb8 --expect-text 44,112,1280,800,\#f2e8d5,4 \
 	--expect-rect 1864,104,80,8,\#c8763c --expect-text 1848,144,648,440,\#f2e8d5,3
+ESP_SCALE1 := $(BUILD)/esp-scale1
 test-window: esp $(BUILD)/OVMF_VARS.fd
 	python3 tools/qemu_test.py --timeout 90 --screendump $(BUILD)/screen.ppm --log $(BUILD)/test-window.log \
 		--type "STELA shell" "uptime\n" --type "uptime:" "run Echo.app\n" \
 		--type "echo_win: ready" "hello\n" \
 		--send-keys "echo_win: hello" "ctrl-c" \
 		--send-keys "echo_win: copied hello" "ctrl-v ret" \
-		--expect "windowserver: " --expect "STELA shell" --expect "uptime:" \
+		--expect "windowserver: scale 2" --expect "STELA shell" --expect "uptime:" \
 		--expect "echo_win: hello" --expect "echo_win: copied hello" --expect "echo_win: hello" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 	python3 tools/fb_check.py $(BUILD)/screen.ppm $(WINDOW_CHECKS)
-	# P12 (docs/architecture.md §3.1): the same desktop in 128 MiB.
-	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-window-128.log \
+	# P12 (docs/architecture.md §3.1): the same desktop in 128 MiB; P13
+	# K14: at scale 1.
+	rm -rf $(ESP_SCALE1)
+	cp -r $(ESP) $(ESP_SCALE1)
+	printf 'scale=1\n' > $(ESP_SCALE1)/STELA/boot.cfg
+	python3 tools/qemu_test.py --timeout 90 --screendump $(BUILD)/s1x.ppm --log $(BUILD)/test-window-128.log \
 		--type "STELA shell" "uptime\n" --type "uptime:" "run Echo.app\n" \
 		--type "echo_win: ready" "hello\n" \
-		--expect "kernel: " --expect "mouseion: ready" --expect "STELA shell" --expect "uptime:" \
+		--expect "kernel: " --expect "windowserver: scale 1" --expect "mouseion: ready" --expect "STELA shell" --expect "uptime:" \
 		--expect "echo_win: hello" \
-		-- $(QEMU) $(subst -m 512M,-m 128M,$(QEMU_FLAGS)) -display none -serial stdio
+		-- $(QEMU) $(subst -m 512M,-m 128M,$(QEMU_BASE)) -drive format=raw,file=fat:rw:$(ESP_SCALE1) -display none -serial stdio
+	python3 tools/fb_check.py $(BUILD)/s1x.ppm $(WINDOW_CHECKS_1X)
 
 # The shell on the normal kernel with the AHCI test disk (a copy of its
 # own) on two processors (docs/smp.md): commands typed through QMP, their
@@ -1017,7 +1029,7 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 # P12) in Initrd's
 # window (a second terminal starts). The screen shows the volume icons
 # and the new terminal active.
-MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
+MOUSEION_CHECKS := --expect-rect 2440,104,24,6,\#c8763c --expect-rect 2000,1300,300,200,\#5b7b86 \
 	--expect-rect 300,192,100,10,\#c8763c
 # P11: Delete on the selected Classic.app asks, and Enter tries (Initrd is
 # read only, so it stays); a second boot opens the windows open last time
@@ -1025,13 +1037,13 @@ MOUSEION_CHECKS := --expect-rect 2445,82,40,12,\#c8763c --expect-rect 2000,1300,
 test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-mouseion.img
 	python3 tools/qemu_test.py --timeout 120 --screendump $(BUILD)/mouseion.ppm --log $(BUILD)/test-mouseion.log \
-		--click "mouseion: started Terminal" 2464 204 2 \
-		--click "mouseion: opened Data:/" 256 232 2 \
-		--click "kalamos: opened Data:/welcome.txt" 2464 316 2 \
-		--click "mouseion: opened Initrd:/" 296 274 1 \
+		--click "mouseion: started Terminal" 2448 240 2 \
+		--click "mouseion: opened Data:/" 432 392 2 \
+		--click "kalamos: opened Data:/welcome.txt" 2448 368 2 \
+		--click "mouseion: opened Initrd:/" 512 472 1 \
 		--type "mouseion: selected Classic.app" "{delete}" \
 		--type "mouseion: asking" "\n" \
-		--click "mouseion: delete Classic.app" 296 386 2 \
+		--click "mouseion: delete Classic.app" 512 600 2 \
 		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
 		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
 		--expect "mouseion: asking: Delete \"Classic.app\"?" \
@@ -1041,6 +1053,23 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	python3 tools/fb_check.py $(BUILD)/mouseion.ppm $(MOUSEION_CHECKS)
+	# P13 K14: the same clicks at scale 1 (boot.cfg scale=1), where the
+	# layout is the old one (icons 64, 16x32 font, physical pixels).
+	rm -rf $(ESP_SCALE1)
+	cp -r $(ESP) $(ESP_SCALE1)
+	printf 'scale=1\n' > $(ESP_SCALE1)/STELA/boot.cfg
+	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-mouseion-1x.img
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-mouseion-1x.log \
+		--click "mouseion: started Terminal" 2464 204 2 \
+		--click "mouseion: opened Data:/" 256 232 2 \
+		--click "kalamos: opened Data:/welcome.txt" 2464 316 2 \
+		--click "mouseion: opened Initrd:/" 296 274 1 \
+		--expect "windowserver: scale 1" --expect "mouseion: opened Data:/" \
+		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
+		--expect "mouseion: selected Classic.app" \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SCALE1) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion-1x.img \
+		-device ide-hd,drive=sata1,bus=ide.1
 	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-mouseion-2.log \
 		--expect "mouseion: opened Data:/" --expect "mouseion: opened Initrd:/" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \

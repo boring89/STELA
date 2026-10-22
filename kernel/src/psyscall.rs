@@ -309,7 +309,7 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
                         abi::sysinfo::FORMAT_RGBX
                     },
                     size: fb.range.size() as u32,
-                    scale: 1,
+                    scale: abi::sysinfo::ui_scale(fb.width, frame::cmdline()),
                 };
                 out.extend_from_slice(&info.to_bytes());
                 1

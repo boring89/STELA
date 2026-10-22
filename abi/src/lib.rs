@@ -1307,6 +1307,17 @@ pub mod sysinfo {
         }
     }
 
+    /// The interface scale (P13 K13, `docs/display.md`): the boot option
+    /// `scale=1` or `scale=2`, else 2 from 2560 pixels wide, else 1.
+    pub fn ui_scale(width: u32, cmdline: &[u8]) -> u32 {
+        match cmdline_option(cmdline, "scale") {
+            Some(b"1") => 1,
+            Some(b"2") => 2,
+            _ if width >= 2560 => 2,
+            _ => 1,
+        }
+    }
+
     /// Size of the framebuffer record.
     pub const FRAMEBUFFER_INFO_SIZE: usize = 24;
 
@@ -1328,7 +1339,8 @@ pub mod sysinfo {
         pub format: u32,
         /// Bytes of the framebuffer (what `MemoryMap` maps).
         pub size: u32,
-        /// UI scale: 1 (2 is reserved for HiDPI; not used yet).
+        /// UI scale (P13 K13): physical pixels per logical one, 1 or 2
+        /// (`ui_scale`).
         pub scale: u32,
     }
 
@@ -2018,6 +2030,13 @@ mod tests {
         assert_eq!(sysinfo::TIME, 6);
         assert_eq!(sysinfo::CPUS, 7);
         assert_eq!(sysinfo::PROCESS_CPUS, 8);
+        // P13 K13: the interface scale.
+        use sysinfo::ui_scale;
+        assert_eq!(ui_scale(2560, b""), 2);
+        assert_eq!(ui_scale(1920, b""), 1);
+        assert_eq!(ui_scale(2560, b"scale=1"), 1);
+        assert_eq!(ui_scale(1024, b"verbose scale=2"), 2);
+        assert_eq!(ui_scale(2560, b"scale=3"), 2);
     }
 
     #[test]

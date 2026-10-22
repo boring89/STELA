@@ -28,6 +28,9 @@ pub struct Connection {
     pub screen: (u32, u32),
     /// The menu bar's height.
     pub menubar: u32,
+    /// Physical pixels per logical one (P13 K13): the screen size and
+    /// every coordinate are logical.
+    pub scale: u32,
     pending: VecDeque<Message>,
     /// Events a dialog took and gave back (`put_back`), returned first.
     returned: VecDeque<Event>,
@@ -69,6 +72,7 @@ impl Connection {
             client: 0,
             screen: (0, 0),
             menubar: 0,
+            scale: 1,
             pending: VecDeque::new(),
             returned: VecDeque::new(),
         };
@@ -79,6 +83,7 @@ impl Connection {
         conn.server = port;
         conn.client = proto::word(&m, 0);
         conn.screen = (proto::word(&m, 1), proto::word(&m, 2));
+        conn.scale = proto::word(&m, 3).clamp(1, 4);
         conn.menubar = proto::word(&m, 4);
         Ok(conn)
     }
@@ -197,7 +202,7 @@ impl Connection {
     ) -> Result<Window, Error> {
         self.send(&proto::create_window(w, h, flags, x, y, title))?;
         let reply = self.wait_for(event::WINDOW_CREATED)?;
-        Window::from_reply(&reply)
+        Window::from_reply(&reply, self.scale)
     }
 
     /// Installs the menu bar text (`toolbox::menu`).
@@ -252,7 +257,7 @@ impl Connection {
     pub fn resize(&mut self, window: &mut Window, w: u32, h: u32) -> Result<(), Error> {
         self.send(&proto::resize_window(window.id, w, h))?;
         let reply = self.wait_for(event::WINDOW_RESIZED)?;
-        *window = Window::from_reply(&reply)?;
+        *window = Window::from_reply(&reply, self.scale)?;
         Ok(())
     }
 
@@ -271,11 +276,14 @@ pub struct Window {
     pub width: u32,
     /// Content height.
     pub height: u32,
+    /// Physical pixels per logical one (the buffer is `width * scale` x
+    /// `height * scale`).
+    pub scale: u32,
     mapping: Mapping,
 }
 
 impl Window {
-    fn from_reply(reply: &Message) -> Result<Window, Error> {
+    fn from_reply(reply: &Message, scale: u32) -> Result<Window, Error> {
         let Some(&memory) = reply.carried().first() else {
             return Err(Error::InvalidArgument);
         };
@@ -284,7 +292,8 @@ impl Window {
             proto::word(reply, 1),
             proto::word(reply, 2),
         );
-        let size = (u64::from(width) * u64::from(height) * 4).next_multiple_of(4096);
+        let s = u64::from(scale);
+        let size = (u64::from(width) * s * u64::from(height) * s * 4).next_multiple_of(4096);
         let mapping = Mapping::new(memory, size, true);
         // The mapping keeps the memory; the handle is not needed.
         let _ = handle_close(memory);
@@ -292,6 +301,7 @@ impl Window {
             id,
             width,
             height,
+            scale,
             mapping: mapping?,
         })
     }
@@ -303,10 +313,11 @@ impl Window {
 
     /// Something to draw on (call [`Connection::damage`] after).
     pub fn canvas(&mut self) -> Canvas<'_> {
-        let (w, h) = (self.width, self.height);
+        let s = self.scale;
+        let (w, h) = (self.width * s, self.height * s);
         // A writable mapping always gives its words.
         let words = self.mapping.words_mut().unwrap_or_default();
-        Canvas::new(words, w, h, w as usize)
+        Canvas::scaled(words, w, h, w as usize, s)
     }
 }
 

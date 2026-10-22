@@ -115,7 +115,7 @@ USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: test-qemu-all test-qemu-shard
 .PHONY: all boot kernel user initrd system-image go go-tests musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-update test-go test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-alpine-rust test-pipe test-browser test-update test-go test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp system-image
 
@@ -1271,6 +1271,49 @@ test-alpine: esp test-images ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--expect "uname -s" --expect "STELA" --expect "ld-musl-x86_64.so.1" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-alpine.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+
+# P14 K11, local only (not in make test or CI): Alpine's rustc and cargo
+# (1.96.1, Alpine 3.24; the .apk files and their SHA-256 in
+# ALPINE_RUST_DIR, downloaded once) on a whole-disk Data volume of its
+# own (1400 MiB, 2 GiB of memory). The shared libraries go to
+# Data:/Programs/lib (where /usr/lib leads), the rest of /usr to
+# Data:/alpine/usr (rustc's sysroot is ../ of its program: the rustlib
+# and gcc folders stay there too). docs/linux.md §18.
+ALPINE_RUST_DIR ?= $(HOME)/stela-ports/sources/alpine/rust-1.96
+ALPINE_RUST_IMG = $(IMAGES)/alpine-rust.img
+# No PATH leads to gcc or ld, and rustc takes its sysroot from where
+# librustc_driver is (Data:/Programs/lib); gcc's LTO plugin is in
+# libexec, where nothing may be mapped executable.
+ALPINE_RUSTFLAGS := --sysroot /Data/alpine/usr -C linker=/Data/alpine/usr/bin/gcc \
+	-C link-arg=-B/Data/alpine/usr/bin -C link-arg=-fno-use-linker-plugin
+test-alpine-rust: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
+	cd $(ALPINE_RUST_DIR) && sha256sum -c --quiet SHA256SUMS
+	rm -rf $(BUILD)/alpine-rust && mkdir -p $(BUILD)/alpine-rust/root $(BUILD)/alpine-rust/lib \
+		$(BUILD)/alpine-rust/usr/lib $(BUILD)/alpine-rust/rust
+	for p in $(ALPINE_RUST_DIR)/*.apk; do tar -xzf $$p -C $(BUILD)/alpine-rust/root 2>/dev/null; done
+	cd $(BUILD)/alpine-rust/root && cp -a lib/. ../lib/ && cp -a usr/lib/. ../lib/ && \
+		rm -rf ../lib/rustlib ../lib/gcc && cp -a usr/bin usr/libexec ../usr/ && \
+		cp -a usr/lib/rustlib usr/lib/gcc ../usr/lib/
+	printf 'fn main() {\n    let v: Vec<u32> = (1..=10).collect();\n    println!("hello from rustc on STELA: {}", v.iter().sum::<u32>());\n}\n' > $(BUILD)/alpine-rust/rust/hello.rs
+	mkdir -p $(IMAGES)
+	rm -f $(ALPINE_RUST_IMG)
+	$(EHFS_TOOLS)/mkfs.ehfs -L Data --size 1400 $(ALPINE_RUST_IMG)
+	python3 tools/ehfs_tree.py $(EHFS_TOOLS) $(ALPINE_RUST_IMG) $(BUILD)/alpine-rust/lib /Programs/lib
+	python3 tools/ehfs_tree.py $(EHFS_TOOLS) $(ALPINE_RUST_IMG) $(BUILD)/alpine-rust/usr /alpine/usr
+	python3 tools/ehfs_tree.py $(EHFS_TOOLS) $(ALPINE_RUST_IMG) $(BUILD)/alpine-rust/rust /rust
+	printf '1\n' > $(BUILD)/alpine-rust/setup-done
+	$(EHFS_TOOLS)/ehfs-cp $(ALPINE_RUST_IMG) mkdir /.stela
+	$(EHFS_TOOLS)/ehfs-cp $(ALPINE_RUST_IMG) in $(BUILD)/alpine-rust/setup-done /.stela/setup-done
+	python3 tools/qemu_test.py --timeout 1200 --log $(BUILD)/test-alpine-rust.log \
+		--type "STELA shell" "run /alpine/usr/bin/rustc --version\n" \
+		--type "rustc exited with code" "run /alpine/usr/bin/rustc $(ALPINE_RUSTFLAGS) -o /Data/rust/hello /Data/rust/hello.rs\n" \
+		--type "rustc exited with code" "run /rust/hello\n" \
+		--expect "rustc 1.96.1" --expect "rustc exited with code 0" \
+		--expect "rustc exited with code 0" \
+		--expect "hello from rustc on STELA: 55" --expect "hello exited with code 0" \
+		-- $(QEMU) $(subst -m 512M,-m 2048M,$(QEMU_FLAGS)) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(ALPINE_RUST_IMG) \
 		-device ide-hd,drive=sata1,bus=ide.1
 
 # USB: the normal kernel without PS/2 (i8042=off) and with an xHCI

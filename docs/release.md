@@ -26,7 +26,7 @@ make release            → build/release/stela-0.2.0/
 
 1. `VERSION` 與 Cargo 的版本不同就停。
 2. 建 `esp`（kernel、initrd、System 映像），`tools/make_disk_image.py` 做磁碟映像——**不放使用者的 Mac 檔**（`make disk-image` 會在找到 `~/mac/` 時放進 `Data:/Classic/`，release 不經過那條路），做完再用 `ehfs-ls` 確認 Data 裡沒有 Classic。
-3. `~/stela-ports/dist`（`PORTS_DIR=` 可改）沒有套件就先 `portbuild.py all all`（約 15 分鐘）；然後重做 index 並用套件的測試鑰匙簽（`PKG_SIGNING_KEY`）。
+3. `~/stela-ports/dist`（`PORTS_DIR=` 可改）沒有套件就先 `portbuild.py all all`（約 15 分鐘）；index 已經用 `tools/pkg.pub` 的鑰匙簽好、而且正好列出 dist 裡每個 `.tar` 與它的 SHA-256（`pkgsign.py verify`）就照用（ports 自己的 release）；否則重做 index 並用套件的**測試**鑰匙簽（`tools/pkg.pub` 換成正式的之後這條路會失敗，這是故意的）。`RELEASE_SYSTEM=檔案` 用別處簽好的 System 映像代替 `build/system.img`（版本要等於 `VERSION`）。
 4. 找到任何 `*.key` 或 `*signing*` 檔就停（私鑰不能進 release）。
 5. SHA256SUMS → RELEASE_NOTES.md（含 SHA256SUMS 的內容）→ 把 RELEASE_NOTES.md 的 SHA-256 補進 SHA256SUMS。
 
@@ -36,7 +36,11 @@ make release            → build/release/stela-0.2.0/
 
 - tag 名 `v0.2.0`（`v` + `VERSION`），打在 `make clean && make -j6 test` 通過、使用者審核過的 commit 上；ports repo 打同名的 tag（一次 STELA 發布對應一次 ports 發布）。
 - **鑰匙**：發布前兩把測試鑰匙都要換成正式的（`tools/pkg.pub`、`tools/system.pub`；docs/pkg.md §6、docs/system.md §3）。套件的私鑰放 ports repo 的 GitHub secret；**System 的私鑰只放在發布者自己的機器上**，`system.img` 在本機簽好再上傳（CI 不簽 System）。
-- 上傳到 GitHub Releases：STELA 的 CI 在推 `v*` tag 時跑 `release` job（`.github/workflows/ci.yml`，K18）；ports 的 workflow 用 `workflow_dispatch`（K18）。兩者都寫好了但**從來沒有執行過**。
+- 上傳到 GitHub Releases，兩者都寫好了但**從來沒有執行過**（K18）：
+  1. ports repo 的 `.github/workflows/build.yml`（`workflow_dispatch`，輸入 STELA 的 tag）：checkout STELA 那個 tag、建所有 port、每個在 QEMU 測、用 secret `PKG_SIGNING_KEY` 簽 index、做成 ports repo 同名 tag 的 **draft** release。第一次跑之前，六個 `copy-from` 的 port 要改成官方網址。
+  2. 發布者在本機用正式的 System 鑰匙簽好 `system.img`，在 STELA 建同名 tag 的 draft release 並附上它。
+  3. push `v0.2.0` tag：STELA 的 `ci.yml` 先跑 host 與 QEMU 的 job，再跑 `release` job：檢查 tag = `v` + `VERSION`、下載 ports 的 release（沒有就在 CI 裡建）、下載 draft 上的 `system.img`（沒有就用測試鑰匙簽的並警告）、`make release`、把 `stela.img`、`system.img`、`stela-0.2.0-esp.tar`、`stela-0.2.0-ports.tar`、`SHA256SUMS`、`RELEASE_NOTES.md` 傳到 draft。
+  4. 發布者檢查 draft 後手動發布。CI 從頭到尾不碰 System 的私鑰。
 - 磁碟映像是 raw 檔（約 700 MiB，大部分是空的 Data）；上傳前是否壓縮（`xz`）由發布者決定（還沒決定，見 P14 的待決定）。
 
 ## 4. 檢查清單

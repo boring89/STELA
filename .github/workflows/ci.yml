@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
+    # P14 K18: a v* tag also runs the release job (docs/release.md).
+    tags: ['v*']
   pull_request:
 
 # P13 K23 (docs/testing.md §5): the host's checks in one job, the QEMU
@@ -123,3 +125,65 @@ jobs:
         # sound, Mouseion, the sandbox... (the Makefile's QEMU_TESTS), the
         # third of them this shard has; no KVM needed.
         run: make -j2 test-qemu-shard N=${{ matrix.shard }} SHARDS=3
+
+  # P14 K18 (docs/release.md §3): on a v* tag, after the tests, make release
+  # and attach it to a draft GitHub release. Written in P14, never run yet.
+  # The System image is never signed here: the releaser makes the draft
+  # release first with system.img signed on their own machine (the real
+  # System key), and this job builds the disk image around it; without one
+  # it uses the TEST-signed build/system.img. The ports come from the
+  # ports repository's release with the same tag (its build.yml), or are
+  # built here when it has none.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [host, qemu]
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      PORTS_REPO: ${{ vars.PORTS_REPO || 'boring89/stela-ports' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag and VERSION agree
+        run: test "v$(cat VERSION)" = "$TAG"
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf python3 python3-cryptography mtools gdisk gcc binutils-m68k-linux-gnu
+      - name: musl and libchewing tarballs
+        run: |
+          mkdir -p build-cache
+          curl -fsSL -o build-cache/musl-1.2.5.tar.gz https://musl.libc.org/releases/musl-1.2.5.tar.gz
+          echo "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4  build-cache/musl-1.2.5.tar.gz" | sha256sum -c -
+          curl -fsSL -o build-cache/libchewing-0.5.1.tar.bz2 https://github.com/chewing/libchewing/releases/download/v0.5.1/libchewing-0.5.1.tar.bz2
+          echo "9708c63415fa6034435c0f38100e7d30d0e1bac927f67bec6dfeb3fef016172b  build-cache/libchewing-0.5.1.tar.bz2" | sha256sum -c -
+          echo "MUSL_TARBALL=$PWD/build-cache/musl-1.2.5.tar.gz" >> "$GITHUB_ENV"
+          echo "CHEWING_TARBALL=$PWD/build-cache/libchewing-0.5.1.tar.bz2" >> "$GITHUB_ENV"
+      - name: Install Rust toolchain
+        run: cargo --version
+      - name: The ports
+        run: |
+          git clone --depth 1 --branch "$TAG" "https://github.com/$PORTS_REPO" ports || git clone --depth 1 "https://github.com/$PORTS_REPO" ports
+          mkdir -p ports/dist
+          gh release download "$TAG" --repo "$PORTS_REPO" --dir ports/dist --pattern '*.tar' --pattern 'index.json*' || true
+      - name: The System image signed by the releaser
+        run: |
+          mkdir -p signed
+          if gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir signed --pattern system.img; then
+            echo "RELEASE_SYSTEM=$PWD/signed/system.img" >> "$GITHUB_ENV"
+          else
+            echo "::warning::no system.img on the draft release: the TEST-signed one is used"
+          fi
+      - name: make release
+        run: make release PORTS_DIR=$PWD/ports ${RELEASE_SYSTEM:+RELEASE_SYSTEM=$RELEASE_SYSTEM}
+      - name: Upload to the draft release
+        working-directory: build/release
+        run: |
+          D=stela-$(cat ../../VERSION)
+          tar -cf "$D-esp.tar" -C "$D" esp
+          tar -cf "$D-ports.tar" -C "$D" ports
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" --title "STELA $TAG" --notes-file "$D/RELEASE_NOTES.md"
+          gh release upload "$TAG" --clobber --repo "$GITHUB_REPOSITORY" \
+            "$D/stela.img" "$D/system.img" "$D-esp.tar" "$D-ports.tar" "$D/SHA256SUMS" "$D/RELEASE_NOTES.md"

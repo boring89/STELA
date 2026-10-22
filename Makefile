@@ -1707,6 +1707,9 @@ test-ports: musl esp test-images ehfs-tools
 # $(PORTS_DIR)/dist has none. Nothing is uploaded or tagged.
 RELEASE_DIR := $(BUILD)/release/stela-$(VERSION)
 RELEASE_DATA_MIB ?= 512
+# A System image signed elsewhere (the releaser's machine, with the real
+# System key) instead of build/system.img (the TEST key's).
+RELEASE_SYSTEM ?= $(SYSTEM_IMG)
 release: esp ehfs-tools
 	@[ "$$(cat VERSION)" = "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" ] || \
 		{ echo "release: VERSION and Cargo.toml's workspace version differ"; exit 1; }
@@ -1715,17 +1718,23 @@ release: esp ehfs-tools
 	rm -rf $(BUILD)/release-esp
 	cp -r $(ESP) $(BUILD)/release-esp
 	cp tools/boot.cfg $(BUILD)/release-esp/STELA/boot.cfg
-	python3 tools/make_disk_image.py --system $(SYSTEM_IMG) --system-mib $(SYSTEM_MIB) \
+	python3 tools/sysimage.py show $(RELEASE_SYSTEM) | grep -q "^version $(VERSION),"
+	python3 tools/make_disk_image.py --system $(RELEASE_SYSTEM) --system-mib $(SYSTEM_MIB) \
 		$(BUILD)/release/stela.img $(BUILD)/release-esp $(EHFS_TOOLS) $(RELEASE_DATA_MIB)
 	mv $(BUILD)/release/stela.img $(RELEASE_DIR)/stela.img
 	! $(EHFS_TOOLS)/ehfs-ls --offset $(DATA_SECTOR) $(RELEASE_DIR)/stela.img / | grep -qi classic
 	cp -r $(BUILD)/release-esp/. $(RELEASE_DIR)/esp/
-	cp $(SYSTEM_IMG) $(RELEASE_DIR)/system.img
+	cp $(RELEASE_SYSTEM) $(RELEASE_DIR)/system.img
 	if ! ls $(PORTS_DIR)/dist/*.tar >/dev/null 2>&1; then \
 		$(MAKE) musl test-images && STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py all all; fi
-	python3 tools/pkgsign.py keygen $(BUILD)/pkg-signing.key $(BUILD)/pkg.pub
-	cmp $(BUILD)/pkg.pub tools/pkg.pub
-	STELA_ROOT=$(CURDIR) PKG_SIGNING_KEY=$(BUILD)/pkg-signing.key python3 $(PORTS_DIR)/tools/portbuild.py index
+	# An index already signed with tools/pkg.pub's key (the ports' own
+	# release) stays; otherwise it is made again and signed with the TEST
+	# key (which only works while tools/pkg.pub is the test key).
+	if ! python3 tools/pkgsign.py verify tools/pkg.pub $(PORTS_DIR)/dist/index.json; then \
+		python3 tools/pkgsign.py keygen $(BUILD)/pkg-signing.key $(BUILD)/pkg.pub && \
+		cmp $(BUILD)/pkg.pub tools/pkg.pub && \
+		STELA_ROOT=$(CURDIR) PKG_SIGNING_KEY=$(BUILD)/pkg-signing.key python3 $(PORTS_DIR)/tools/portbuild.py index; fi
+	python3 tools/pkgsign.py verify tools/pkg.pub $(PORTS_DIR)/dist/index.json
 	cp $(PORTS_DIR)/dist/*.tar $(PORTS_DIR)/dist/index.json $(PORTS_DIR)/dist/index.json.sig $(RELEASE_DIR)/ports/
 	@if find $(RELEASE_DIR) -name '*.key' -o -name '*signing*' | grep -q .; then \
 		echo "release: a private key in $(RELEASE_DIR)"; exit 1; fi

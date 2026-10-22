@@ -18,6 +18,8 @@ pub mod audiofeed;
 pub mod block;
 #[cfg(target_os = "none")]
 pub mod console;
+#[cfg(target_os = "none")]
+pub mod device;
 pub mod fs;
 #[cfg(target_os = "none")]
 pub mod fsyscall;

@@ -158,8 +158,24 @@ pub enum BarError {
     Map(mmio::MmioError),
 }
 
+/// Functions a kernel driver uses (it mapped a BAR): not lent to user
+/// space (P13 K11).
+static CLAIMED: SpinLock<Vec<super::Address>> = SpinLock::new(Vec::new());
+
+/// Whether a kernel driver uses `f`.
+pub fn is_claimed(f: &Function) -> bool {
+    CLAIMED.lock().contains(&f.address)
+}
+
 /// Maps memory BAR `index` of `f` (uncached) and enables memory decoding.
+/// The function then belongs to the kernel (`is_claimed`).
 pub fn map_bar(f: &Function, index: u8) -> Result<MmioRegion, BarError> {
+    {
+        let mut claimed = CLAIMED.lock();
+        if !claimed.contains(&f.address) {
+            claimed.push(f.address);
+        }
+    }
     let Some(Bar::Memory { addr, size, .. }) = super::bar(config(), f, index) else {
         return Err(BarError::NotMemory);
     };

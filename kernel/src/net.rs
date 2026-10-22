@@ -188,8 +188,11 @@ pub fn start() {
         return;
     }
     // A wired PCI card if there is one; otherwise the thread waits for a
-    // USB adapter (P13 K10).
-    if let Some(card) = drivers::net::probe() {
+    // USB adapter (P13 K10). With the boot option usernet (P13 K12) the
+    // PCI cards are left to a user-space driver (init starts e1000u).
+    if frame::boot_flag("usernet") {
+        frame::kprintln!("net: PCI cards left to user space (boot option usernet)");
+    } else if let Some(card) = drivers::net::probe() {
         install(card, false);
     }
     if let Err(e) = task::spawn("net", run) {

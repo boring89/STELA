@@ -42,6 +42,7 @@ members = [
     "user/pkgcore",
     "user/pkg",
     "user/ime",
+    "user/e1000u",
     "user/setup",
     "classic",
     "tools/ehfs",

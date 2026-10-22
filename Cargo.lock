@@ -272,6 +272,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "e1000u"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "libstela",
+]
+
+[[package]]
 name = "ecdsa"
 version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

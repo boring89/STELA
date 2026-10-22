@@ -125,11 +125,42 @@ fn handle(frame: &mut SyscallFrame) {
         Some(Syscall::PipeWrite) => pipe_write(a0, a1, a2, args[3]),
         Some(Syscall::Random) => random(a0, a1),
         Some(Syscall::VolumeFormat) => volume_format(a0, a1, a2, args[3]),
+        // P13 K11: user-space drivers (docs/devices.md).
+        Some(
+            call @ (Syscall::DeviceOpen
+            | Syscall::DeviceConfig
+            | Syscall::DeviceMapBar
+            | Syscall::DeviceDma
+            | Syscall::DeviceIrq
+            | Syscall::DeviceReset
+            | Syscall::NetAttach
+            | Syscall::NetDeliver
+            | Syscall::NetTake),
+        ) => device_call(call, args),
         Some(call) => file_call(call, args),
         None => Err(Error::InvalidSyscall),
     };
     let (status, value) = abi::encode(result);
     frame.set_return(status, value);
+}
+
+/// The user-space driver calls (P13 K11, `device.rs`).
+fn device_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
+    use crate::device as d;
+    let p = caller()?;
+    let [a0, a1, a2, a3, ..] = args;
+    match call {
+        Syscall::DeviceOpen => d::device_open(&p, a0, a1, a2),
+        Syscall::DeviceConfig => d::device_config(&p, a0, a1, a2, a3),
+        Syscall::DeviceMapBar => d::device_map_bar(&p, a0, a1, a2),
+        Syscall::DeviceDma => d::device_dma(&p, a0, a1, a2),
+        Syscall::DeviceIrq => d::device_irq(&p, a0, a1),
+        Syscall::DeviceReset => d::device_reset(&p, a0),
+        Syscall::NetAttach => d::net_attach(&p, a0, a1, a2),
+        Syscall::NetDeliver => d::net_deliver(&p, a0, a1, a2),
+        Syscall::NetTake => d::net_take(&p, a0, a1, a2),
+        _ => Err(Error::InvalidSyscall),
+    }
 }
 
 /// `ThreadCreate(entry, stack_top, arg) -> thread`.
@@ -615,6 +646,8 @@ fn handle_kind(handle: u64) -> Result<u64, Error> {
         KernelObject::PipeRead(_) => k::PIPE_READ,
         KernelObject::PipeWrite(_) => k::PIPE_WRITE,
         KernelObject::Thread(_) => k::THREAD,
+        KernelObject::Device(_) => k::DEVICE,
+        KernelObject::NetTap(_) => k::NET_TAP,
     })
 }
 

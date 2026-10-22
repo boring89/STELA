@@ -94,6 +94,31 @@ fn give(kind: u32) -> Option<(u32, Handle)> {
     process::pass_capability(kind).map(|h| (kind, h))
 }
 
+/// Starts the user-space driver `name` from `Initrd:/` with the `DEVICES`
+/// capability (and nothing else), and lets it run.
+fn start_driver(name: &str) {
+    let Ok(program) = fs::volume_open("Initrd").and_then(|i| fs::open(i, name, open::READ)) else {
+        println!("init: no Initrd:/{name}");
+        return;
+    };
+    let handles = [
+        pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
+        Handle::NONE,
+        Handle::NONE,
+    ];
+    let caps: &[(u32, Handle)] = match give(capability::DEVICES) {
+        Some(c) => &[c],
+        None => &[],
+    };
+    match process::spawn_with(program, &[name], &handles, caps) {
+        Ok(p) => {
+            let _ = handle_close(p);
+        }
+        Err(e) => println!("init: cannot start {name}: {}", e.name()),
+    }
+    let _ = handle_close(program);
+}
+
 fn start_shell(program: Handle, home: Handle) -> Option<Handle> {
     let to_init = handle_duplicate(bootstrap::MAIN_PORT, Rights::SEND | Rights::TRANSFER).ok()?;
     let handles = [
@@ -217,6 +242,11 @@ fn main() -> i64 {
             }
         },
     };
+    // P13 K12: with usernet the network card's driver is a user program
+    // (docs/devices.md); it alone gets the DEVICES capability.
+    if process::boot_flag("usernet") {
+        start_driver("e1000u");
+    }
     let text_only = process::boot_flag("textmode") || process::boot_flag("nowindow");
     if text_only {
         println!("init: text mode (boot option)");

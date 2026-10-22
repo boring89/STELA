@@ -427,6 +427,22 @@ pub fn enable_msi(
     Ok(())
 }
 
+/// A PCI location `BB:DD.F` or `SSSS:BB:DD.F` (hexadecimal; P13 K11,
+/// `DeviceOpen`): bus, device, function.
+pub fn parse_location(s: &str) -> Option<(u8, u8, u8)> {
+    let s = match s.matches(':').count() {
+        2 => s.split_once(':')?.1,
+        1 => s,
+        _ => return None,
+    };
+    let (bus, rest) = s.split_once(':')?;
+    let (dev, func) = rest.split_once('.')?;
+    let bus = u8::from_str_radix(bus, 16).ok()?;
+    let dev = u8::from_str_radix(dev, 16).ok()?;
+    let func = u8::from_str_radix(func, 16).ok()?;
+    (dev < 32 && func < 8).then_some((bus, dev, func))
+}
+
 /// Sets bits in the command register.
 pub fn enable(cfg: &dyn ConfigSpace, at: Address, bits: u16) {
     let cmd = read16(cfg, at, 0x04);

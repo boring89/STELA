@@ -138,6 +138,7 @@ fn run(name: &str) {
         abi::capability::POWER,
         abi::capability::INPUT,
         abi::capability::NETWORK,
+        abi::capability::DEVICES,
     ]
     .into_iter()
     .map(|kind| (kind, kernel::object::capability(kind)))

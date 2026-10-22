@@ -95,6 +95,7 @@ kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）；
   src/linux/        Linux 人格：號碼（nr）、errno、fd 表、合成根目錄的路徑、初始堆疊（host 測試）；分派（sys）、檔案（files）、brk／mmap（memory）、BSD socket（socket）（docs/linux.md）
   src/net.rs        網路：net 執行緒、Socket 物件、socket syscall（docs/net.md）
   src/audio.rs      音效：audio 執行緒、Audio 物件、AudioOpen/AudioClose；src/audiofeed.rs  餵 DMA 的帳（host 測試）（docs/sound.md）
+  src/device.rs     P13：使用者空間驅動的 Device、NetTap 物件與 syscall、devirq 執行緒（docs/devices.md）
   src/psyscall.rs   行程 syscall（ProcessSpawn、ProcessOpen 等）、SysInfo、SystemPower（docs/userland.md、docs/acpi.md）
   src/hwinfo.rs     硬體報告 SysInfo(HARDWARE)（格式化 host 測試；docs/hwinfo.md）
   src/power.rs      卸載卷宗後關機／重新開機（docs/acpi.md）
@@ -115,6 +116,7 @@ user/          使用者程式（x86_64-unknown-none，user.ld 連結在 0x40_00
   mouseion/         空間式檔案管理員：model.rs（純邏輯，host 測試）、桌面、資料夾視窗、拖放（docs/mouseion.md）
   viewer/           Viewer.app：唯讀的文字檢視
   kalamos/ monitor/ periplus/  Kalamos.app（編輯器）、Monitor.app（監視器）、Periplus.app（只有 HTTP 的瀏覽器；lib 是 HTML 解析與排版，host 測試）（暫名；docs/apps.md）
+  e1000u/           P13：使用者空間的 e1000／e1000e 驅動（Device 介面的例子；開機選項 usernet 時 init 啟動它）（docs/devices.md）
   ime/              P13：注音輸入法（libchewing 經 FFI；c/ 是墊片 libc 與 config.h，src/ffi.rs 唯一的 unsafe；視窗伺服器啟動它）（docs/ime.md）
   init/ shell/      開機後的 init（有 framebuffer 就跑 windowserver mouseion）與 shell（docs/userland.md）
 classic/       Classic 環境（Classic.app，STELA 原生程式；docs/classic.md、classic/README.md）
@@ -142,7 +144,7 @@ tools/         開發工具與測試腳本（qemu_test.py、fb_check.py、with_h
   // SPDX-License-Identifier: GPL-3.0-or-later
   ```
 - `cargo fmt` 的預設格式；`cargo clippy` 零警告（`make clippy`）。
-- `unsafe` 只能出現在 `frame/`，以及 `boot/` 的兩處（`exit_boot_services` 與跳進 kernel 的 inline asm；`boot/` 用 `#![deny(unsafe_code)]` 加局部 `#[allow(unsafe_code)]`）、`user/libstela`（`syscall` 指令、`ThreadStack`、`ipc::Mapping` 的複製、`heap` 與 `sync::SpinMutex`，使用者程式唯一需要 unsafe 的地方）、`user/fault`（故意讀位址 0 的一處 inline asm）、`user/ime/src/ffi.rs`（P13：IME 呼叫 libchewing 的 FFI，同 classic 的規則）、`classic/src/ffi.rs`（Classic 環境呼叫 C 的 FFI；`classic` 的 lib 用 `#![deny(unsafe_code)]`，只有這個檔案 `#![allow(unsafe_code)]`）；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
+- `unsafe` 只能出現在 `frame/`，以及 `boot/` 的兩處（`exit_boot_services` 與跳進 kernel 的 inline asm；`boot/` 用 `#![deny(unsafe_code)]` 加局部 `#[allow(unsafe_code)]`）、`user/libstela`（`syscall` 指令、`ThreadStack`、`ipc::Mapping` 的複製、`heap` 與 `sync::SpinMutex`、P13 的 `device::Bar`（使用者空間驅動的 volatile 暫存器存取），使用者程式唯一需要 unsafe 的地方）、`user/fault`（故意讀位址 0 的一處 inline asm）、`user/ime/src/ffi.rs`（P13：IME 呼叫 libchewing 的 FFI，同 classic 的規則）、`classic/src/ffi.rs`（Classic 環境呼叫 C 的 FFI；`classic` 的 lib 用 `#![deny(unsafe_code)]`，只有這個檔案 `#![allow(unsafe_code)]`）；其他 crate 以 `#![forbid(unsafe_code)]` 禁止。每個 `unsafe` 區塊前要有 `// SAFETY:` 註解說明為什麼安全。
 - 不用 `unwrap()`／`expect()` 處理可能失敗的情況；錯誤用 `Result` 傳回。無法恢復的錯誤用 `panic!`（kernel 的 panic handler 負責顯示）。
 - 與既有程式碼保持一致；不要只為了風格而修改無關的程式碼。
 
@@ -236,6 +238,6 @@ Claude 依照上方工作規則直接實作。
 - 網路：一次一張網卡（P13：PCI 有線優先，否則 USB 網卡，USB 可熱插拔，`docs/usb.md` §13）；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 的等待者被任何事件全部叫醒；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
 - 音效：只有輸出、48 kHz 16 位元雙聲道、一次一個程式、沒有混音與音量、輪詢 LPIB；實機 codec 未驗證（docs/sound.md §7）。
 - IPC：訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；共享記憶體是 eager；WaitSet 的行程成員以 id 記，要自己移除（`docs/ipc.md` §12、§13）。
-- 能力（P11）：`NETWORK` 與 `INIT` 預設往下傳給所有程式（沙箱還沒有拿掉它們的地方）；`FilePath` 讓持有資料夾 handle 的程式知道上面各層的名字（docs/userland.md §2.3、docs/vfs.md §4.4）。
+- 能力（P11）：`NETWORK` 與 `INIT` 預設往下傳給所有程式（沙箱還沒有拿掉它們的地方）；P13 的 `DEVICES` 只有 init 給它啟動的驅動，沒有 IOMMU，所以持有它等於持有整台機器（docs/devices.md）；`FilePath` 讓持有資料夾 handle 的程式知道上面各層的名字（docs/userland.md §2.3、docs/vfs.md §4.4）。
 - 中文與時區（P11）：只有 BMP 的 12px 字型（16x32 字型時 2 倍放大）、沒有中文輸入法、kernel 主控台與 panic 畫面只有 ASCII；時區是固定的 UTC 偏移（沒有夏令時間、沒有時區資料庫）（docs/toolbox.md §6.3、docs/time.md §5.6）。
 - eHFS 的效能（P11 K45 的觀察）：每次查詢都讀 16 KiB 的 B-tree 節點並逐位元組算 CRC-32C（沒有節點快取）；`make test-stress` 在 TCG 下建刪 1000 個檔約 35 秒（docs/testing.md）。

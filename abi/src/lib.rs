@@ -256,6 +256,45 @@ pub enum Syscall {
     /// bytes; op 1 formats the place named in `buf` as Data and mounts it
     /// (needs the `POWER` capability `power`; refuses anything not empty).
     VolumeFormat = 65,
+    /// `DeviceOpen(path, len, devices) -> handle` (P13 K11,
+    /// `docs/devices.md`): the PCI function `BB:DD.F` (or `SSSS:BB:DD.F`)
+    /// for a user-space driver; needs the `DEVICES` capability. One owner
+    /// at a time; functions a kernel driver uses, bridges and displays are
+    /// refused (`Busy`, `AccessDenied`).
+    DeviceOpen = 66,
+    /// `DeviceConfig(device, offset, size | WRITE, value) -> value`: reads
+    /// (or with `device::WRITE` in `size`, writes) 1, 2 or 4 bytes of the
+    /// function's configuration space.
+    DeviceConfig = 67,
+    /// `DeviceMapBar(device, bar, size_ptr) -> address`: maps memory BAR
+    /// `bar` (uncached) into the caller, writes its size (u64) to
+    /// `size_ptr` and enables memory decoding.
+    DeviceMapBar = 68,
+    /// `DeviceDma(device, pages, phys_ptr) -> Memory handle`: physically
+    /// contiguous zeroed memory for the device to reach; its physical
+    /// address is written to `phys_ptr` (u64). It enables bus mastering.
+    DeviceDma = 69,
+    /// `DeviceIrq(device, port) -> vector`: points the function's MSI at a
+    /// kernel vector; each interrupt sends `tag::DEVICE_IRQ` to `port`.
+    DeviceIrq = 70,
+    /// `DeviceReset(device)`: bus mastering and MSI off (also when the
+    /// handle closes).
+    DeviceReset = 71,
+    /// `NetAttach(port, mac_ptr, network) -> handle` (P13 K11): a network
+    /// card in user space becomes the kernel's card; the kernel sends
+    /// `tag::NET_TX_READY` to `port` when it has frames to send. Needs the
+    /// `DEVICES` capability `network`.
+    NetAttach = 72,
+    /// `NetDeliver(tap, buf, len)`: a frame the card received.
+    NetDeliver = 73,
+    /// `NetTake(tap, buf, len) -> bytes`: the next frame to send (0: none).
+    NetTake = 74,
+}
+
+/// `DeviceConfig` flags (P13 K11).
+pub mod device {
+    /// In the size argument: write `value` instead of reading.
+    pub const WRITE: u64 = 1 << 8;
 }
 
 /// Most bytes one `Random` call gives.
@@ -263,7 +302,7 @@ pub const RANDOM_MAX: u64 = 64 * 1024;
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 65] = [
+    pub const ALL: [Syscall; 74] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -329,6 +368,15 @@ impl Syscall {
         Syscall::VolumeWatch,
         Syscall::Random,
         Syscall::VolumeFormat,
+        Syscall::DeviceOpen,
+        Syscall::DeviceConfig,
+        Syscall::DeviceMapBar,
+        Syscall::DeviceDma,
+        Syscall::DeviceIrq,
+        Syscall::DeviceReset,
+        Syscall::NetAttach,
+        Syscall::NetDeliver,
+        Syscall::NetTake,
     ];
 
     /// The call with number `raw`, if any.
@@ -761,6 +809,13 @@ pub mod tag {
     /// The kernel to a port given to `VolumeWatch` (P11 K42): a volume was
     /// mounted (data byte 0 = 1) or taken away (2); then its name.
     pub const VOLUME_CHANGED: u32 = 9;
+    /// The kernel to a user-space driver's port (P13 K11): the device's
+    /// MSI fired; data: the vector (u64 LE) and how many times since the
+    /// last message (u64 LE).
+    pub const DEVICE_IRQ: u32 = 11;
+    /// The kernel to a user-space network card's port (P13 K11): frames
+    /// wait for `NetTake`.
+    pub const NET_TX_READY: u32 = 12;
     /// Typed text (P13 K3, `docs/ime.md`): UTF-8 the input method
     /// committed, from a terminal to its shell and from the shell to a
     /// tty (`PortSend`), like a run of `INPUT_KEY`s.
@@ -780,12 +835,17 @@ pub mod capability {
     /// Not a kernel capability: a `SEND` handle to init's main port, for
     /// `tag::POWER_REQUEST`.
     pub const INIT: u32 = 4;
+    /// `DeviceOpen`, `NetAttach` (P13 K11): user-space drivers. Without an
+    /// IOMMU a device that masters the bus can reach all of memory, so
+    /// holding this is trusting the program with the machine
+    /// (`docs/devices.md`); init gives it only to the drivers it starts.
+    pub const DEVICES: u32 = 5;
     /// Most capabilities one `ProcessSpawn` passes (and a message
     /// carries).
-    pub const MAX: usize = 4;
+    pub const MAX: usize = 5;
     /// Whether `kind` is one of the kinds above.
     pub const fn is_valid(kind: u32) -> bool {
-        kind >= POWER && kind <= INIT
+        kind >= POWER && kind <= DEVICES
     }
 }
 
@@ -872,6 +932,10 @@ pub mod object_kind {
     pub const PIPE_WRITE: u64 = 14;
     /// A thread (`ThreadCreate`).
     pub const THREAD: u64 = 15;
+    /// A PCI function lent to a user-space driver (P13 K11).
+    pub const DEVICE: u64 = 16;
+    /// A user-space network card attached to the kernel (P13 K11).
+    pub const NET_TAP: u64 = 17;
 }
 
 /// Local time (P11 K40, `docs/time.md` §5.6): the offset from UTC kept in
@@ -2049,10 +2113,19 @@ mod tests {
     #[test]
     fn capabilities() {
         use capability::*;
-        assert_eq!((POWER, INPUT, NETWORK, INIT, MAX), (1, 2, 3, 4, 4));
-        assert!(is_valid(POWER) && is_valid(INIT));
-        assert!(!is_valid(0) && !is_valid(5));
+        assert_eq!(
+            (POWER, INPUT, NETWORK, INIT, DEVICES, MAX),
+            (1, 2, 3, 4, 5, 5)
+        );
+        assert!(is_valid(POWER) && is_valid(INIT) && is_valid(DEVICES));
+        assert!(!is_valid(0) && !is_valid(6));
         assert_eq!((tag::CAPABILITIES, tag::POWER_REQUEST), (7, 8));
+        assert_eq!((tag::DEVICE_IRQ, tag::NET_TX_READY), (11, 12));
+        assert_eq!(
+            (Syscall::DeviceOpen as u64, Syscall::NetTake as u64),
+            (66, 74)
+        );
+        assert_eq!(device::WRITE, 0x100);
         assert_eq!(object_kind::CAPABILITY, 12);
     }
 }

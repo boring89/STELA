@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup ime
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup ime e1000u
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
@@ -92,7 +92,7 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -253,7 +253,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-browser
+test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-net-user test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-browser
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -673,6 +673,31 @@ test-net-rndis:
 		--expect "hello from the host over TCP" \
 		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_RNDIS) -display none -serial stdio \
 		-nic none -device qemu-xhci -netdev user,id=n0 -device usb-net,id=un,netdev=n0,mac=40:54:00:12:34:57
+
+# P13 K12 (docs/devices.md): the boot option usernet leaves the PCI card
+# to e1000u, a user-space driver init starts with the DEVICES capability:
+# the e1000e with MSI (DEVICE_IRQ messages), then the e1000 polled; DHCP,
+# ping and fetch through it.
+ESP_USERNET := $(BUILD)/esp-usernet
+USERNET_PORT := 8650
+test-net-user: esp $(BUILD)/OVMF_VARS.fd
+	rm -rf $(ESP_USERNET)
+	cp -r $(ESP) $(ESP_USERNET)
+	printf 'usernet\n' > $(ESP_USERNET)/STELA/boot.cfg
+	mkdir -p $(BUILD)/www
+	printf 'hello from the host over TCP\n' > $(BUILD)/www/hello.txt
+	for card in e1000e:MSI e1000:polled; do dev=$${card%%:*}; how=$${card#*:}; \
+		python3 tools/with_http.py $(BUILD)/www $(USERNET_PORT) -- \
+		python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-net-user-$$dev.log \
+			--type "STELA shell" "ifconfig\n" \
+			--type "inet 10.0.2.15" "ping 10.0.2.2 2\n" \
+			--type "ping exited" "fetch http://10.0.2.2:$(USERNET_PORT)/hello.txt\n" \
+			--expect "net: PCI cards left to user space" \
+			--expect "MAC 52:54:00:12:34:56, $$how" --expect "net: DHCP: 10.0.2.15" \
+			--expect "bytes from 10.0.2.2: seq=1" --expect "hello from the host over TCP" \
+			-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_USERNET) -display none -serial stdio \
+			-nic none -netdev user,id=n0 -device $$dev,netdev=n0 || exit 1; \
+	done
 
 # Sound (docs/sound.md): QEMU's Intel HDA with a codec that records to a
 # WAV file; the shell plays `tone` (440 Hz, 1 s), then shuts down so that

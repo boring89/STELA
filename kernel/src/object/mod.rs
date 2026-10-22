@@ -70,6 +70,10 @@ mod target {
         PipeWrite(Arc<super::pipe::WriteEnd>),
         /// A thread's end (`ThreadJoin`; `docs/process.md` §8.1).
         Thread(Arc<super::thread::ThreadExit>),
+        /// A PCI function lent to a user-space driver (P13 K11).
+        Device(Arc<crate::device::Device>),
+        /// A user-space network card attached to the kernel (P13 K11).
+        NetTap(Arc<crate::device::TapHandle>),
     }
 
     impl KernelObject {

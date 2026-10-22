@@ -213,3 +213,13 @@ fn capabilities_and_msi() {
     assert_eq!(msi_address(0), 0xFEE0_0000);
     assert_eq!(msi_data(0x40), 0x40);
 }
+
+#[test]
+fn locations() {
+    assert_eq!(parse_location("00:03.0"), Some((0, 3, 0)));
+    assert_eq!(parse_location("0000:1f:02.3"), Some((0x1F, 2, 3)));
+    assert_eq!(parse_location("00:20.0"), None);
+    assert_eq!(parse_location("00:03.8"), None);
+    assert_eq!(parse_location("3.0"), None);
+    assert_eq!(parse_location("x:y.z"), None);
+}

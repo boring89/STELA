@@ -53,6 +53,42 @@ impl SharedMemory {
         })
     }
 
+    /// `pages` zeroed frames one after another in physical memory, for a
+    /// device to reach with DMA (P13 K11, `DeviceDma`); `None` when no run
+    /// that long is free.
+    pub fn new_contiguous(pages: usize) -> Option<SharedMemory> {
+        if pages == 0 {
+            return None;
+        }
+        let run = pmm::alloc_contiguous(pages)?;
+        // The run becomes one token per frame (freed one by one).
+        let start = run.addr();
+        let mut frames = Frames(Vec::new());
+        if frames.0.try_reserve_exact(pages).is_err() {
+            for i in 0..pages as u64 {
+                pmm::free_frame(PhysFrame::from_addr(start + i * 4096));
+            }
+            return None;
+        }
+        for i in 0..pages as u64 {
+            frames.0.push(PhysFrame::from_addr(start + i * 4096));
+        }
+        let memory = SharedMemory {
+            frames: Arc::new(frames),
+        };
+        let zero = alloc::vec![0u8; 4096];
+        for i in 0..pages as u64 {
+            let _ = memory.write(i * 4096, &zero);
+        }
+        Some(memory)
+    }
+
+    /// The physical address of the first frame (of all of them, for memory
+    /// made by [`SharedMemory::new_contiguous`]).
+    pub fn phys(&self) -> u64 {
+        self.frame_addr(0)
+    }
+
     /// Number of pages.
     pub fn pages(&self) -> usize {
         self.frames.0.len()

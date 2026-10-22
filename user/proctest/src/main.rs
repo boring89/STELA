@@ -339,6 +339,25 @@ fn capabilities() -> Result<(), i64> {
         raw == Err(Error::AccessDenied),
         "a port is not POWER for open",
     )?;
+    // P13 K11: no device and no network card without DEVICES.
+    check(
+        26,
+        libstela::device::Device::open("00:02.0").err() == Some(Error::AccessDenied),
+        "DeviceOpen without DEVICES",
+    )?;
+    let raw = libstela::sys::syscall3(
+        libstela::abi::Syscall::DeviceOpen,
+        b"00:02.0".as_ptr() as u64,
+        7,
+        bootstrap::MAIN_PORT.raw(),
+    );
+    check(26, raw == Err(Error::AccessDenied), "a port is not DEVICES")?;
+    check(
+        26,
+        libstela::device::NetTap::attach(bootstrap::MAIN_PORT, [2, 0, 0, 0, 0, 1]).err()
+            == Some(Error::AccessDenied),
+        "NetAttach without DEVICES",
+    )?;
     Ok(())
 }
 

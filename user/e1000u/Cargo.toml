@@ -1,0 +1,21 @@
+[package]
+name = "e1000u"
+description = "A user-space driver for Intel 8254x/82574 Ethernet (the Device interface's example)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "e1000u"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+abi = { path = "../../abi" }
+libstela = { path = "../libstela" }
+
+[lints]
+workspace = true

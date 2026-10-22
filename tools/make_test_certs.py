@@ -10,9 +10,14 @@ openssl command, in DIR (under build/):
     expired.pem               for 10.0.2.2, valid 2020-2021 (date check)
     other.pem                 for 10.0.2.2, self-signed (not from ca)
 
+ca.key, ca.pem, good.key and expired.pem are copied from tools/testcerts/
+(P14 K0): an out-of-date certificate needs `openssl x509 -not_before`,
+which OpenSSL 3.0 (the CI runner's) does not have. The rest is made here.
+
 Usage: make_test_certs.py DIR
 """
 import os
+import shutil
 import subprocess
 import sys
 
@@ -27,13 +32,10 @@ def main():
     d = sys.argv[1]
     os.makedirs(d, exist_ok=True)
     p = lambda name: os.path.join(d, name)
-    ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"]
-    run("openssl", "req", "-x509", *ec, "-keyout", p("ca.key"), "-out", p("ca.pem"),
-        "-days", "3650", "-subj", "/CN=STELA test root", "-addext",
-        "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign")
+    fixtures = os.path.join(os.path.dirname(os.path.abspath(__file__)), "testcerts")
+    for name in ["ca.key", "ca.pem", "good.key", "expired.pem"]:
+        shutil.copyfile(os.path.join(fixtures, name), p(name))
     run("openssl", "x509", "-in", p("ca.pem"), "-outform", "DER", "-out", p("ca.der"))
-    run("openssl", "genpkey", "-algorithm", "EC", "-pkeyopt",
-        "ec_paramgen_curve:prime256v1", "-out", p("good.key"))
 
     def leaf(name, san, extra=()):
         run("openssl", "req", "-new", "-key", p("good.key"), "-subj", "/CN=stela test server",
@@ -47,8 +49,6 @@ def main():
 
     leaf("good", "DNS:10.0.2.2,IP:10.0.2.2", ("-days", "825"))
     leaf("wrong", "DNS:wrong.test", ("-days", "825"))
-    leaf("expired", "DNS:10.0.2.2,IP:10.0.2.2",
-         ("-not_before", "20200101000000Z", "-not_after", "20210101000000Z"))
     run("openssl", "req", "-x509", "-key", p("good.key"), "-out", p("other.pem"), "-days", "825",
         "-subj", "/CN=stela other", "-addext", "subjectAltName=DNS:10.0.2.2,IP:10.0.2.2")
     print(f"make_test_certs: {d}")

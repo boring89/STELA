@@ -94,7 +94,7 @@ embedded-tls 的 `CertVerifier` 一次只接受**一張**根。STELA 的 `Verifi
 | host `libstela::tls` | DER 長度（短、長、截斷、不定長拒絕）、憑證的 issuer／subject、`Roots` 切開與找候選 |
 | host `libstela::http` | `https://` 的相對連結、絕對連結 |
 | host `frame::random` | §2 |
-| `make test-tls` | `tools/make_test_certs.py` 在 `build/tls/` 用 openssl 造：測試根（EC P-256）、`good`（10.0.2.2，SAN 有 DNS 與 IP）、`wrong`（wrong.test）、`expired`（2020–2021）、`other`（自簽）；`tools/with_https.py` 在 host 的 8643–8646 起四個只用 TLS 1.3 的伺服器；`ca.der` 經 `ehfs-cp` 放進 Data 映像。shell：`fetch --ca test-ca.der https://10.0.2.2:8643/tls.txt` 拿到 `hello over TLS`；8644（名字不對）、8645（過期）、8646（不是測試根簽的）→ `access denied`；不給 `--ca`（Mozilla 的根）連 8643 → `access denied` |
+| `make test-tls` | `tools/make_test_certs.py` 在 `build/tls/` 用 openssl 造：`good`（10.0.2.2，SAN 有 DNS 與 IP）、`wrong`（wrong.test）、`other`（自簽）；測試根（EC P-256）、伺服器的鑰匙與 `expired`（2020–2021）是 `tools/testcerts/` 的固定夾具（P14 K0：造過期憑證要 `openssl x509 -not_before`，CI 的 OpenSSL 3.0 沒有）；`tools/with_https.py` 在 host 的 8643–8646 起四個只用 TLS 1.3 的伺服器；`ca.der` 經 `ehfs-cp` 放進 Data 映像。shell：`fetch --ca test-ca.der https://10.0.2.2:8643/tls.txt` 拿到 `hello over TLS`；8644（名字不對）、8645（過期）、8646（不是測試根簽的）→ `access denied`；不給 `--ca`（Mozilla 的根）連 8643 → `access denied` |
 | 手動（需要網路，不在 `make test`） | QEMU user 網路：`fetch https://example.com/`、`https://www.google.com/`（Google 的鏈尾端是被 GlobalSign 交叉簽的 GTS Root R1，靠 §3.1 的截短）、`https://www.wikipedia.org/`、`https://github.com/` 都 HTTP 200（2026-10-22） |
 
 ## 6. 已知限制

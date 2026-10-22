@@ -346,6 +346,10 @@ def main():
                 except subprocess.TimeoutExpired:
                     pass
         if not pending and monitor:
+            # P14 K0: the guest prints a line before it draws what the
+            # line reports (the window server flushes at the end of its
+            # loop); under load (make -j6 test) that can take a moment.
+            time.sleep(1.0)
             screendump(monitor, os.path.abspath(args.screendump), deadline)
     except (OSError, RuntimeError) as e:
         log.append(f"qemu_test: QMP failed: {e!r}")

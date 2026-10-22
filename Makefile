@@ -104,13 +104,13 @@ USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 all: esp
 
 boot:
-	cargo build --release -p stela-boot --target $(UEFI_TARGET)
+	+cargo build --release -p stela-boot --target $(UEFI_TARGET)
 
 kernel:
-	cargo build --release -p kernel --target $(KERNEL_TARGET)
+	+cargo build --release -p kernel --target $(KERNEL_TARGET)
 
 user: $(CHEWING_DATA)
-	cargo build --release $(addprefix -p ,$(USER_PACKAGES)) -p bin $(addprefix -p ,$(BIN_PROGRAMS)) --target $(KERNEL_TARGET)
+	+cargo build --release $(addprefix -p ,$(USER_PACKAGES)) -p bin $(addprefix -p ,$(BIN_PROGRAMS)) --target $(KERNEL_TARGET)
 	mkdir -p $(USER_DIR)/bin
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(USER_PROGRAMS)) $(USER_DIR)/
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(BIN_TOOLS) $(BIN_PROGRAMS)) $(USER_DIR)/bin/
@@ -208,7 +208,7 @@ $(LINUX_DIR)/dyn: linux/tests/dyn.c $(LINUX_DIR)/lib/libdyntest.so $(LINUX_DIR)/
 		-Wl,--dynamic-linker=/lib/ld-musl-x86_64.so.1 -o $@ $< -L$(LINUX_DIR)/lib -ldyntest
 
 linux-rust:
-	RUSTFLAGS="$(LINUX_RUSTFLAGS)" cargo build --release --target x86_64-unknown-linux-musl \
+	+RUSTFLAGS="$(LINUX_RUSTFLAGS)" cargo build --release --target x86_64-unknown-linux-musl \
 		--manifest-path linux/rust/hello-std/Cargo.toml --target-dir $(BUILD)/target/linux-rust
 	mkdir -p $(LINUX_DIR)
 	cp $(BUILD)/target/linux-rust/x86_64-unknown-linux-musl/release/hello-std $(LINUX_DIR)/
@@ -227,7 +227,7 @@ esp: boot kernel initrd
 # Same loader, kernel built with the selftest feature, in its own ESP so that
 # `make run` never runs the self tests.
 esp-test: boot initrd
-	cargo build --release -p kernel --target $(KERNEL_TARGET) --features selftest
+	+cargo build --release -p kernel --target $(KERNEL_TARGET) --features selftest
 	mkdir -p $(ESP_TEST)/EFI/BOOT $(ESP_TEST)/STELA
 	cp $(BOOT_EFI) $(ESP_TEST)/EFI/BOOT/BOOTX64.EFI
 	cp $(KERNEL_ELF) $(ESP_TEST)/STELA/kernel.elf
@@ -290,8 +290,8 @@ host-images:
 test-host: initrd host-images $(CHEWING_DATA)
 	python3 tools/img_to_rs.py assets $(BUILD)/assets-check > /dev/null
 	diff -r $(BUILD)/assets-check assets/generated
-	cargo test $(addprefix -p ,$(HOST_CRATES))
-	cargo test --lib $(addprefix -p ,$(HOST_LIB_CRATES))
+	+cargo test $(addprefix -p ,$(HOST_CRATES))
+	+cargo test --lib $(addprefix -p ,$(HOST_LIB_CRATES))
 	python3 tools/md_to_html.py --test
 
 # Fuzzing on the host (P11 K45, docs/testing.md §3): the parsers of
@@ -300,7 +300,7 @@ test-host: initrd host-images $(CHEWING_DATA)
 # paths get changed valid inputs; a panic or a hang fails, the input is
 # saved to build/fuzz-<target>.bin. At most 60 s.
 test-fuzz: host-images
-	cargo build --profile fuzz -p fuzz
+	+cargo build --profile fuzz -p fuzz
 	$(BUILD)/target/fuzz/fuzz $(BUILD)
 
 # The keyboard self test prints "input: waiting"; the script then types
@@ -1273,7 +1273,7 @@ EHFS_TOOLS  := $(BUILD)/host/ehfs
 HOST_TARGET_DIR := $(BUILD)/target/release
 
 ehfs-tools:
-	cargo build --release -p ehfs-tools
+	+cargo build --release -p ehfs-tools
 	mkdir -p $(EHFS_TOOLS)
 	cp $(HOST_TARGET_DIR)/mkfs-ehfs $(EHFS_TOOLS)/mkfs.ehfs
 	cp $(HOST_TARGET_DIR)/fsck-ehfs $(EHFS_TOOLS)/fsck.ehfs
@@ -1329,18 +1329,18 @@ test-ports: musl esp test-images ehfs-tools
 	STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py index
 
 clippy: $(CHEWING_DATA)
-	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings
-	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
-	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) --features kernel/selftest -- -D warnings
-	cargo clippy --release $(addprefix -p ,$(USER_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
-	cargo clippy --tests $(addprefix -p ,$(HOST_CRATES)) -- -D warnings
-	cargo clippy --tests --lib -p classic -- -D warnings
-	cargo clippy --bins -p ehfs-tools -- -D warnings
-	cargo clippy --bins -p fuzz -- -D warnings
-	cargo clippy --lib --tests $(addprefix -p ,$(HOST_LIB_CRATES)) -- -D warnings
+	+cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings
+	+cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
+	+cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) --features kernel/selftest -- -D warnings
+	+cargo clippy --release $(addprefix -p ,$(USER_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
+	+cargo clippy --tests $(addprefix -p ,$(HOST_CRATES)) -- -D warnings
+	+cargo clippy --tests --lib -p classic -- -D warnings
+	+cargo clippy --bins -p ehfs-tools -- -D warnings
+	+cargo clippy --bins -p fuzz -- -D warnings
+	+cargo clippy --lib --tests $(addprefix -p ,$(HOST_LIB_CRATES)) -- -D warnings
 
 fmt:
-	cargo fmt --all
+	+cargo fmt --all
 
 clean:
 	rm -rf $(BUILD)

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abi"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "aead"
@@ -61,14 +61,14 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "bin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -87,7 +87,7 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "block"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "block-buffer"
@@ -100,11 +100,11 @@ dependencies = [
 
 [[package]]
 name = "bootinfo"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "bsdkpi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "classic"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -272,7 +272,7 @@ dependencies = [
 
 [[package]]
 name = "drivers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "block",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "e1000u"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "echo_win"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -332,14 +332,14 @@ dependencies = [
 
 [[package]]
 name = "ehfs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block",
 ]
 
 [[package]]
 name = "ehfs-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block",
  "ehfs",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "elfload"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "elliptic-curve"
@@ -412,14 +412,14 @@ dependencies = [
 
 [[package]]
 name = "fault"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "fetch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -442,7 +442,7 @@ checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
 name = "frame"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "bootinfo",
@@ -451,14 +451,14 @@ dependencies = [
 
 [[package]]
 name = "fstest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "fuzz"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "block",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "hello"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -550,21 +550,21 @@ dependencies = [
 
 [[package]]
 name = "hwinfo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "ifconfig"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "ime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "init"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -589,21 +589,21 @@ dependencies = [
 
 [[package]]
 name = "ipc_client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "ipc_server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "kalamos"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "bin",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "kernel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "block",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "keyecho"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -655,7 +655,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libstela"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "embedded-io",
@@ -678,7 +678,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "monitor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "mouseion"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "num-bigint-dig"
@@ -781,7 +781,7 @@ dependencies = [
 
 [[package]]
 name = "periplus"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "ping"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -818,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "pkg"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
  "pkgcore",
@@ -826,7 +826,7 @@ dependencies = [
 
 [[package]]
 name = "pkgcore"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "libstela",
@@ -853,7 +853,7 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "powerbox"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -895,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "proctest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "sandboxtest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -1025,7 +1025,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "setup"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -1046,7 +1046,7 @@ dependencies = [
 
 [[package]]
 name = "shell"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -1069,7 +1069,7 @@ checksum = "5b3dc8af474f516a851ff4bd12db780f948b9250ad37211e4eec0bccea54e01b"
 
 [[package]]
 name = "spin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
@@ -1098,7 +1098,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stela-boot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bootinfo",
  "elfload",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "stela-update"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -1118,7 +1118,7 @@ dependencies = [
 
 [[package]]
 name = "stress"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -1155,7 +1155,7 @@ dependencies = [
 
 [[package]]
 name = "sysimage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "sha2",
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "terminal"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -1190,14 +1190,14 @@ checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
 
 [[package]]
 name = "tone"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libstela",
 ]
 
 [[package]]
 name = "toolbox"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -1285,7 +1285,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "viewer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",
@@ -1294,7 +1294,7 @@ dependencies = [
 
 [[package]]
 name = "windowserver"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abi",
  "libstela",

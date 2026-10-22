@@ -111,10 +111,10 @@ KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 # The packages to give cargo: `spin` is also a crates.io crate (a TLS
 # dependency, P12), so the workspace's is named with its version.
-USER_PACKAGES := $(patsubst bsdnet,bsdkpi,$(patsubst spin,spin@0.1.0,$(USER_PROGRAMS)))
+USER_PACKAGES := $(patsubst bsdnet,bsdkpi,$(patsubst spin,spin@$(VERSION),$(USER_PROGRAMS)))
 
 .PHONY: test-qemu-all test-qemu-shard
-.PHONY: all boot kernel user initrd system-image go go-tests musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
+.PHONY: release test-release all boot kernel user initrd system-image go go-tests musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-alpine-rust test-pipe test-browser test-update test-go test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp system-image
@@ -1254,7 +1254,7 @@ test-linux: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "events: copy-on-write fork works" --expect "events: MAP_SHARED works" \
 		--expect "events: eventfd works" --expect "events: timerfd works" --expect "events: epoll works" \
 		--expect "events: OK" --expect "events exited with code 0" \
-		--expect "sys: release 0.1.0-stela" --expect "sys: name, priority and clock resolution work" \
+		--expect "sys: release $(VERSION)-stela" --expect "sys: name, priority and clock resolution work" \
 		--expect "sys: statfs, statx and flock work" --expect "sys: sendfile, copy_file_range and memfd work" \
 		--expect "lo is 127.0.0.1" --expect "sys: OK" --expect "sys exited with code 0" \
 		--expect "signals: handlers, mask and timers work" \
@@ -1699,6 +1699,52 @@ PORTS_DIR ?= $(HOME)/stela-ports
 test-ports: musl esp test-images ehfs-tools
 	STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py all all
 	STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py index
+
+# P14 K17 (docs/release.md): build/release/stela-$(VERSION)/ with the disk
+# image (a small Data, never the Mac files), the System image, the ESP,
+# the ports' packages and their index (signed with the package TEST key),
+# SHA256SUMS and RELEASE_NOTES.md. Builds the ports first when
+# $(PORTS_DIR)/dist has none. Nothing is uploaded or tagged.
+RELEASE_DIR := $(BUILD)/release/stela-$(VERSION)
+RELEASE_DATA_MIB ?= 512
+release: esp ehfs-tools
+	@[ "$$(cat VERSION)" = "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" ] || \
+		{ echo "release: VERSION and Cargo.toml's workspace version differ"; exit 1; }
+	rm -rf $(RELEASE_DIR)
+	mkdir -p $(RELEASE_DIR)/esp $(RELEASE_DIR)/ports $(BUILD)/release
+	rm -rf $(BUILD)/release-esp
+	cp -r $(ESP) $(BUILD)/release-esp
+	cp tools/boot.cfg $(BUILD)/release-esp/STELA/boot.cfg
+	python3 tools/make_disk_image.py --system $(SYSTEM_IMG) --system-mib $(SYSTEM_MIB) \
+		$(BUILD)/release/stela.img $(BUILD)/release-esp $(EHFS_TOOLS) $(RELEASE_DATA_MIB)
+	mv $(BUILD)/release/stela.img $(RELEASE_DIR)/stela.img
+	! $(EHFS_TOOLS)/ehfs-ls --offset $(DATA_SECTOR) $(RELEASE_DIR)/stela.img / | grep -qi classic
+	cp -r $(BUILD)/release-esp/. $(RELEASE_DIR)/esp/
+	cp $(SYSTEM_IMG) $(RELEASE_DIR)/system.img
+	if ! ls $(PORTS_DIR)/dist/*.tar >/dev/null 2>&1; then \
+		$(MAKE) musl test-images && STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py all all; fi
+	python3 tools/pkgsign.py keygen $(BUILD)/pkg-signing.key $(BUILD)/pkg.pub
+	cmp $(BUILD)/pkg.pub tools/pkg.pub
+	STELA_ROOT=$(CURDIR) PKG_SIGNING_KEY=$(BUILD)/pkg-signing.key python3 $(PORTS_DIR)/tools/portbuild.py index
+	cp $(PORTS_DIR)/dist/*.tar $(PORTS_DIR)/dist/index.json $(PORTS_DIR)/dist/index.json.sig $(RELEASE_DIR)/ports/
+	@if find $(RELEASE_DIR) -name '*.key' -o -name '*signing*' | grep -q .; then \
+		echo "release: a private key in $(RELEASE_DIR)"; exit 1; fi
+	cd $(RELEASE_DIR) && find . -type f ! -name SHA256SUMS ! -name RELEASE_NOTES.md | sort | \
+		sed 's|^\./||' | xargs sha256sum > SHA256SUMS
+	python3 tools/release_notes.py $(VERSION) $(RELEASE_DIR)/RELEASE_NOTES.md $(RELEASE_DIR)/SHA256SUMS
+	cd $(RELEASE_DIR) && sha256sum RELEASE_NOTES.md >> SHA256SUMS
+	@echo "release: $(RELEASE_DIR) ($$(du -sh $(RELEASE_DIR) | cut -f1))"
+
+# Local (needs the ports): the release's disk image boots (a snapshot, so
+# the file stays as released) into Setup with its System slot.
+test-release: release $(BUILD)/OVMF_VARS.fd
+	cd $(RELEASE_DIR) && sha256sum -c --quiet SHA256SUMS
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-release.log \
+		--expect "system: slot a (version $(VERSION)" --expect "System (eHFS, ro" \
+		--expect "init: first start: Setup.app" --expect "setup: page language" \
+		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
+		-drive if=none,id=disk0,format=raw,file=$(RELEASE_DIR)/stela.img,snapshot=on \
+		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
 
 clippy: $(CHEWING_DATA)
 	+cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings

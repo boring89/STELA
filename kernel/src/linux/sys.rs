@@ -154,7 +154,7 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::MSYNC => memory::msync(p, a0, a1),
         nr::MUNMAP => memory::munmap(p, a0, a1),
         nr::MPROTECT => memory::mprotect(p, a0, a1, a2),
-        nr::MADVISE => Ok(0),
+        nr::MADVISE => madvise(p, a0, a1, a2),
         // P14 K9: every page is in memory (no swap, no paging out).
         nr::MINCORE => mincore(p, a0, a1, a2),
         nr::RT_SIGACTION => signals::rt_sigaction(p, a0, a1, a2),
@@ -270,6 +270,48 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
     }
     drop(process);
     frame.set_rax(errno::encode(result));
+}
+
+/// `madvise(addr, len, advice)`: P14 K10: `MADV_DONTNEED` (4) zeroes the
+/// pages of a private mapping, as Linux's next access would see them
+/// (jemalloc checks that); the frames stay (no demand paging). The other
+/// advice is taken and ignored.
+fn madvise(p: &Process, addr: u64, len: u64, advice: u64) -> LinuxResult {
+    const MADV_DONTNEED: u64 = 4;
+    if !addr.is_multiple_of(4096) {
+        return Err(EINVAL);
+    }
+    if advice != MADV_DONTNEED || len == 0 {
+        return Ok(0);
+    }
+    let end = addr.checked_add(len.next_multiple_of(4096)).ok_or(EINVAL)?;
+    if addr < abi::layout::MAP_BASE || end > abi::layout::MAP_END {
+        return Ok(0);
+    }
+    let shared: Vec<(u64, u64)> = p
+        .linux()
+        .map(|l| {
+            l.shared_maps
+                .lock()
+                .iter()
+                .map(|(s, share)| (*s, *s + share.len()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let zeros = alloc::vec![0u8; 4096];
+    let mut page = addr;
+    while page < end {
+        // A shared file mapping keeps its contents (Linux reloads them).
+        if shared.iter().any(|&(s, e)| (s..e).contains(&page)) {
+            page += 4096;
+            continue;
+        }
+        // Pages not mapped (a reservation) are zeros already; read-only
+        // ones are left (a shared file, which DONTNEED would reload).
+        let _ = p.space().write(page, &zeros);
+        page += 4096;
+    }
+    Ok(0)
 }
 
 /// `mincore(addr, len, vec)`: one byte per page, all 1 (resident).

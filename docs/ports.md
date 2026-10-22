@@ -106,3 +106,15 @@ Rust：  --target x86_64-unknown-linux-musl
 - libtool 會把 `-static` 吞掉（對它只是「不用共享的 libtool 庫」），P13 起 musl 有 `libc.so`，所以 xz、curl、file 在 make 時用 `-all-static`。
 - terminal 只有 SGR 顏色（`docs/window.md` §10），全螢幕的 vim／nano／less 在 STELA 的 terminal 裡畫不對；測試只用不需要游標定址的方式。
 - 下載的 tarball（`~/stela-ports/sources/`）與 SHA-256 在各自的 `port.toml`（計畫的授權事項）。
+
+## 7. P14：Rust 的大程式（K10，自動排程一次做完，**使用者尚未審核**）
+
+| port | 版本 | 授權 | 來源 | test.sh |
+|---|---|---|---|---|
+| ripgrep（`rg`） | 15.2.0 | Unlicense OR MIT | crates.io 的 `ripgrep-15.2.0.crate`（SHA-256 `a30750b6…ec71`） | `--version`、`-n --no-heading --sort path fox`（兩個檔案、三行）、找不到 → exit 1 |
+| fd | 10.5.0 | MIT OR Apache-2.0 | crates.io 的 `fd-find-10.5.0.crate`（`f35becce…1e4d`） | `--version`、`-e md readme`、`-e txt notes`（`--color never`） |
+
+- `build.sh`：`cargo build --release --locked --target x86_64-unknown-linux-musl`（相依由 crate 自己的 `Cargo.lock` 鎖定，cargo 從 crates.io 抓——計畫允許），`relocation-model=static`、`crt-static`（STELA 載入靜態、非 PIE 的執行檔），`CARGO_PROFILE_RELEASE_DEBUG=false`、`STRIP=symbols`（沒有的話 `rg` 有 36 MB）。兩個都在 musl 上用 jemalloc（C），`CC_x86_64_unknown_linux_musl` 指到 STELA 的 `musl-gcc`。
+- `portbuild.py`：`.crate`（就是 tar.gz）也能解開；P14 起測試時也接 STELA 的 `build/system.img`（snapshot），P13 以前的 port 的 test.sh 有用到 `System:` 的東西（字型、工具）時才不會缺。
+- kernel 為了它們補的：`madvise(MADV_DONTNEED)` 把私有映射的頁清成 0（jemalloc 開始時檢查這件事，否則印一行警告）；共享的檔案映射不動（Linux 會重新讀檔）。沒有需求分頁，所以頁框不還（計畫寫「真的釋放」——要先有需求分頁，記在限制）。
+- `rg --version` 印出的 `rev` 是 ports repo 的 git 版本（建置在那個 repo 的 `work/` 裡，crate 的 build script 讀到了），無害。

@@ -30,6 +30,11 @@ pub struct FileShare {
 }
 
 impl FileShare {
+    /// Bytes mapped (P14 K10).
+    pub fn len(&self) -> u64 {
+        self.memory.size()
+    }
+
     /// Writes the pages back to the file (not past its current end).
     pub fn write_back(&self) {
         let Ok(info) = self.node.volume.fs.get(self.node.id) else {

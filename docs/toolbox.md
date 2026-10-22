@@ -82,10 +82,10 @@ Mouseion 的刪除確認改用 `alert`（`Keep`／`Delete`，Delete 是預設）
 
 ### 6.3 `cjk`：ASCII 以外的字（P11 K39，使用者已於 2026-10-22 審核）
 
-**比喻**：Spleen 是一本只有英文字母的字帖；Fusion Pixel 是一本厚厚的中日韓字典，平常放在書架上（`Initrd:/fonts/`），第一次遇到不認識的字才翻開。
+**比喻**：Spleen 是一本只有英文字母的字帖；Fusion Pixel 是一本厚厚的中日韓字典，平常放在書架上（`System:/fonts/`，P14 K4 前是 `Initrd:/fonts/`），第一次遇到不認識的字才翻開。
 
-- 字型：Fusion Pixel 12px Mono zh_TW（OFL 1.1，`third_party/fusion-pixel/`、`third_party/README.md`）。`tools/bdf_to_cjk.py` 把 BDF 轉成 `STF1` 檔：U+0080–U+FFFF 的 35,701 字，每字 28 bytes（碼點、寬 6 或 12 像素、12 列 × 16 位元），依碼點排序（二分搜尋），約 1 MB；放進 initrd 的 `fonts/`。
-- **載入**：`cjk::font()` 第一次被叫到時從 `Initrd:/fonts/fusion-pixel-12-zh_tw.bin` 讀進 heap（每個畫到非 ASCII 字的程式一份，約 1 MB；沒有檔案就一直是 `None`）。ASCII 從來不問它。
+- 字型：Fusion Pixel 12px Mono zh_TW（OFL 1.1，`third_party/fusion-pixel/`、`third_party/README.md`）。`tools/bdf_to_cjk.py` 把 BDF 轉成 `STF1` 檔：U+0080–U+FFFF 的 35,701 字，每字 28 bytes（碼點、寬 6 或 12 像素、12 列 × 16 位元），依碼點排序（二分搜尋），約 1 MB；放進 initrd 的 `fonts/`（P14 K4 起放在 System 卷宗的 `fonts/`，initrd 不再有）。
+- **載入**：`cjk::font()` 第一次被叫到時從 `System:/fonts/fusion-pixel-12-zh_tw.bin`（沒有就 `Initrd:/fonts/`，`libstela::fs::read_system`）讀進 heap（每個畫到非 ASCII 字的程式一份，約 1 MB；沒有檔案就一直是 `None`）。ASCII 從來不問它。
 - **寬度**：12 像素寬的字（中日韓）佔**兩格**，6 像素的佔一格；`cjk::cells(c)`、`cjk::width(text)`；`Font::text_width` 用它。
 - **畫**：`Canvas::char` 回傳佔了幾格：ASCII 照舊（Spleen）；其他查 Fusion Pixel，8x16 字型時 1 倍（12x12 放在 16 像素高的格子中間），16x32 時 2 倍最近鄰（24x24）；兩種字型都沒有的字畫一個空心框（計畫的 ▯）。`Canvas::text` 依格數前進。
 - **用到的地方**：`TextBuffer` 的折行、位置與欄（`rows`／`position`／`index_at` 以格計：寬字兩欄，點到寬字的右半也算那個字）；`TextView` 畫字；`TextField` 的游標位置；terminal 的格子（寬字在第一格、第二格放 `grid::TAIL`，不畫；放不下就換行；複製時略過）；Periplus 的排版（`periplus::cells`）；Mouseion 與所有用 `text` 的地方自動跟著。

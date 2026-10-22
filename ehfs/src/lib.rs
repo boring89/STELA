@@ -79,5 +79,18 @@ pub fn is_ehfs(block0: &[u8]) -> bool {
         && &block0[format::SB_OFFSET..format::SB_OFFSET + 8] == format::MAGIC
 }
 
+/// The volume name in the superblock of block 0 (P14 K4: the kernel
+/// mounts a volume called `System` read only), without mounting; `None`
+/// when it is not eHFS.
+pub fn label(block0: &[u8]) -> Option<alloc::string::String> {
+    if !is_ehfs(block0) || block0.len() < format::SB_OFFSET + format::SB_SIZE {
+        return None;
+    }
+    let sb = &block0[format::SB_OFFSET..format::SB_OFFSET + format::SB_SIZE];
+    let n = usize::from(*sb.get(format::sb::NAME)?);
+    let name = sb.get(format::sb::NAME + 1..format::sb::NAME + 1 + n)?;
+    Some(alloc::string::String::from_utf8_lossy(name).into())
+}
+
 #[cfg(test)]
 mod tests;

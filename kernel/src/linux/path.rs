@@ -157,8 +157,12 @@ pub enum Target {
 
 /// Where `/lib` and `/usr/lib` lead, in the order they are searched:
 /// volume and folder (P13 K5). Libraries a package installs come first.
-pub const LIB_FOLDERS: [(&str, &str, &str); 2] =
-    [("Data", "Programs", "lib"), ("Initrd", "linux", "lib")];
+/// P14 K4: the System volume's before the initrd's.
+pub const LIB_FOLDERS: [(&str, &str, &str); 3] = [
+    ("Data", "Programs", "lib"),
+    ("System", "linux", "lib"),
+    ("Initrd", "linux", "lib"),
+];
 
 /// Why a path was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -35,7 +35,7 @@ libchewing 用路徑讀字典（`/sys/dictionary.dat`，用 `open` + `mmap`）�
 
 ```
  Rust（main.rs）                          C（c/libc.c）
- 讀 Initrd:/chewing/*.dat ── ime_vfs_add ──► files[]：路徑、指標、長度、cap、dirty
+ 讀 System:/chewing/*.dat（P14 K4；沒有就 Initrd:/chewing/） ── ime_vfs_add ──► files[]：路徑、指標、長度、cap、dirty
  讀 Data:/.stela/ime/uhash.dat ─ ime_vfs_add ─►   cap = 0：bytes 屬於 Rust（唯讀，不複製）
                                               fwrite 第一次寫入時複製成自己的（own()）
  每個按鍵之後 ime_vfs_get(/user/uhash.dat) ◄── dirty = 1 就存回 Data
@@ -56,7 +56,7 @@ libchewing 用路徑讀字典（`/sys/dictionary.dat`，用 `open` + `mmap`）�
 1. tarball 從 `~/stela-ports/sources/` 複製（`CHEWING_TARBALL=`），沒有就從 GitHub 下載；檢查 SHA-256（`third_party/README.md`）。
 2. 解開到 `build/chewing/src`。
 3. 用 host 的 gcc 編 libchewing 自己的工具 `init_database`（配 `user/ime/c/config.h`），把 `phone.cin`（字的注音）與 `tsi.src`（詞與詞頻）轉成 `dictionary.dat`（1.2 MB）與 `index_tree.dat`（2.5 MB）。
-4. 連同 `pinyin.tab`、`swkb.dat`、`symbols.dat` 放進 initrd 的 `chewing/`。
+4. 連同 `pinyin.tab`、`swkb.dat`、`symbols.dat` 放進 initrd 的 `chewing/`（P14 K4 起是 System 卷宗的 `chewing/`，`docs/system.md`）。
 
 **計畫外的決定**：計畫寫 `Initrd:/ime/chewing/`，但 `Initrd:/ime` 是程式本身（initrd 的同一層不能同時有檔案 `ime` 與資料夾 `ime/`），所以字典放在 `Initrd:/chewing/`。
 

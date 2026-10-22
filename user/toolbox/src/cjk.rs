@@ -120,23 +120,8 @@ pub fn font() -> Option<Arc<CjkFont>> {
 
 #[cfg(not(test))]
 fn load() -> Option<CjkFont> {
-    use libstela::fs::{self, open};
-    use libstela::ipc::handle_close;
-    let root = fs::volume_open("Initrd").ok()?;
-    let h = fs::open(root, PATH, open::READ);
-    let _ = handle_close(root);
-    let h = h.ok()?;
-    let size = fs::stat(h).map(|s| s.size as usize).unwrap_or(0);
-    let mut data = alloc::vec![0u8; size];
-    let mut done = 0;
-    while done < size {
-        match fs::read(h, &mut data[done..], done as u64) {
-            Ok(0) | Err(_) => break,
-            Ok(n) => done += n,
-        }
-    }
-    let _ = handle_close(h);
-    data.truncate(done);
+    // P14 K4: on the System volume (the initrd has no CJK font).
+    let data = libstela::fs::read_system(PATH).ok()?;
     CjkFont::parse(data)
 }
 

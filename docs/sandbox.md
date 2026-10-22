@@ -39,7 +39,7 @@ user/sandboxtest            make test-sandbox 的 Data:/Sandbox.app
 | 程式 | 怎麼啟動 | `VOLUMES` | `[3]` |
 |---|---|---|---|
 | init、視窗伺服器、Mouseion、IME、Setup | kernel → init → 伺服器 | 有（init 從 kernel 拿到，`inherited()` 往下傳） | 照舊 |
-| Terminal、Classic、Setup（`Initrd:/` 裡的，`TRUSTED`） | Mouseion | 有 | 照舊（所在的資料夾） |
+| Terminal、Classic、Setup（`Initrd:/` 或 P14 K4 起 `System:/` 裡的，`TRUSTED`） | Mouseion | 有 | 照舊（所在的資料夾） |
 | shell 與它啟動的一切 | Terminal、文字模式的 init | 有（**開發者模式**：shell 的程式維持 P12 的行為） | 照舊 |
 | 其他從 Mouseion 啟動的程式（bundle、單一 ELF、Linux 程式、雙擊文件開的 Kalamos／Viewer） | Mouseion | **沒有** | `Data:/Programs/NAME/container/` |
 | e1000u | init | 沒有（只有 `DEVICES`） | 照舊 |
@@ -59,7 +59,7 @@ user/sandboxtest            make test-sandbox 的 Data:/Sandbox.app
 
 `VolumeOpen`、`VolumeList`、`VolumeOpenById` 多一個參數：程式的 `VOLUMES` 能力 handle（libstela 自動帶上，沒有就送 0 → `AccessDenied`）。
 
-- **`VolumeOpen("Initrd")` 不需要能力**：Initrd 是唯讀的系統檔案（字型 `Initrd:/fonts/`、憑證 `Initrd:/certs/`、程式），每個 toolbox 程式都要讀字型，`fetch`／Periplus 的 TLS 要讀憑證；裡面沒有使用者的東西。
+- **`VolumeOpen("Initrd")` 與（P14 K4）`VolumeOpen("System")` 不需要能力**：Initrd 是唯讀的系統檔案（字型 `Initrd:/fonts/`、憑證 `Initrd:/certs/`、程式），每個 toolbox 程式都要讀字型，`fetch`／Periplus 的 TLS 要讀憑證；裡面沒有使用者的東西。
 - **`VolumeOpenById` 需要能力**：id 可以指到卷宗上任何地方（例如根目錄的 id），拿著容器的 handle 就能用 id 跳出去。Mouseion、Classic 的 FSM、fstest 用它，都有 `VOLUMES`。
 - `DirOpen` 照舊（相對 handle；`..` 和 `/` 本來就不接受，`docs/vfs.md`），所以拿著容器的 handle 只到得了容器以下。
 - `FilePath` 仍會說出上面各層的名字（P11 的已知問題），但到不了那些資料夾。
@@ -107,7 +107,7 @@ toolbox 的 `dialog::pick_open(conn, title, start)`、`pick_save(conn, title, st
 
 ## 8. 計畫外的決定
 
-- **`Initrd` 不需要 `VOLUMES`**（計畫寫 `VolumeOpen` 需要）：字型與憑證在那裡，所有程式都要讀；它唯讀、沒有使用者的資料。
+- **`Initrd`（P14 K4 起也包括 `System`）不需要 `VOLUMES`**（計畫寫 `VolumeOpen` 需要）：字型與憑證在那裡，所有程式都要讀；它唯讀、沒有使用者的資料。
 - **`VolumeOpenById` 也需要 `VOLUMES`**（計畫沒提）：不然拿著容器就能用 id 跳出去。
 - **Mouseion 的 `TRUSTED`**：`Initrd:/` 的 Terminal、Classic、Setup 照舊有全部卷宗（終端機的 shell 就是開發者模式；Classic 要 `Data:/Classic` 與整個 Data 的 FSM；Setup 要格式化磁碟）。
 - **`OPEN_FILE` 不是一則訊息，而是 `[6]`**（計畫寫「BOOTSTRAP_ARGS 之後的 OPEN_FILE 訊息」）：Mouseion 拿不到新程式主 port 的 SEND，送不了第二則；`[6]` 本來就保留著。

@@ -155,7 +155,7 @@ kernel 的 `init` 執行緒只做兩件事：啟動 input-router、跑 `Initrd:/
 | `run prog [args]` | 先找目前資料夾（或給的路徑），再找 `Initrd:/`（P7 起相對路徑如 `linux/hello` 也找）；handles = tty（P7：自己的 `[1]` 是 tty 就沿用，否則 `TtyCreate` 一個印到主控台的）、無、目前資料夾；前景等待，每 20 ms 看一次鍵盤：Ctrl-C → `ProcessKill`，其他鍵送給 tty（`docs/linux.md` §5.2）；結束後 `InputAttach` 拿回鍵盤、印 `prog exited with code N` |
 | `ps`、`mem`、`uptime`、`vols` | `SysInfo` 與 `VolumeList` |
 | `hwinfo`（程式，P11） | `SysInfo(HARDWARE)` 的整份報告（`docs/hwinfo.md`）；`hwinfo > 檔案` 存下來 |
-| 其他名稱（P11 K33） | 不是內建指令就當程式找：工作資料夾 → `Initrd:/` → `Initrd:/bin/`（`echo`、`cat`、`grep`、`wc`、`head`、`tail`、`sort`、`uniq`、`find`、`du`、`df`、`date`、`sleep`、`touch`、`stat`、`hexdump`、`tar`、`true`、`false`；`docs/apps.md` §1）；`cp -r` 複製整個資料夾 |
+| 其他名稱（P11 K33） | 不是內建指令就當程式找：工作資料夾 → `Initrd:/` → `Initrd:/bin/` → P14 K4：`System:/Programs/` → `System:/bin/`（`SEARCH_PATH`，`docs/system.md` §2.2；命令列工具 P14 起在 `System:/bin/`：`echo`、`cat`、`grep`、`wc`、`head`、`tail`、`sort`、`uniq`、`find`、`du`、`df`、`date`、`sleep`、`touch`、`stat`、`hexdump`、`tar`、`true`、`false`；`docs/apps.md` §1）；`cp -r` 複製整個資料夾 |
 | `shutdown`、`reboot` | `SystemPower`（P6.5，`docs/acpi.md`）：卸載卷宗後關機／重新開機 |
 
 P9：`run Name.app` 執行 bundle（`docs/vfs.md` §4.3）。
@@ -220,7 +220,7 @@ Data:/> ps
 ```
 
 - 編輯器：Tab 回傳 `Edit::Complete`（以前當空白）；`word()` 給游標前的字（從上一個空白算起）和「是不是第一個字」，`insert(text)` 像打字一樣插入，`redraw()` 印整行並把游標放回原位（提示符由 shell 印）。
-- 候選：第一個字是指令——內建指令（`BUILTINS`）＋目前資料夾、`Initrd:/`、`Initrd:/bin/` 的程式（檔案與 `Name.app`）；其他字（或第一個字有 `/`、`:`）是路徑——`path::split_last` 切成資料夾與開頭，列那個資料夾裡開頭相同的名字（不分大小寫；`.` 開頭的名字只在打了 `.` 時出現）。一個候選就補完；多個就補到共同的開頭（`path::common_prefix`），沒有可以補的就列出來。
+- 候選：第一個字是指令——內建指令（`BUILTINS`）＋目前資料夾、`Initrd:/`、`Initrd:/bin/`、`System:/Programs/`、`System:/bin/` 的程式（檔案與 `Name.app`）；其他字（或第一個字有 `/`、`:`）是路徑——`path::split_last` 切成資料夾與開頭，列那個資料夾裡開頭相同的名字（不分大小寫；`.` 開頭的名字只在打了 `.` 時出現）。一個候選就補完；多個就補到共同的開頭（`path::common_prefix`），沒有可以補的就列出來。
 - 萬用字元：命令以外的字，最後一段有 `*` 或 `?`（資料夾的部分沒有）就換成那個資料夾裡符合的名字（`path::glob`：`*` 任意長度、`?` 一個字元、不分大小寫；排序；`.` 開頭的名字只給 `.` 開頭的模式），保留打的資料夾部分（`/lx/*s` → `/lx/files`）；沒有符合的就保留原字（和 sh 一樣）。管線的每一段也展開；`<`、`>` 後面的檔名不展開。
 - 不做：`~`（沒有家目錄，`Data:/` 就是）、`alias`、`[abc]`、引號跳脫（shell 沒有引號）。
 - 測試：`make test-shell` 的 `echo /lx/*s`、`cat /welc{tab}`、`upt{tab}`（內建指令）、`ls /lx/t{tab}ty`（列出 `time  tty` 後再打完）；`path` 與 `line` 的 host 測試（`glob`、`split_last`、`common_prefix`、`word`、`insert`、`redraw`）。

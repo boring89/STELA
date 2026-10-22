@@ -239,8 +239,14 @@ impl Shell {
             .filter(|n| starts(n))
             .map(|n| String::from(*n))
             .collect();
-        // Programs: here, in Initrd:/ and Initrd:/bin/ (bundles too).
-        for folder in [".", "Initrd:/", "Initrd:/bin"] {
+        // Programs: here and on the search path (bundles too).
+        for folder in [
+            ".",
+            "Initrd:/",
+            "Initrd:/bin",
+            "System:/Programs",
+            "System:/bin",
+        ] {
             for n in self.names_in(folder, starts) {
                 if !n.ends_with('/') || is_bundle(&n) {
                     names.push(String::from(n.trim_end_matches('/')));
@@ -426,26 +432,31 @@ impl Shell {
             return Ok((h, folder));
         }
         if !name.contains(':') && !name.starts_with('/') {
-            let initrd = Owned(fs::volume_open("Initrd").map_err(|e| String::from(describe(e)))?);
-            if let Ok(h) = fs::open(initrd.0, name, open::READ) {
-                let h = Owned(h);
-                if runnable(h.0) {
-                    let folder = match name.trim_end_matches('/').rsplit_once('/') {
-                        Some((dir, _)) => fs::open(initrd.0, dir, open::READ).ok().map(Owned),
-                        None => Some(initrd),
-                    };
-                    return Ok((h, folder));
+            // The search path (P11: Initrd:/, Initrd:/bin/; P14 K4: then
+            // System:/Programs/, System:/bin/).
+            for (volume, dir) in SEARCH_PATH {
+                if !dir.is_empty() && name.contains('/') {
+                    continue;
                 }
-            }
-            // The search path's next stop (P11): Initrd:/bin/.
-            if !name.contains('/')
-                && let Ok(bin) = fs::open(initrd.0, "bin", open::READ)
-            {
-                let bin = Owned(bin);
-                if let Ok(h) = fs::open(bin.0, name, open::READ) {
+                let Ok(root) = fs::volume_open(volume).map(Owned) else {
+                    continue;
+                };
+                let base = if dir.is_empty() {
+                    root
+                } else {
+                    match fs::open(root.0, dir, open::READ) {
+                        Ok(h) => Owned(h),
+                        Err(_) => continue,
+                    }
+                };
+                if let Ok(h) = fs::open(base.0, name, open::READ) {
                     let h = Owned(h);
                     if runnable(h.0) {
-                        return Ok((h, Some(bin)));
+                        let folder = match name.trim_end_matches('/').rsplit_once('/') {
+                            Some((d, _)) => fs::open(base.0, d, open::READ).ok().map(Owned),
+                            None => Some(base),
+                        };
+                        return Ok((h, folder));
                     }
                 }
             }
@@ -976,7 +987,7 @@ fn help() {
     println!("  cd [path]        change the current folder (no path: the volume's root)");
     println!("  pwd              show the current folder");
     println!(
-        "  run prog [args]  run a program or Name.app (current folder, then Initrd:/); Ctrl-C stops it"
+        "  run prog [args]  run a program or Name.app (current folder, then the search path); Ctrl-C stops it"
     );
     println!("  ps, mem, uptime  processes, memory, time since boot");
     println!("  a | b, a > f, a >> f, a < f, a &   pipes, files, background (programs only)");
@@ -987,7 +998,9 @@ fn help() {
     println!("  fetch url [file] get http://host[:port]/path (print it or save it)");
     println!("  tone [Hz [ms]]   play a square wave (default 440 Hz, 1000 ms)");
     println!("  hwinfo           what hardware STELA found");
-    println!("  other names      programs here, in Initrd:/ or Initrd:/bin/: echo cat grep");
+    println!(
+        "  other names      programs here, in Initrd:/, Initrd:/bin/, System:/Programs/, System:/bin/: echo cat grep"
+    );
     println!("                   wc head tail sort uniq find du df date sleep touch stat");
     println!("                   hexdump tar true false (docs/apps.md)");
     println!("  shutdown, reboot turn the computer off, restart it");
@@ -1090,6 +1103,15 @@ fn save_history(editor: &LineEditor) {
 }
 
 /// The volume the working directory handle `[3]` is on, by its index.
+/// Where programs are looked for after the current folder (P14 K4):
+/// (volume, folder); `Data:/Programs/NAME/bin/` comes last.
+const SEARCH_PATH: [(&str, &str); 4] = [
+    ("Initrd", ""),
+    ("Initrd", "bin"),
+    ("System", "Programs"),
+    ("System", "bin"),
+];
+
 fn start_volume() -> String {
     let index = fs::stat(bootstrap::CWD).map(|s| s.volume);
     let mut i = 0;

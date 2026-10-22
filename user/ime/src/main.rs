@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The IME (`Initrd:/ime`, `docs/ime.md`): Zhuyin with libchewing. The
-//! dictionary comes from `Initrd:/chewing/`, the phrases it learns go
+//! dictionary comes from `System:/chewing/` (P14 K4), the phrases it learns go
 //! to `Data:/.stela/ime/uhash.dat`.
 //!
 //! Without arguments it is the service the window server starts (P13 K2):
@@ -36,17 +36,15 @@ use toolbox::window::{Connection, Window};
 
 libstela::entry!(main);
 
-/// Where the dictionary is.
-const DICT_DIR: &str = "Initrd:/chewing";
+/// Where the dictionary is (P14 K4: `System:/chewing`, else
+/// `Initrd:/chewing`).
+const DICT_DIR: &str = "chewing";
 
 /// Reads the dictionary files.
 fn dictionary() -> Result<Files<'static>, (&'static str, Error)> {
     let mut files = Vec::new();
     for name in DICT_FILES {
-        let mut path = String::from(DICT_DIR);
-        path.push('/');
-        path.push_str(name);
-        let data = fs::read_path(&path).map_err(|e| (name, e))?;
+        let data = fs::read_system(&alloc::format!("{DICT_DIR}/{name}")).map_err(|e| (name, e))?;
         files.push((name, data));
     }
     Ok(files)
@@ -57,7 +55,7 @@ fn start(user: &[u8]) -> Option<Ime> {
     let files = match dictionary() {
         Ok(f) => f,
         Err((name, e)) => {
-            println!("ime: {DICT_DIR}/{name}: {}", e.name());
+            println!("ime: System:/{DICT_DIR}/{name}: {}", e.name());
             return None;
         }
     };

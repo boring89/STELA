@@ -236,7 +236,7 @@ pub fn lib_image(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Whether file `node` may be mapped executable (P13 K5, `docs/linux.md`
-/// §16): it is in a library folder (`Initrd:/linux/lib`,
+/// §16): it is in a library folder (`System:/linux/lib`, `Initrd:/linux/lib`,
 /// `Data:/Programs/lib`, `Data:/Programs/NAME/lib`) or in the program's
 /// own folder.
 pub(super) fn may_execute(p: &Process, node: &Node) -> bool {
@@ -246,7 +246,7 @@ pub(super) fn may_execute(p: &Process, node: &Node) -> bool {
     let folder = path.rsplit_once('/').map_or("", |(f, _)| f);
     let volume = node.volume.name.as_str();
     let in_lib = match volume {
-        "Initrd" => folder == "/linux/lib" || folder.starts_with("/linux/lib/"),
+        "Initrd" | "System" => folder == "/linux/lib" || folder.starts_with("/linux/lib/"),
         "Data" => {
             folder == "/Programs/lib"
                 || folder.starts_with("/Programs/lib/")

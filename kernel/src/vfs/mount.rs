@@ -139,15 +139,27 @@ pub fn unmount_removable(disk_name: &str) {
     }
 }
 
+/// The name of the read-only system volume (P14 K4, `docs/system.md`).
+pub const SYSTEM: &str = "System";
+
 /// Mounts what the disks hold and prints one line per volume.
 pub fn mount_all() {
     let mut have_data = false;
     let mut summary: Vec<String> = Vec::new();
+    // P14 K4: System volumes wait until Initrd and Tmp are mounted, so
+    // that the volume list keeps its order (Data, …, Initrd, Tmp,
+    // System); one is mounted.
+    let mut systems: Vec<(String, Partition<Disk>)> = Vec::new();
     for (disk_name, disk) in disks() {
         for (kind, start, count) in partitions(&disk_name, &disk) {
             let Some(part) = Partition::new(Arc::clone(&disk), start, count, false) else {
                 continue;
             };
+            let mut first = vec![0u8; BLOCK_SIZE];
+            if part.read(0, &mut first).is_ok() && ehfs::label(&first).as_deref() == Some(SYSTEM) {
+                systems.push((disk_name.clone(), part));
+                continue;
+            }
             if let Some(line) = mount_partition(&disk_name, &disk, part, kind, &mut have_data) {
                 summary.push(line);
             }
@@ -168,11 +180,36 @@ pub fn mount_all() {
         tmp.name,
         super::tmpfs::CAPACITY >> 20
     ));
+    if let Some(line) = mount_system(systems) {
+        summary.push(line);
+    }
     if summary.is_empty() {
         frame::kprintln!("vfs: no volumes");
     } else {
         frame::kprintln!("vfs: mounted {}", summary.join(", "));
     }
+}
+
+/// Mounts the first of `systems` read only as `System` (P14 K4); the
+/// others are left alone.
+fn mount_system(systems: Vec<(String, Partition<Disk>)>) -> Option<String> {
+    let mut line = None;
+    for (disk_name, part) in systems {
+        if line.is_some() {
+            frame::kprintln!("vfs: {disk_name}: another System volume; not mounted");
+            continue;
+        }
+        let device: VolumeDevice = CachedDevice::new(part, DEFAULT_BLOCKS);
+        match EhfsFs::mount(device, true) {
+            Ok((fs, _)) => {
+                let (total, _) = super::FileSystem::space(&fs);
+                let volume = mount(SYSTEM, Arc::new(fs));
+                line = Some(alloc::format!("{} (eHFS, ro, {})", volume.name, mib(total)));
+            }
+            Err(e) => frame::kprintln!("vfs: {disk_name}: System volume not mounted: {e:?}"),
+        }
+    }
+    line
 }
 
 fn mount_partition(

@@ -129,6 +129,7 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
  eHFS：掛載（日誌不乾淨就重做），名稱 = 卷宗名；第一個可寫的叫 Data
        （卷宗名不是 Data 時印警告，仍以 Data 掛上）
  重名加 " 2"、" 3"
+ P14 K4：卷宗名是 System 的 eHFS 先跳過，Initrd、Tmp 之後才唯讀掛上（docs/system.md §2.1）
 ```
 
 ```

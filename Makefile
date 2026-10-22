@@ -28,6 +28,22 @@ BUNDLED     := $(foreach b,$(BUNDLES),$(firstword $(subst :, ,$(b))))
 # test disk as Data:/Sandbox.app).
 NOT_IN_INITRD := sandboxtest
 INITRD_ROOT := $(BUILD)/initrd-root
+# P14 K4 (docs/system.md): the System volume (read-only eHFS) has the
+# applications, the command-line tools, fonts, the IME's dictionary, the
+# guide and the Linux libraries; the initrd keeps what starts the desktop
+# and the self test's programs. System:/Programs/ has these bundles and
+# programs, System:/bin/ the tools.
+INITRD_BUNDLES := terminal:Terminal setup:Setup
+SYSTEM_BUNDLES := $(filter-out $(INITRD_BUNDLES),$(BUNDLES))
+SYSTEM_SINGLES := ifconfig ping fetch tone bench
+SYSTEM_IMG  := $(BUILD)/system.img
+SYSTEM_ROOT := $(BUILD)/system-root
+SYSTEM_IMG_MIB ?= 24
+VERSION     ?= $(shell cat VERSION 2>/dev/null || grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+# Every QEMU run of the normal kernel gets the System image as its own
+# disk (snapshot: never written, shared by tests run side by side).
+SYSTEM_DRIVE := -drive if=none,id=sysdisk,format=raw,file=$(SYSTEM_IMG),snapshot=on \
+	-device ide-hd,drive=sysdisk,bus=ide.2
 
 # musl (MIT license), only to build the Linux test programs; never part of
 # the repository. Not downloaded here: the tarball is copied from where it
@@ -76,7 +92,7 @@ QEMU        := qemu-system-x86_64
 QEMU_BASE   := -machine q35 -m 512M -no-reboot -rtc base=utc \
                -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
                -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd,snapshot=on
-QEMU_FLAGS  := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP)
+QEMU_FLAGS  := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP) $(SYSTEM_DRIVE)
 # The self-test kernel leaves QEMU through isa-debug-exit: writing v to port
 # 0xF4 exits with status (v << 1) | 1, so 0x10 (success) gives 33.
 QEMU_TEST_FLAGS := $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_TEST) \
@@ -98,10 +114,10 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: test-qemu-all test-qemu-shard
-.PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
+.PHONY: all boot kernel user initrd system-image musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
-all: esp
+all: esp system-image
 
 boot:
 	+cargo build --release -p stela-boot --target $(UEFI_TARGET)
@@ -119,6 +135,33 @@ user: $(CHEWING_DATA)
 # test programs in its linux/ folder, the bundles as Name.app/ folders),
 # with fixed owners and times so that the same programs give the same
 # bytes.
+# Bundles program:Name ($(1)) into the folder $(2), with their icons.
+define put_bundles
+	for b in $(1); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(2)/$$n.app; \
+		cp $(USER_DIR)/$$p $(2)/$$n.app/exec; \
+		printf '%s\n%s\n' "$$n" "$(VERSION)" > $(2)/$$n.app/info.txt; done
+	for b in $(BUNDLE_ICONS); do n=$${b%%:*}; f=$${b#*:}; if [ -d $(2)/$$n.app ]; then \
+		cp $$f-32.ppm $(2)/$$n.app/icon-32.ppm; cp $$f-64.ppm $(2)/$$n.app/icon-64.ppm; fi; done
+endef
+
+# The System volume's image (P14 K4, docs/system.md): a read-only eHFS
+# volume called System, $(SYSTEM_IMG_MIB) MiB, the last 4 KiB left for the
+# trailer (K5). `make system-image VERSION=0.2.1` stamps another version.
+system-image: user linux-tests ehfs-tools $(CHEWING_DATA)
+	rm -rf $(SYSTEM_ROOT)
+	mkdir -p $(SYSTEM_ROOT)/Programs $(SYSTEM_ROOT)/bin $(SYSTEM_ROOT)/fonts \
+		$(SYSTEM_ROOT)/chewing $(SYSTEM_ROOT)/doc $(SYSTEM_ROOT)/linux
+	cp $(addprefix $(USER_DIR)/,$(SYSTEM_SINGLES)) $(SYSTEM_ROOT)/Programs/
+	$(call put_bundles,$(SYSTEM_BUNDLES),$(SYSTEM_ROOT)/Programs)
+	cp $(addprefix $(USER_DIR)/bin/,$(BIN_TOOLS)) $(SYSTEM_ROOT)/bin/
+	cp third_party/fusion-pixel/fusion-pixel-12-zh_tw.bin $(SYSTEM_ROOT)/fonts/
+	cp $(CHEWING_DIR)/data/* $(SYSTEM_ROOT)/chewing/
+	python3 tools/md_to_html.py docs/guide.md $(SYSTEM_ROOT)/doc/guide.html
+	python3 tools/md_to_html.py docs/guide.en.md $(SYSTEM_ROOT)/doc/guide.en.html
+	cp -r $(LINUX_DIR)/lib $(SYSTEM_ROOT)/linux/lib
+	printf '%s\n' "$(VERSION)" > $(SYSTEM_ROOT)/VERSION
+	python3 tools/make_system_image.py $(SYSTEM_ROOT) $(SYSTEM_IMG) $(SYSTEM_IMG_MIB) $(EHFS_TOOLS)
+
 # P14 K2 (docs/mouseion.md §4.2): bundles with their own icon (NAME:the
 # images' prefix; -32.ppm for 1x, -64.ppm for 2x). Echo.app shows the
 # stela (a draft, to tell it from the usual app icon).
@@ -126,24 +169,15 @@ BUNDLE_ICONS := Echo:assets/stela
 initrd: user linux-tests
 	rm -rf $(INITRD_ROOT)
 	mkdir -p $(INITRD_ROOT)
-	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED) $(NOT_IN_INITRD),$(USER_PROGRAMS))) $(INITRD_ROOT)/
+	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED) $(NOT_IN_INITRD) $(SYSTEM_SINGLES),$(USER_PROGRAMS))) $(INITRD_ROOT)/
 	cp -r $(LINUX_DIR) $(INITRD_ROOT)/linux
-	cp -r $(USER_DIR)/bin $(INITRD_ROOT)/bin
-	mkdir -p $(INITRD_ROOT)/fonts
-	cp third_party/fusion-pixel/fusion-pixel-12-zh_tw.bin $(INITRD_ROOT)/fonts/
+	rm -rf $(INITRD_ROOT)/linux/lib
+	mkdir -p $(INITRD_ROOT)/bin
+	cp $(addprefix $(USER_DIR)/bin/,$(BIN_PROGRAMS)) $(INITRD_ROOT)/bin/
 	mkdir -p $(INITRD_ROOT)/certs
 	python3 tools/cacert_to_der.py third_party/mozilla-ca/cacert.pem $(INITRD_ROOT)/certs/cacert.der
 	cp tools/pkg.pub $(INITRD_ROOT)/certs/pkg.pub
-	mkdir -p $(INITRD_ROOT)/chewing
-	cp $(CHEWING_DIR)/data/* $(INITRD_ROOT)/chewing/
-	mkdir -p $(INITRD_ROOT)/doc
-	python3 tools/md_to_html.py docs/guide.md $(INITRD_ROOT)/doc/guide.html
-	python3 tools/md_to_html.py docs/guide.en.md $(INITRD_ROOT)/doc/guide.en.html
-	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
-		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
-		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
-	for b in $(BUNDLE_ICONS); do n=$${b%%:*}; f=$${b#*:}; \
-		cp $$f-32.ppm $(INITRD_ROOT)/$$n.app/icon-32.ppm; cp $$f-64.ppm $(INITRD_ROOT)/$$n.app/icon-64.ppm; done
+	$(call put_bundles,$(INITRD_BUNDLES),$(INITRD_ROOT))
 	tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
 		-cf $(INITRD) -C $(INITRD_ROOT) .
 
@@ -224,15 +258,17 @@ $(LINUX_DIR)/%: linux/tests/%.c $(MUSL_GCC)
 	$(MUSL_GCC) $(LINUX_CFLAGS) -o $@ $<
 
 # The EFI System Partition as a directory; QEMU serves it as a virtual FAT disk.
-esp: boot kernel initrd
+esp: boot kernel initrd system-image
 	mkdir -p $(ESP)/EFI/BOOT $(ESP)/STELA
 	cp $(BOOT_EFI) $(ESP)/EFI/BOOT/BOOTX64.EFI
 	cp $(KERNEL_ELF) $(ESP)/STELA/kernel.elf
 	cp $(INITRD) $(ESP)/STELA/initrd.tar
 
 # Same loader, kernel built with the selftest feature, in its own ESP so that
-# `make run` never runs the self tests.
-esp-test: boot initrd
+# `make run` never runs the self tests. After esp (P14 K4): both builds
+# leave the kernel at the same path, so esp must have copied its own
+# first.
+esp-test: boot initrd esp
 	+cargo build --release -p kernel --target $(KERNEL_TARGET) --features selftest
 	mkdir -p $(ESP_TEST)/EFI/BOOT $(ESP_TEST)/STELA
 	cp $(BOOT_EFI) $(ESP_TEST)/EFI/BOOT/BOOTX64.EFI
@@ -638,7 +674,7 @@ test-setup: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--expect "setup: page classic" --expect "setup: page display" \
 		--expect "setup: display scale=1 blank=30 pattern=meander" \
 		--expect "setup: page done" --expect "setup: done" \
-		--expect "mouseion: ready" \
+		--expect "mouseion: ready" --expect "mouseion: no System volume" \
 		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SETUP) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/setup.img -device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 2048 $(IMAGES)/setup.img
@@ -731,7 +767,7 @@ test-net-rndis:
 		--expect "net: usb-rndis went away; no network card" \
 		--expect "network usb-rndis: MAC 40:54:00:12:34:58" --expect "net: DHCP: 10.0.2.16" \
 		--expect "hello from the host over TCP" \
-		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_RNDIS) -display none -serial stdio \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_RNDIS) -display none -serial stdio $(SYSTEM_DRIVE) \
 		-nic none -device qemu-xhci -netdev user,id=n0 -device usb-net,id=un,netdev=n0,mac=40:54:00:12:34:57
 
 # P13 K12 (docs/devices.md): the boot option usernet leaves the PCI card
@@ -755,7 +791,7 @@ test-net-user: esp $(BUILD)/OVMF_VARS.fd
 			--expect "net: PCI cards left to user space" \
 			--expect "MAC 52:54:00:12:34:56, $$how" --expect "net: DHCP: 10.0.2.15" \
 			--expect "bytes from 10.0.2.2: seq=1" --expect "hello from the host over TCP" \
-			-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_USERNET) -display none -serial stdio \
+			-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_USERNET) -display none -serial stdio $(SYSTEM_DRIVE) \
 			-nic none -netdev user,id=n0 -device $$dev,netdev=n0 || exit 1; \
 	done
 
@@ -850,7 +886,7 @@ test-window: esp $(BUILD)/OVMF_VARS.fd
 		--type "echo_win: ready" "hello\n" \
 		--expect "kernel: " --expect "windowserver: scale 1" --expect "mouseion: ready" --expect "STELA shell" --expect "uptime:" \
 		--expect "echo_win: hello" \
-		-- $(QEMU) $(subst -m 512M,-m 128M,$(QEMU_BASE)) -drive format=raw,file=fat:rw:$(ESP_SCALE1) -display none -serial stdio
+		-- $(QEMU) $(subst -m 512M,-m 128M,$(QEMU_BASE)) -drive format=raw,file=fat:rw:$(ESP_SCALE1) -display none -serial stdio $(SYSTEM_DRIVE)
 	python3 tools/fb_check.py $(BUILD)/s1x.ppm $(WINDOW_CHECKS_1X)
 
 # The shell on the normal kernel with the AHCI test disk (a copy of its
@@ -894,7 +930,7 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "memory: " --expect "Initrd     initrd" \
 		--expect "中文.txt" \
 		--expect "cpu: " --expect "processors: 2 online" --expect "[acpi]" --expect "FACP" \
-		--expect "8086:29c0 class 06.00.00 host bridge" --expect "[disks] 2" --expect "2 \"Data\" " \
+		--expect "8086:29c0 class 06.00.00 host bridge" --expect "[disks] 3" --expect "2 \"Data\" " \
 		--expect "[network]" \
 		--expect "hwinfo exited with code 0" --expect "wc exited with code 0" \
 		--expect "1:Welcome to STELA's Data volume." --expect "file(s)," \
@@ -1077,7 +1113,7 @@ test-usb: esp $(BUILD)/OVMF_VARS.fd
 	mcopy -i $(USB_STICK)@@1M $(BUILD)/stick-hello.txt ::/HELLO.TXT
 	cp $(USB_STICK) $(USB_STICK2)
 	python3 tools/qemu_test.py --timeout 90 --log $(BUILD)/test-usb.log \
-		--type "usb: 7: hub" "uptime\n" \
+		--type "usb: 7: hub" "" --type "seen:STELA shell" "uptime\n" \
 		--qmp "uptime:" input-send-event '{"events":[{"type":"rel","data":{"axis":"x","value":30}}]}' \
 		--qmp "usb: 6: first report" device_del '{"id":"mouse"}' \
 		--qmp "usb: 6: removed" device_add '{"driver":"usb-mouse","bus":"xhci.0","id":"mouse2"}' \
@@ -1118,14 +1154,14 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--click "mouseion: opened Data:/" 432 392 2 \
 		--click "kalamos: opened Data:/welcome.txt" 2448 368 2 \
 		--click "mouseion: opened Initrd:/" 512 472 1 \
-		--type "mouseion: selected Classic.app" "{delete}" \
+		--type "mouseion: selected Setup.app" "{delete}" \
 		--type "mouseion: asking" "\n" \
-		--click "mouseion: delete Classic.app" 512 600 2 \
-		--expect "mouseion: ready, 4 volume(s)" --expect "mouseion: opened Data:/" \
-		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: Echo.app has its own icon" \
+		--click "mouseion: delete Setup.app" 672 472 2 \
+		--expect "mouseion: ready, 5 volume(s)" --expect "mouseion: opened Data:/" \
+		--expect "kalamos: opened Data:/welcome.txt" \
 		--expect "mouseion: opened Initrd:/" \
-		--expect "mouseion: asking: Delete \"Classic.app\"?" \
-		--expect "mouseion: delete Classic.app: read-only volume" \
+		--expect "mouseion: asking: Delete \"Setup.app\"?" \
+		--expect "mouseion: delete Setup.app: read-only volume" \
 		--expect "mouseion: started Terminal" --expect "STELA shell" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion.img \
@@ -1144,8 +1180,8 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--click "mouseion: opened Initrd:/" 296 274 1 \
 		--expect "windowserver: scale 1" --expect "mouseion: opened Data:/" \
 		--expect "kalamos: opened Data:/welcome.txt" --expect "mouseion: opened Initrd:/" \
-		--expect "mouseion: selected Classic.app" \
-		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SCALE1M) -display none -serial stdio \
+		--expect "mouseion: selected Setup.app" \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_SCALE1M) -display none -serial stdio $(SYSTEM_DRIVE) \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion-1x.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-mouseion-2.log \
@@ -1173,6 +1209,17 @@ test-mouseion: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "mouseion: welcome.txt unlocked" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion-info.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	# P14 K4: the System volume (read only, after Tmp on the desktop) and
+	# its Programs folder, where Echo.app has its own icon (K2).
+	cp $(IMAGES)/ahci-pristine.img $(IMAGES)/ahci-mouseion-sys.img
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-mouseion-sys.log \
+		--click "mouseion: started Terminal" 2448 624 2 \
+		--click "mouseion: opened System:/" 1232 400 2 \
+		--expect "mouseion: opened System:/" --expect "mouseion: Echo.app has its own icon" \
+		--expect "mouseion: opened System:/Programs" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-mouseion-sys.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 
 # The sandbox (P13 K17, docs/sandbox.md): Mouseion starts Data:/Sandbox.app
@@ -1203,7 +1250,7 @@ test-sandbox: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "mouseion: started Sandbox (sandboxed)" \
 		--expect "sandbox: working folder /Programs/Sandbox/container" \
 		--expect "sandbox: Data not allowed" --expect "sandbox: volume list not allowed" \
-		--expect "sandbox: open by id not allowed" --expect "sandbox: Initrd allowed" \
+		--expect "sandbox: open by id not allowed" --expect "sandbox: Initrd allowed" --expect "sandbox: System allowed" \
 		--expect "sandbox: container writable" --expect "sandbox: bundle readable" \
 		--expect "sandbox: bundle read only" --expect "sandbox: asking" \
 		--expect "windowserver: powerbox (open)" --expect "powerbox: picked Data:/welcome.txt" \
@@ -1304,7 +1351,7 @@ test-ime: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "ime: imecrash: ending" \
 		--expect "windowserver: the IME ended again; keys go straight to the windows" \
 		--expect "imecrash-ok" \
-		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_IME) -display none -serial stdio \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_IME) -display none -serial stdio $(SYSTEM_DRIVE) \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-ime.img \
 		-device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-ime.img | grep -q "unmounted cleanly"
@@ -1326,12 +1373,12 @@ test-browser: esp $(BUILD)/OVMF_VARS.fd
 		--type "periplus: loaded stela:home" "http://10.0.2.2:$(BROWSER_PORT)/sub\n" \
 		--send-keys "Sub page" "tab ret" \
 		--send-keys "Second page" "alt-left" \
-		--send-keys "Sub page" "ctrl-l shift-i n i t r d shift-semicolon slash d o c slash g u i d e dot h t m l ret" \
+		--send-keys "Sub page" "ctrl-l shift-s y s t e m shift-semicolon slash d o c slash g u i d e dot h t m l ret" \
 		--expect "periplus: loaded stela:home" \
 		--expect 'periplus: loaded http://10.0.2.2:$(BROWSER_PORT)/sub/ (title "Sub page")' \
 		--expect 'periplus: loaded http://10.0.2.2:$(BROWSER_PORT)/page2.html (title "Second page")' \
 		--expect 'periplus: loaded http://10.0.2.2:$(BROWSER_PORT)/sub/ (title "Sub page")' \
-		--expect 'periplus: loaded Initrd:/doc/guide.html (title "STELA 使用手冊")' \
+		--expect 'periplus: loaded System:/doc/guide.html (title "STELA 使用手冊")' \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio
 
 # The eHFS host tools (tools/ehfs), installed under their usual names.

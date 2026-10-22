@@ -32,6 +32,8 @@ device_del, input-send-event with a device...); --click TRIGGER X Y COUNT
 moves the pointer to screen position (X, Y) (by way of the top-left
 corner) and clicks the left button COUNT times. The order of firing is
 --send-keys, --type, --mouse, --qmp, --click, each in the order given.
+A TRIGGER "seen:TEXT" fires as soon as TEXT has appeared at all, even
+before the previous action (P14 K4).
 """
 import argparse
 import json
@@ -234,6 +236,15 @@ def command(path, name, arguments, deadline):
         qmp.close()
 
 
+def fires(trigger, text, log):
+    """Whether an action's TRIGGER fires on this line. P14 K4: a trigger
+    "seen:TEXT" also fires when TEXT was on any earlier line (for two
+    things whose order varies: wait for both)."""
+    if trigger.startswith("seen:"):
+        return any(trigger[5:] in line for line in log)
+    return trigger in text
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--timeout", type=float, default=60.0)
@@ -318,7 +329,7 @@ def main():
                 log.append(f"[{time.monotonic() - started:9.3f}] {text}")
             else:
                 log.append(text)
-            while qmp and typing and typing[0][0] in text:
+            while qmp and typing and fires(typing[0][0], text, log):
                 action = typing.pop(0)[1]
                 if isinstance(action, tuple) and action[0] == "screenshot":
                     if os.path.exists(action[1]):
@@ -333,8 +344,10 @@ def main():
                     mouse(qmp, action[1], action[2], action[3], deadline)
                 else:
                     send_keys(qmp, action, deadline)
-                # One action per line (besides screenshots).
-                break
+                # One action per line (besides screenshots and "seen:"
+                # triggers already met).
+                if not (typing and typing[0][0].startswith("seen:")):
+                    break
             if pending and pending[0] in text:
                 pending.pop(0)
             if not pending and args.exit_code is None:

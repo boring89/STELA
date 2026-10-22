@@ -1,6 +1,6 @@
 # STELA 使用手冊
 
-> P13 I（K24）由自動排程寫成，使用者已於 2026-10-22 審核。英文版：`docs/guide.en.md`。STELA 裡也看得到：Periplus 的首頁有連結（`Initrd:/doc/guide.html`）。
+> P13 I（K24）由自動排程寫成，使用者已於 2026-10-22 審核。英文版：`docs/guide.en.md`。STELA 裡也看得到：Periplus 的首頁有連結（`System:/doc/guide.html`）。
 
 STELA 是一套從零寫起的作業系統（x86-64、UEFI）：像 Classic Mac OS 一樣簡單、用空間的方式管檔案，同時有現代系統的功能。這份手冊說明怎麼用它。每一段最後的「試試看」都可以在 QEMU 裡重現：在原始碼目錄打 `make run`（沒有 Data 卷宗，提示符是 `Initrd:/>`），或用 `make disk-image` 做一顆有 Data 卷宗的映像（`docs/p520.md`）。
 
@@ -9,7 +9,7 @@ STELA 是一套從零寫起的作業系統（x86-64、UEFI）：像 Classic Mac 
 開機時畫面中間是一塊石碑（STELA 的標誌）。接著出現桌面：上面是選單列，右邊是卷宗的圖示，左上角開著一個 Terminal。
 
 - 第一次用一顆新磁碟開機時，**Setup.app** 會先出來，一頁一頁問：語言（English、繁體中文）、時區、Data 卷宗（沒有時選一個分割區，打它的完整名稱確認後格式化）、網路、要裝的套件、要複製進來的 Classic 檔案，最後啟動桌面。Setup 只用鍵盤：方向鍵選、空白鍵勾選、Enter 下一步、Esc 上一步。
-- 卷宗：`Initrd`（系統本身，唯讀）、`Data`（你的檔案）、`Boot`（開機用的 FAT 分割區，唯讀）、`Tmp`（記憶體，關機就沒了），插上的 USB 隨身碟也會出現。
+- 卷宗：`Initrd`（開機用的系統程式，唯讀）、`System`（應用程式、工具、字型、手冊，唯讀，`docs/system.md`）、`Data`（你的檔案）、`Boot`（開機用的 FAT 分割區，唯讀）、`Tmp`（記憶體，關機就沒了），插上的 USB 隨身碟也會出現。
 - 開機選項寫在 ESP 的 `STELA/boot.cfg`（一行一個），見「疑難排解」。
 
 試試看：`make run`，等石碑換成桌面，在 Terminal 打 `vols` 看有哪些卷宗。
@@ -39,7 +39,7 @@ Terminal 視窗裡是 STELA 的 shell，提示符是目前的位置（`Data:/>`�
 |---|---|
 | `ls [路徑]`、`cd [路徑]`、`pwd` | 列出資料夾、換資料夾、目前在哪 |
 | `cat 檔案`、`cp 來源 目的`（`cp -r` 整個資料夾）、`mv`、`mkdir`、`rm` | 檔案操作 |
-| `run 程式 [參數]` | 執行程式或 `Name.app`（目前資料夾，然後 `Initrd:/`）；Ctrl-C 停止它；直接打程式名字也可以 |
+| `run 程式 [參數]` | 執行程式或 `Name.app`（目前資料夾，然後 `Initrd:/`、`System:/Programs/`、`System:/bin/`）；Ctrl-C 停止它；直接打程式名字也可以 |
 | `ps`、`mem`、`uptime`、`vols`、`hwinfo` | 行程、記憶體、開機多久、卷宗、硬體 |
 | `ifconfig`、`ping`、`fetch` | 網路 |
 | `tone [Hz [ms]]` | 發出一個音 |
@@ -49,7 +49,7 @@ Terminal 視窗裡是 STELA 的 shell，提示符是目前的位置（`Data:/>`�
 - **路徑**：`Volume:/a/b`、`/a/b`（這個卷宗）或 `a/b`，可以用 `.` 與 `..`。
 - **管線與重新導向**：`a | b`、`a > 檔案`、`a >> 檔案`、`a < 檔案`；後面加 `&` 在背景跑，`jobs`、`fg N`、`kill N` 管理背景工作（只接程式，不接內建指令）。
 - 上下鍵叫回之前的指令、左右鍵移動游標；**Tab** 補全名字；`*`、`?` 比對名字（`ls *.txt`）。
-- `Initrd:/bin/` 有一般的命令列工具：`echo cat grep wc head tail sort uniq find du df date sleep touch stat hexdump tar true false`。
+- `System:/bin/` 有一般的命令列工具：`echo cat grep wc head tail sort uniq find du df date sleep touch stat hexdump tar true false`。
 - Terminal 支援顏色（SGR）；拖曳選取文字後 Edit > Copy 放進剪貼簿，Edit > Paste 把剪貼簿的文字打給 shell（Terminal 裡的 Ctrl-C 是停止程式）。
 
 試試看：`make run`，在 Terminal 打 `help`、`ls /bin`、`echo hello | wc -c`、`run Echo.app`。
@@ -73,7 +73,7 @@ pkg remove 名稱          移除
 ## 應用程式
 
 - **Kalamos**（文字編輯器）：File > New（Ctrl-N）、Open...（Ctrl-O）、Save（Ctrl-S）、Save As...（Ctrl-Shift-S）、Close（Ctrl-Q/W）；Edit 有 Undo、Cut、Copy、Paste、Select All；View 換字型大小。沒存就關會先問。
-- **Periplus**（瀏覽器）：Ctrl-L 打網址、Enter 前往；Tab／Shift-Tab 選連結、Enter 跟過去；Alt-Left／Alt-Right 上一頁／下一頁；支援 HTTP 與 HTTPS（TLS 1.3），HTML 只有一部分。本機檔案用 `Data:/路徑` 或 `Initrd:/doc/guide.html` 這樣的位址。
+- **Periplus**（瀏覽器）：Ctrl-L 打網址、Enter 前往；Tab／Shift-Tab 選連結、Enter 跟過去；Alt-Left／Alt-Right 上一頁／下一頁；支援 HTTP 與 HTTPS（TLS 1.3），HTML 只有一部分。本機檔案用 `Data:/路徑` 或 `System:/doc/guide.html` 這樣的位址。
 - **Monitor**（系統監視器，Special > Monitor）：行程、記憶體、CPU；可以結束行程。
 - **Viewer**：唯讀的文字檢視。
 - **Echo**：工具箱的範例程式。
@@ -90,7 +90,7 @@ Data:/Classic/System.img   HFS 磁碟映像（例如 System 7.5.3）
 Data:/Classic/classic.cfg  （可選）ram=32、resolution=800x600、depth=8、scale=2、disk2=…
 ```
 
-雙擊 `Initrd:/Classic.app`（或 `run Classic.app`）。鍵盤：**Alt = Command**、Ctrl = Control、Windows 鍵或右 Alt = Option；Backspace 是 delete。Mac 的桌面上會出現 STELA 的 Data 卷宗，可以直接交換檔案。Mac 裡選 Special > Shut Down 就結束 Classic.app。細節見 `docs/classic.md`。
+雙擊 `System:/Programs/Classic.app`（或 `run Classic.app`）。鍵盤：**Alt = Command**、Ctrl = Control、Windows 鍵或右 Alt = Option；Backspace 是 delete。Mac 的桌面上會出現 STELA 的 Data 卷宗，可以直接交換檔案。Mac 裡選 Special > Shut Down 就結束 Classic.app。細節見 `docs/classic.md`。
 
 ## Linux 程式
 

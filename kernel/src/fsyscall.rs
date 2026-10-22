@@ -424,15 +424,27 @@ fn may_set_attr(process: &Process, rights: Rights, name: &str) -> Result<(), Err
     Ok(())
 }
 
-/// Whether `Initrd` has a program `name` (a file or `name.app`, ignoring
-/// case).
+/// Whether the system has a program `name` (a file or `name.app`,
+/// ignoring case) in `Initrd:/` or (P14 K4) `System:/Programs/`.
 fn system_has_program(name: &str) -> bool {
-    let Some(initrd) = vfs::find("Initrd") else {
-        return false;
+    let in_folder = |volume: &str, folder: Option<&str>| {
+        let Some(v) = vfs::find(volume) else {
+            return false;
+        };
+        let mut dir = v.fs.root();
+        if let Some(f) = folder {
+            match v.fs.lookup(dir, f) {
+                Ok(i) => dir = i.id,
+                Err(_) => return false,
+            }
+        }
+        v.fs.list(dir).is_ok_and(|items| has_program(&items, name))
     };
-    let Ok(items) = initrd.fs.list(initrd.fs.root()) else {
-        return false;
-    };
+    in_folder("Initrd", None) || in_folder(vfs::mount::SYSTEM, Some("Programs"))
+}
+
+/// Whether `items` has a program `name` (a file or `name.app`).
+fn has_program(items: &[vfs::NodeInfo], name: &str) -> bool {
     items.iter().any(|i| {
         let n = i.name.as_str();
         n.eq_ignore_ascii_case(name)
@@ -509,12 +521,13 @@ pub fn root_rights(volume: &vfs::Volume) -> Rights {
 }
 
 /// `VolumeOpen(name_ptr, name_len, volumes) -> handle` (P13 K15: needs
-/// `VOLUMES`, except for `Initrd`: the read-only system files, fonts and
-/// certificates every program may read; `docs/sandbox.md`).
+/// `VOLUMES`, except for `Initrd` and (P14 K4) `System`: the read-only
+/// system files, fonts and certificates every program may read;
+/// `docs/sandbox.md`).
 pub fn volume_open(process: &Process, ptr: u64, len: u64, cap: u64) -> Result<u64, Error> {
     let name = user_bytes(process, ptr, len, 64)?;
     let name = core::str::from_utf8(&name).map_err(|_| Error::InvalidArgument)?;
-    if name != "Initrd" {
+    if name != "Initrd" && name != vfs::mount::SYSTEM {
         crate::object::check_capability(process, cap, abi::capability::VOLUMES)?;
     }
     let volume = vfs::find(name).ok_or(Error::NotFound)?;

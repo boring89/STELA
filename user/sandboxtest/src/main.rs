@@ -60,6 +60,12 @@ fn run() -> Result<(), i64> {
     if let Ok(h) = initrd {
         let _ = handle_close(h);
     }
+    // P14 K4: the System volume too (read only, like Initrd).
+    let system = fs::volume_open("System");
+    check(system.is_ok(), "System allowed")?;
+    if let Ok(h) = system {
+        let _ = handle_close(h);
+    }
     // The container is its own.
     let flags = open::READ | open::WRITE | open::CREATE | open::TRUNCATE;
     let note = fs::open(bootstrap::CWD, "note.txt", flags);

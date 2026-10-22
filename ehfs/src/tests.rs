@@ -40,6 +40,11 @@ fn format_and_mount() {
     let disk = fresh(4096);
     let mut v = Volume::mount(&disk, true).unwrap();
     assert_eq!(v.name(), "Data");
+    // P14 K4: the name read without mounting.
+    let mut block0 = vec![0u8; 4096];
+    disk.read(0, &mut block0).unwrap();
+    assert_eq!(crate::label(&block0).as_deref(), Some("Data"));
+    assert_eq!(crate::label(&[0u8; 4096]), None);
     assert_eq!(v.state(), format::state::CLEAN);
     assert_eq!(v.counts(), (0, 0));
     let root = v.get(ROOT).unwrap();

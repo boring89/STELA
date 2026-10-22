@@ -547,7 +547,7 @@ Rust std 程式的建置（`make linux-rust`，`make linux-tests` 會做）：`r
 合成根多了 `/lib`、`/usr/lib`（同一個地方），依序找：
 
 1. `Data:/Programs/lib/`（套件裝的函式庫；`docs/pkg.md`）
-2. `Initrd:/linux/lib/`（`ld-musl-x86_64.so.1` = STELA 自己建的 musl `libc.so`，strip 後約 660 KB；`libdyntest.so` 測試用）
+2. `System:/linux/lib/`（P14 K4 起；沒有 System 時找 `Initrd:/linux/lib/`，但 initrd 已經不放了）（`ld-musl-x86_64.so.1` = STELA 自己建的 musl `libc.so`，strip 後約 660 KB；`libdyntest.so` 測試用）
 
 每個 Linux 程式都看得到（不受 `[3]`／`[4]` 卷宗的限制）。`make musl` 現在也建共享版（`--syslibdir` 指到 `build/musl/install/lib`：musl 的 `make install` 預設會在 host 的 `/lib` 建 symlink）。
 
@@ -557,7 +557,7 @@ musl 的動態連結器**就是** libc.so 本身：只連 libc 的程式（Alpin
 
 計畫的決定：`PROT_EXEC` 只給 **`MAP_PRIVATE` 的檔案映射**，而且檔案在：
 
-- `Initrd:/linux/lib`（含子資料夾）、`Data:/Programs/lib`、`Data:/Programs/NAME/lib`
+- `System:/linux/lib`、`Initrd:/linux/lib`（含子資料夾）、`Data:/Programs/lib`、`Data:/Programs/NAME/lib`
 - 或程式自己的資料夾（`/proc/self/exe` 所在的資料夾）
 
 `files::may_execute` 判斷。同時可寫又可執行一律拒絕（`EACCES`）；匿名的可執行記憶體拒絕（JIT 之後另議）。這種映射的範圍記在 `Memory::exec`；`mprotect` 只在這些範圍裡可以加 `PROT_EXEC`（動態連結器的 RELRO 是改成唯讀，不需要）。`munmap` 整段時拿掉紀錄；fork 時複製。
@@ -572,7 +572,7 @@ musl 的動態連結器**就是** libc.so 本身：只連 libc 的程式（Alpin
 
 ### 16.6 測試程式
 
-- `linux/tests/libdyntest.c` → `Initrd:/linux/lib/libdyntest.so`（`-shared -fPIC`；有 `static` 資料與 `__thread` 變數，檢查重定位與 TLS）。
+- `linux/tests/libdyntest.c` → `System:/linux/lib/libdyntest.so`（P14 K4 前在 `Initrd:/linux/lib/`）（`-shared -fPIC`；有 `static` 資料與 `__thread` 變數，檢查重定位與 TLS）。
 - `linux/tests/dyn.c` → `Initrd:/linux/dyn`：`-fPIE -pie -Wl,--dynamic-linker=/lib/ld-musl-x86_64.so.1 -ldyntest`。印 `pie yes`（`&main` 在 PIE_BASE 以上）、呼叫函式庫、`dlopen`／`dlsym`、`malloc` 1 MiB。
 - `make test-alpine`（本機）：Alpine 的 ld-musl 與 busybox，證明不是只和自己建的 musl 相容。
 

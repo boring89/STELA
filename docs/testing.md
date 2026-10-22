@@ -121,7 +121,7 @@ STELA 的測試分三層：host 上的單元測試（純邏輯）、QEMU 開機�
 | `build/images/ahci.img` | test-storage 直接寫它，其他測試同時在複製它 | test-storage 用自己的 `ahci-storage.img`、`nvme-storage.img`；`ahci.img` 保持剛做好的樣子 |
 | `build/esp-scale1` | test-window 與 test-mouseion 都 `rm -rf` 再複製 | test-mouseion 用 `build/esp-scale1-m` |
 
-已經各自分開的：每個測試的 log、截圖（monitor socket 跟著截圖的名字）、QMP socket（`build/qmp-PID.sock`）、其他 ESP 副本與磁碟複本。ESP 本身（`fat:rw:build/esp`）可以同時給很多個 QEMU 讀（STELA 不寫 Boot）。
+已經各自分開的：每個測試的 log、截圖（monitor socket 跟著截圖的名字）、QMP socket（`build/qmp-PID.sock`）、其他 ESP 副本與磁碟複本。ESP 本身（`fat:rw:build/esp`）可以同時給很多個 QEMU 讀（STELA 不寫 Boot）。P14 K4：System 映像（`build/system.img`）用 `snapshot=on` 接（`SYSTEM_DRIVE`），寫入只進暫存檔，大家共用同一份。
 
 **CI**（`.github/workflows/ci.yml`）：`host` job 跑 fmt、clippy、`make test-host test-fuzz`；`qemu` job 是三個 shard 的 matrix，各跑 `make -j2 test-qemu-shard N=… SHARDS=3`（測試名稱的 `cksum` 模 3；分組不平均：9／5／10 個）。
 

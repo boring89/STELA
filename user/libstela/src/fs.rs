@@ -327,6 +327,41 @@ pub fn read_path(path: &str) -> Result<alloc::vec::Vec<u8>, Error> {
     result
 }
 
+/// The volumes system files are looked for on, in order (P14 K4,
+/// `docs/system.md`): the System volume, then the initrd.
+pub const SYSTEM_VOLUMES: [&str; 2] = ["System", "Initrd"];
+
+/// The system file `rel` (`fonts/x.bin`): `System:/rel`, else
+/// `Initrd:/rel`.
+pub fn read_system(rel: &str) -> Result<alloc::vec::Vec<u8>, Error> {
+    let mut last = Error::NotFound;
+    for v in SYSTEM_VOLUMES {
+        match read_path(&alloc::format!("{v}:/{rel}")) {
+            Ok(data) => return Ok(data),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// Opens the system item `rel` (a file or folder, P14 K4): `System:/rel`,
+/// else `Initrd:/rel`; with the volume it was found on.
+pub fn open_system(rel: &str, flags: u64) -> Result<(Handle, &'static str), Error> {
+    let mut last = Error::NotFound;
+    for v in SYSTEM_VOLUMES {
+        let Ok(root) = volume_open(v) else {
+            continue;
+        };
+        let h = open(root, rel, flags);
+        let _ = crate::ipc::handle_close(root);
+        match h {
+            Ok(h) => return Ok((h, v)),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 /// Everything in the open file `file`.
 pub fn read_all(file: Handle) -> Result<alloc::vec::Vec<u8>, Error> {
     let size = stat(file)?.size as usize;

@@ -1,6 +1,6 @@
 # STELA User Guide
 
-> Written by the P13 scheduled run (I, K24); **not yet reviewed**. Chinese version: `docs/guide.md`. Inside STELA, Periplus's home page links to it (`Initrd:/doc/guide.en.html`).
+> Written by the P13 scheduled run (I, K24); **not yet reviewed**. Chinese version: `docs/guide.md`. Inside STELA, Periplus's home page links to it (`System:/doc/guide.en.html`).
 
 STELA is an operating system written from scratch for x86-64 PCs with UEFI: simple and spatial like the Classic Mac OS, with the features of a modern system. This guide shows how to use it. Every "Try it" can be done in QEMU: run `make run` in the source tree (no Data volume; the prompt is `Initrd:/>`), or make a disk with a Data volume with `make disk-image` (`docs/p520.md`).
 
@@ -9,7 +9,7 @@ STELA is an operating system written from scratch for x86-64 PCs with UEFI: simp
 While STELA starts, a stela (its logo) stands in the middle of the screen. Then the desktop appears: the menu bar at the top, the volumes' icons on the right, and a Terminal at the top left.
 
 - The first time STELA starts on a new disk, **Setup.app** comes first and asks, page by page: the language (English, Traditional Chinese), the time zone, the Data volume (without one, pick a partition and type its full name to format it), the network, packages to install, and Classic files to copy; then the desktop starts. Setup is used with the keyboard only: arrows to choose, Space to tick, Enter for the next page, Esc to go back.
-- Volumes: `Initrd` (the system itself, read only), `Data` (your files), `Boot` (the FAT partition it started from, read only), `Tmp` (memory, gone at shutdown), and any USB stick you plug in.
+- Volumes: `Initrd` (the programs that start the system, read only), `System` (applications, tools, fonts, this guide; read only), `Data` (your files), `Boot` (the FAT partition it started from, read only), `Tmp` (memory, gone at shutdown), and any USB stick you plug in.
 - Boot options live in `STELA/boot.cfg` on the ESP, one a line; see Troubleshooting.
 
 Try it: `make run`, wait for the stela to give way to the desktop, and type `vols` in the Terminal.
@@ -39,7 +39,7 @@ The Terminal window runs STELA's shell; the prompt is where you are (`Data:/>`).
 |---|---|
 | `ls [path]`, `cd [path]`, `pwd` | list a folder, change folders, where am I |
 | `cat file`, `cp from to` (`cp -r` for a folder), `mv`, `mkdir`, `rm` | files |
-| `run program [args]` | run a program or `Name.app` (from here, then `Initrd:/`); Ctrl-C stops it; typing a program's name works too |
+| `run program [args]` | run a program or `Name.app` (from here, then `Initrd:/`, `System:/Programs/`, `System:/bin/`); Ctrl-C stops it; typing a program's name works too |
 | `ps`, `mem`, `uptime`, `vols`, `hwinfo` | processes, memory, time since boot, volumes, hardware |
 | `ifconfig`, `ping`, `fetch` | network |
 | `tone [Hz [ms]]` | play a tone |
@@ -49,7 +49,7 @@ The Terminal window runs STELA's shell; the prompt is where you are (`Data:/>`).
 - **Paths**: `Volume:/a/b`, `/a/b` (this volume) or `a/b`, with `.` and `..`.
 - **Pipes and redirection**: `a | b`, `a > file`, `a >> file`, `a < file`; `&` at the end runs it in the background; `jobs`, `fg N`, `kill N` (programs only, not built-in commands).
 - Up and Down bring back earlier commands, Left and Right move the cursor; **Tab** completes names; `*` and `?` match names (`ls *.txt`).
-- `Initrd:/bin/` has the usual tools: `echo cat grep wc head tail sort uniq find du df date sleep touch stat hexdump tar true false`.
+- `System:/bin/` has the usual tools: `echo cat grep wc head tail sort uniq find du df date sleep touch stat hexdump tar true false`.
 - The Terminal shows colours (SGR); drag to select text, Edit > Copy puts it on the clipboard, Edit > Paste types the clipboard to the shell (Ctrl-C in the Terminal stops a program).
 
 Try it: `make run`, then `help`, `ls /bin`, `echo hello | wc -c` and `run Echo.app` in the Terminal.
@@ -73,7 +73,7 @@ Packages go to `Data:/Programs/NAME/`; the shell finds programs in `Data:/Progra
 ## Applications
 
 - **Kalamos** (text editor): File > New (Ctrl-N), Open... (Ctrl-O), Save (Ctrl-S), Save As... (Ctrl-Shift-S), Close (Ctrl-Q/W); Edit has Undo, Cut, Copy, Paste, Select All; View changes the font size. It asks before closing with unsaved changes.
-- **Periplus** (web browser): Ctrl-L for an address, Enter to go; Tab / Shift-Tab choose a link, Enter follows it; Alt-Left / Alt-Right go back and forward; HTTP and HTTPS (TLS 1.3), part of HTML. Local files have addresses like `Data:/path` or `Initrd:/doc/guide.en.html`.
+- **Periplus** (web browser): Ctrl-L for an address, Enter to go; Tab / Shift-Tab choose a link, Enter follows it; Alt-Left / Alt-Right go back and forward; HTTP and HTTPS (TLS 1.3), part of HTML. Local files have addresses like `Data:/path` or `System:/doc/guide.en.html`.
 - **Monitor** (Special > Monitor): processes, memory, CPUs; it can end a process.
 - **Viewer**: shows a text file, read only.
 - **Echo**: the toolbox's example program.
@@ -90,7 +90,7 @@ Data:/Classic/System.img   an HFS disk image (System 7.5.3, say)
 Data:/Classic/classic.cfg  (optional) ram=32, resolution=800x600, depth=8, scale=2, disk2=...
 ```
 
-Double-click `Initrd:/Classic.app` (or `run Classic.app`). Keyboard: **Alt = Command**, Ctrl = Control, the Windows key or right Alt = Option; Backspace is delete. STELA's Data volume appears on the Mac's desktop, so files go back and forth directly. Special > Shut Down on the Mac ends Classic.app. See `docs/classic.md`.
+Double-click `System:/Programs/Classic.app` (or `run Classic.app`). Keyboard: **Alt = Command**, Ctrl = Control, the Windows key or right Alt = Option; Backspace is delete. STELA's Data volume appears on the Mac's desktop, so files go back and forth directly. Special > Shut Down on the Mac ends Classic.app. See `docs/classic.md`.
 
 ## Linux programs
 

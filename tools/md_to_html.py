@@ -2,7 +2,7 @@
 # Copyright (C) 2026 YuanChi Hsieh
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The smallest Markdown to HTML that the user guide needs (P13 K24,
-docs/guide.md): Initrd:/doc/guide.html for Periplus.
+docs/guide.md): System:/doc/guide.html for Periplus.
 
 Usage: md_to_html.py IN.md OUT.html
        md_to_html.py --test

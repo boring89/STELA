@@ -62,7 +62,7 @@ const HOME: &str = "<html><head><title>STELA</title></head><body>\
 <p>A small browser for STELA: HTTP and HTTPS, a subset of HTML, one font.</p>\
 <p>Type an address with Ctrl-L. Tab and Enter follow links; Alt-Left goes back.</p>\
 <h2>Places</h2><ul>\
-<li><a href=\"Initrd:/doc/guide.html\">STELA 使用手冊</a>, <a href=\"Initrd:/doc/guide.en.html\">STELA User Guide</a></li>\
+<li><a href=\"System:/doc/guide.html\">STELA 使用手冊</a>, <a href=\"System:/doc/guide.en.html\">STELA User Guide</a></li>\
 <li><a href=\"Data:/welcome.txt\">Data:/welcome.txt</a> (a file on the Data volume)</li>\
 <li><a href=\"http://10.0.2.2:8642/\">http://10.0.2.2:8642/</a> (the host, under QEMU's user networking)</li>\
 <li><a href=\"http://example.com/\">http://example.com/</a>, <a href=\"https://example.com/\">https://example.com/</a></li>\

@@ -545,7 +545,7 @@ pub fn spawn_path_with(
 }
 
 /// Whether programs read from `volume` are the system's own (P14 K3: the
-/// read-only `Initrd`).
+/// read-only `Initrd`; K4: and `System`).
 pub fn is_system_volume(volume: &vfs::Volume) -> bool {
-    volume.name == "Initrd"
+    volume.name == "Initrd" || volume.name == vfs::mount::SYSTEM
 }

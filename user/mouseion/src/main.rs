@@ -178,7 +178,8 @@ fn read_icon(h: Handle) -> Option<(i32, i32)> {
 /// Removes `name` from `dir`, with everything inside when it is a folder.
 /// The id the desktop's trash icon has (no volume has it).
 const TRASH_ID: u64 = u64::MAX;
-/// The applications in `Initrd:/` that run with every volume, as before
+/// The applications in `Initrd:/` (P14 K4: or `System:/`) that run with
+/// every volume, as before
 /// P13 (the terminal's shell, Classic's `Data:/Classic`, Setup's disks);
 /// every other program Mouseion starts runs in its container
 /// (`docs/sandbox.md`).
@@ -354,6 +355,16 @@ fn open_named(dir: Handle, name: &str) -> Result<Owned, Error> {
         .or_else(|_| fs::open(dir, name, open::READ))
         .or_else(|_| fs::open(dir, name, d))
         .map(Owned)
+}
+
+/// A system program (P14 K4): `System:/Programs/NAME`, else
+/// `Initrd:/NAME`.
+fn system_program(name: &str) -> Option<Owned> {
+    if let Ok(h) = fs::open_system(&alloc::format!("Programs/{name}"), open::READ) {
+        return Some(Owned(h.0));
+    }
+    let initrd = Owned(fs::volume_open("Initrd").ok()?);
+    fs::open(initrd.0, name, open::READ).ok().map(Owned)
 }
 
 fn describe(e: Error) -> &'static str {
@@ -1073,7 +1084,8 @@ impl Mouseion {
                 if let Ok(h) = fs::open_by_id(folder, item.id) {
                     let h = Owned(h);
                     let name = bundle_name(&item.name).unwrap_or(&item.name);
-                    if volume == "Initrd" && TRUSTED.contains(&name) {
+                    let system = volume == "Initrd" || volume == "System";
+                    if system && TRUSTED.contains(&name) {
                         self.run(h.0, &[name], folder, folder);
                     } else {
                         // P13 K15: in its container; [4] is the bundle.
@@ -1099,38 +1111,31 @@ impl Mouseion {
     }
 
     /// Opens item `id` of `folder` (at `path`) with the application
-    /// `bundle` (in `Initrd:/`): P13 K16, in its container, the file
-    /// handed over as its `[6]` (the path is only its name).
+    /// `bundle` (a system program, [`system_program`]): P13 K16, in its
+    /// container, the file handed over as its `[6]` (the path is only its
+    /// name).
     fn open_with(&self, bundle: &str, name: &str, path: &str, folder: Handle, id: u64) {
-        let Ok(initrd) = fs::volume_open("Initrd") else {
-            return;
-        };
-        let initrd = Owned(initrd);
         let Ok(file) = fs::open_by_id(folder, id).map(Owned) else {
             return;
         };
-        if let Ok(app) = fs::open(initrd.0, bundle, open::READ) {
-            let app = Owned(app);
-            self.run_sandboxed(app.0, &[name, path], app.0, Some(file.0));
+        match system_program(bundle) {
+            Some(app) => self.run_sandboxed(app.0, &[name, path], app.0, Some(file.0)),
+            None => println!("mouseion: no {bundle} (no System volume?)"),
         }
     }
 
     /// Special > Monitor (P11): the system monitor, with `POWER` so that
     /// it can end processes (`docs/apps.md` §3).
     fn monitor(&self) {
-        let Ok(initrd) = fs::volume_open("Initrd") else {
+        let Some(app) = system_program("Monitor.app") else {
+            println!("mouseion: no Monitor.app (no System volume?)");
             return;
         };
-        let initrd = Owned(initrd);
-        let Ok(app) = fs::open(initrd.0, "Monitor.app", open::READ) else {
-            return;
-        };
-        let app = Owned(app);
         let handles = [
             pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
             pass(bootstrap::BOOTSTRAP, Rights::SEND | Rights::DUPLICATE),
             process::pass_dir(bootstrap::CWD),
-            process::pass_dir(initrd.0),
+            process::pass_dir(app.0),
         ];
         let mut caps = process::inherited();
         if let Some(power) = process::pass_capability(libstela::abi::capability::POWER) {
@@ -2460,6 +2465,23 @@ fn main() -> i64 {
         "mouseion: ready, {} volume(s)",
         m.panes[0].items.iter().filter(|i| i.volume).count()
     );
+    // P14 K4: without the System volume only the initrd's programs are
+    // there (before the terminal, which then has the keyboard).
+    if let Ok(h) = fs::volume_open("System") {
+        let _ = handle_close(h);
+    } else {
+        println!("mouseion: no System volume");
+        m.note(
+            "No System volume",
+            vec![
+                String::from("The System volume is missing."),
+                String::from("Only the programs of the initrd are here:"),
+                String::from("Terminal, Setup and the shell."),
+                String::from("Applications, tools, the Chinese font and"),
+                String::from("the guide come with System (docs/system.md)."),
+            ],
+        );
+    }
     m.terminal();
     // The folder windows that were open last time (P11).
     m.reopen();

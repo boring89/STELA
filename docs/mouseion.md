@@ -167,4 +167,4 @@ P11：host `model`——開著的視窗清單的格式往返與壞行、框選�
 - 跨卷宗複製把整個檔案讀進記憶體；同名檔案已存在時失敗（`Exists`）。
 - 前後順序是 Mouseion 自己記的（`FOCUS` 事件），可能和視窗伺服器的不同（例如別的程式的視窗）。
 - P13：Find 只找名字（不找內容）、一次一個卷宗、結果不會自己更新；Set Type 沒有選單式的 type 清單；桌面圖樣只有三種（草稿）、顏色只能手改檔案。
-- 有 `MANAGE` 的程式都能用 `FileSetAttr` 改 Mouseion 的屬性（屬性沒有依程式分開）。
+- P14 K3 起 `stela.mouseion*` 只有 Initrd 的 Mouseion 能寫（`docs/vfs.md` §4.5）。

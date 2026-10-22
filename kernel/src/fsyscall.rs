@@ -380,13 +380,11 @@ pub fn file_get_attr(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
 pub fn file_set_attr(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
     let [h, name_ptr, name_len, buf, len, _] = args;
     let (node, _, rights) = node_of(process, h)?;
-    if !rights.contains(Rights::WRITE | Rights::MANAGE) {
-        return Err(Error::AccessDenied);
-    }
+    let name = attr_name(process, name_ptr, name_len)?;
+    may_set_attr(process, rights, &name)?;
     if node.volume.fs.read_only() {
         return Err(Error::ReadOnly);
     }
-    let name = attr_name(process, name_ptr, name_len)?;
     if len as usize > abi::ATTR_VALUE_MAX {
         return Err(Error::InvalidArgument);
     }
@@ -397,6 +395,51 @@ pub fn file_set_attr(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
         node.volume.fs.set_attr(node.id, &name, Some(&value))?;
     }
     Ok(0)
+}
+
+/// Who may write attribute `name` (P14 K3, `docs/vfs.md` §4.5):
+/// `stela.OWNER[.…]` only the program OWNER (by its bundle or file name,
+/// ignoring case; when `Initrd` has a program of that name, only that
+/// copy) with `WRITE`; any other name needs `WRITE` and `MANAGE`.
+fn may_set_attr(process: &Process, rights: Rights, name: &str) -> Result<(), Error> {
+    let Some(owner) = abi::attr::owner(name) else {
+        return if rights.contains(Rights::WRITE | Rights::MANAGE) {
+            Ok(())
+        } else {
+            Err(Error::AccessDenied)
+        };
+    };
+    if !rights.contains(Rights::WRITE) {
+        return Err(Error::AccessDenied);
+    }
+    let Some((program, system)) = process.program() else {
+        return Err(Error::AccessDenied);
+    };
+    if !program.eq_ignore_ascii_case(owner) {
+        return Err(Error::AccessDenied);
+    }
+    if !system && system_has_program(owner) {
+        return Err(Error::AccessDenied);
+    }
+    Ok(())
+}
+
+/// Whether `Initrd` has a program `name` (a file or `name.app`, ignoring
+/// case).
+fn system_has_program(name: &str) -> bool {
+    let Some(initrd) = vfs::find("Initrd") else {
+        return false;
+    };
+    let Ok(items) = initrd.fs.list(initrd.fs.root()) else {
+        return false;
+    };
+    items.iter().any(|i| {
+        let n = i.name.as_str();
+        n.eq_ignore_ascii_case(name)
+            || n.len() == name.len() + 4
+                && n[..name.len()].eq_ignore_ascii_case(name)
+                && n[name.len()..].eq_ignore_ascii_case(".app")
+    })
 }
 
 /// `FileListAttr(item, buf, len) -> length`: names ending in NUL.

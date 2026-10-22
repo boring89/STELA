@@ -941,6 +941,18 @@ pub mod finder {
     }
 }
 
+/// Extended attribute namespaces (P14 K3, `docs/vfs.md` §4.5).
+pub mod attr {
+    /// The program whose namespace `name` is in: `stela.OWNER` and
+    /// `stela.OWNER.anything` belong to the program called OWNER (only it
+    /// writes them); other names have no owner.
+    pub fn owner(name: &str) -> Option<&str> {
+        let rest = name.strip_prefix("stela.")?;
+        let owner = rest.split('.').next()?;
+        if owner.is_empty() { None } else { Some(owner) }
+    }
+}
+
 /// Longest extended attribute name and value (`FileSetAttr`; eHFS's
 /// limits).
 pub const ATTR_NAME_MAX: usize = 255;
@@ -1917,6 +1929,13 @@ mod tests {
         assert_eq!(Syscall::FileGetInfo.raw(), 37);
         assert_eq!(Syscall::FileSetInfo.raw(), 38);
         assert_eq!(FINDER_INFO_SIZE, 32);
+        assert_eq!(attr::owner("stela.mouseion"), Some("mouseion"));
+        assert_eq!(attr::owner("stela.mouseion.icon"), Some("mouseion"));
+        assert_eq!(attr::owner("stela.Kalamos.x.y"), Some("Kalamos"));
+        assert_eq!(attr::owner("stela."), None);
+        assert_eq!(attr::owner("stela..x"), None);
+        assert_eq!(attr::owner("user.stela.x"), None);
+        assert_eq!(attr::owner("stelax.y"), None);
         let mut info = [0u8; 32];
         info[8] = 0x01;
         assert!(!finder::locked(&info));

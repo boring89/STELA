@@ -72,6 +72,9 @@ pub fn process_spawn(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
         }
     };
     let (file_name, image) = program::read_program(&node.volume, node.id).map_err(load_error)?;
+    // P14 K3: who the program is (for attribute namespaces).
+    let program_name = bundle_name.clone().unwrap_or_else(|| file_name.clone());
+    let system = program::is_system_volume(&node.volume);
     program::check_image(&image).map_err(|_| Error::InvalidArgument)?;
     // The initial handles and the message's handles: checked, then moved.
     let mut raw = [0u8; 4 * INITIAL as usize];
@@ -182,6 +185,7 @@ pub fn process_spawn(process: &Process, args: [u64; 6]) -> Result<u64, Error> {
         Some(QueuedMessage { msg, objects }),
         capabilities,
         force,
+        Some((&program_name, system)),
     )
     .map_err(load_error)?;
     let entry = Entry {

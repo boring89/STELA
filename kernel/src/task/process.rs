@@ -60,6 +60,11 @@ pub struct Process {
     /// The processor all its threads run on (`docs/smp.md`: process
     /// affinity, so its address space is only ever active there).
     cpu: usize,
+    /// The program it runs (P14 K3): the bundle's or the file's name (not
+    /// the first argument, which the starter chooses), and whether it was
+    /// read from a system volume (`Initrd`). Extended attributes
+    /// `stela.NAME.*` are this program's.
+    program: SpinLock<Option<(String, bool)>>,
 }
 
 impl Process {
@@ -71,6 +76,17 @@ impl Process {
     /// The name it was started with.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The program it runs and whether it came from a system volume
+    /// (P14 K3; `None` for kernel-made processes).
+    pub fn program(&self) -> Option<(String, bool)> {
+        self.program.lock().clone()
+    }
+
+    /// Records the program (before its first thread starts).
+    pub fn set_program(&self, name: &str, system: bool) {
+        *self.program.lock() = Some((String::from(name), system));
     }
 
     /// The processor its threads run on.
@@ -298,6 +314,7 @@ fn create_in(
         maps: SpinLock::new(Regions::new(MAP_BASE, MAP_END)),
         linux,
         cpu: next_cpu(),
+        program: SpinLock::new(None),
     });
     TABLE.lock().insert(
         id,

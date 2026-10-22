@@ -209,6 +209,7 @@ pub fn spawn_with(
         None,
         Vec::new(),
         personality,
+        None,
     )
     .map(|p| p.id())
 }
@@ -273,6 +274,7 @@ pub fn spawn_process(
     args: Option<QueuedMessage>,
     capabilities: Vec<(u32, Entry)>,
     force: Option<Personality>,
+    program: Option<(&str, bool)>,
 ) -> Result<Arc<Process>, LoadError> {
     let elf = Elf::parse_with(image, Layout::Packed).map_err(LoadError::BadElf)?;
     let personality = force.unwrap_or_else(|| personality_of(&elf));
@@ -286,6 +288,9 @@ pub fn spawn_process(
         return spawn_linux(name, &elf, initial, &args, network, volumes);
     }
     let process = task::process::create_with(name, initial, None)?;
+    if let Some((program, system)) = program {
+        process.set_program(program, system);
+    }
     // On failure the process has no thread; dropping it frees what was
     // mapped and ends it with code -1.
     load(process.space(), &elf)?;
@@ -527,6 +532,7 @@ pub fn spawn_path_with(
             .id;
     }
     let (name, image) = read_program(&volume, id)?;
+    let system = is_system_volume(&volume);
     spawn_process(
         &name,
         &image,
@@ -534,5 +540,12 @@ pub fn spawn_path_with(
         None,
         capabilities,
         None,
+        Some((&name, system)),
     )
+}
+
+/// Whether programs read from `volume` are the system's own (P14 K3: the
+/// read-only `Initrd`).
+pub fn is_system_volume(volume: &vfs::Volume) -> bool {
+    volume.name == "Initrd"
 }

@@ -103,10 +103,12 @@ Classic Mac 的桌面上，每個磁碟區是獨立的一顆圖示（沒有 Unix
 | 編號 | 名稱 | 參數 | 回傳 | 權限 |
 |---|---|---|---|---|
 | 58 | `FileGetAttr` | 項目, name, name_len, buf, len | 值的總長度（寫進 buf 最多 len）；沒有 → `NotFound` | READ |
-| 59 | `FileSetAttr` | 項目, name, name_len, value, len | 0；len 0 = 刪除 | WRITE + `MANAGE` |
+| 59 | `FileSetAttr` | 項目, name, name_len, value, len | 0；len 0 = 刪除 | WRITE + `MANAGE`；P14 K3：`stela.*` 見下 |
 | 60 | `FileListAttr` | 項目, buf, len | 名稱的總長度（每個名稱後面一個 NUL） | READ |
 
 名稱 1–255 bytes 的 UTF-8（不含 NUL，`abi::ATTR_NAME_MAX`），值最多 3 KiB（`ATTR_VALUE_MAX`，eHFS 的上限）。後端：eHFS 的 attributes B-tree（`attr_get`／`attr_set`／`attr_remove`／`attr_names`，格式本來就有）；`Tmp` 存在每個節點的 `BTreeMap`；FAT、Initrd → `NotSupported`。libstela `fs::get_attr`、`set_attr`（空值刪除）、`list_attrs`。用途：Mouseion 的視窗狀態與圖示位置（`docs/mouseion.md` §3.1）。fstest 第 38 步：沒有 → `NotFound`、設定、3000 bytes 的、讀回、列出、太大 → `InvalidArgument`、刪除。
+
+**命名空間（P14 K3，自動排程一次做完，使用者尚未審核）**：`stela.OWNER` 與 `stela.OWNER.…`（`abi::attr::owner`，host 測試）只有程式 OWNER 能寫（**讀都可以**），只要 handle 有 `WRITE`（不需要 `MANAGE`，所以容器裡的程式也能在自己的檔案上記東西）；其他名稱照舊要 `WRITE` + `MANAGE`。「程式是誰」是 kernel 記的：`ProcessSpawn` 時 bundle 的名稱（`Kalamos.app` → `Kalamos`）或檔名，**不是**參數的第一個字（那是啟動者給的，可以亂取；行程名稱仍照舊取它），比較時不分大小寫（`Process::program`）。`Initrd` 裡有同名程式（檔案或 `NAME.app`）時，只有從 `Initrd` 讀進來的那一份算（Data 上自己放一個叫 `mouseion` 的程式寫不了 `stela.mouseion.*`）。kernel 自己建的行程（init 由 `spawn_path` 從 Initrd 啟動，也記下）之外沒有記錄的一律拒絕。Linux 人格照舊不暴露延伸屬性。fstest 第 40 步：寫 `stela.mouseion.icon` → `AccessDenied`（fstest 有 MANAGE 也不行）、`user.note` 可以；第 38 步改用自己的 `stela.fstest`。**計畫外的決定**：計畫說「行程名稱（bundle 名）」——行程名稱是參數的第一個字、可以偽造，所以另外記程式的名字與來源。
 
 ### 4.3 bundle（P9）
 

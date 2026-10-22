@@ -1644,7 +1644,7 @@ fn linux_personality(_: &'static BootInfo) {
             }),
             rights: abi::Rights::READ,
         });
-        match program::spawn_process(name, &image, initial, None, Vec::new(), None) {
+        match program::spawn_process(name, &image, initial, None, Vec::new(), None, None) {
             Ok(p) => {
                 let pid = p.id();
                 drop(p);

@@ -11,8 +11,11 @@
 //!            counted when someone looks. poll and epoll wake at the
 //!            deadline (no kernel timer).
 //!  epoll     the descriptors of interest; epoll_wait is poll over them
-//!            (level-triggered; EPOLLET is taken as level, EPOLLONESHOT
-//!            turns the entry off after it is reported).
+//!            (level-triggered; EPOLLONESHOT turns the entry off after
+//!            it is reported). P14 K9: with EPOLLET, EPOLLOUT is reported
+//!            once, and again only after some write said EAGAIN (Go's
+//!            netpoller would spin on a level-triggered EPOLLOUT); EPOLLIN
+//!            stays level-triggered (a reader drains until EAGAIN anyway).
 //! ```
 
 use super::errno::{EAGAIN, EBADF, EEXIST, EFAULT, EINTR, EINVAL, ENOENT};
@@ -26,7 +29,7 @@ use abi::Rights;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use frame::sync::SpinLock;
 
 const EFD_SEMAPHORE: u64 = 1;
@@ -330,9 +333,46 @@ pub fn timerfd_gettime(p: &Process, fd: u64, cur: u64) -> LinuxResult {
     Ok(0)
 }
 
-/// An epoll instance: descriptor → (events, data).
+/// `EPOLLET`.
+const EPOLLET: u32 = 1 << 31;
+/// `EPOLLOUT`.
+const EPOLLOUT: u32 = 4;
+
+/// How many writes (pipes) said EAGAIN so far: an edge-triggered EPOLLOUT
+/// that was reported is armed again once this moves (P14 K9; any write,
+/// so sometimes too early, which only costs a spurious event).
+static BLOCKED_WRITES: AtomicU64 = AtomicU64::new(0);
+
+/// A write found no room (it returns EAGAIN).
+pub fn write_would_block() {
+    BLOCKED_WRITES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// An epoll instance: descriptor → (events, data, and for `EPOLLET` the
+/// [`BLOCKED_WRITES`] count when EPOLLOUT was last reported).
 pub struct Epoll {
-    interest: SpinLock<BTreeMap<i32, (u32, u64)>>,
+    interest: SpinLock<BTreeMap<i32, Interest>>,
+    /// Bumped by every `epoll_ctl` (a waiter reads the set again).
+    generation: AtomicU64,
+}
+
+/// An epoll entry: events, data, and for `EPOLLET` the [`BLOCKED_WRITES`]
+/// count when EPOLLOUT was last reported.
+type Interest = (u32, u64, Option<u64>);
+
+/// How long `epoll_wait` waits before it reads the set again (P14 K9).
+const SLICE: u64 = 20_000_000;
+
+/// The poll events to wait for: EPOLLOUT of an edge-triggered entry only
+/// while armed (`reported` is the count when it was last reported).
+fn wanted(events: u32, reported: Option<u64>) -> u32 {
+    let mut ev = events & EPOLL_POLL_BITS;
+    if events & EPOLLET != 0
+        && reported.is_some_and(|g| g == BLOCKED_WRITES.load(Ordering::Relaxed))
+    {
+        ev &= !EPOLLOUT;
+    }
+    ev
 }
 
 /// `epoll_create1(flags)` (and `epoll_create(size)`).
@@ -342,6 +382,7 @@ pub fn epoll_create(p: &Process, flags: u64) -> LinuxResult {
     }
     let e = Epoll {
         interest: SpinLock::new(BTreeMap::new()),
+        generation: AtomicU64::new(0),
     };
     super::files::add_fd(p, OpenFile::Epoll(Arc::new(e)), flags & O_CLOEXEC != 0)
 }
@@ -382,10 +423,12 @@ pub fn epoll_ctl(p: &Process, epfd: u64, op: u64, fd: u64, event: u64) -> LinuxR
             if op == EPOLL_CTL_MOD && !exists {
                 return Err(ENOENT);
             }
-            interest.insert(fd, (events, data));
+            interest.insert(fd, (events, data, None));
         }
         _ => return Err(EINVAL),
     }
+    drop(interest);
+    e.generation.fetch_add(1, Ordering::Relaxed);
     Ok(0)
 }
 
@@ -402,32 +445,69 @@ pub fn epoll_wait(p: &Process, epfd: u64, out: u64, max: u64, timeout_ms: u64) -
     }
     let t = timeout_ms as i32;
     let deadline = (t >= 0).then(|| frame::time::now_ns().saturating_add(t as u64 * 1_000_000));
-    let entries: Vec<(i32, u32, u64)> = {
-        let mut interest = e.interest.lock();
-        // Closed descriptors leave the set (as when Linux closes the file).
-        interest.retain(|&fd, _| file_of(p, fd as u64).is_ok());
-        interest
+    // P14 K9: the set is read again every SLICE (and at once when
+    // epoll_ctl changed it): another thread may add descriptors while
+    // this one waits (Go's netpoller does).
+    let (entries, fds) = loop {
+        let generation = e.generation.load(Ordering::Relaxed);
+        let entries: Vec<(i32, u32, u64, Option<u64>)> = {
+            let mut interest = e.interest.lock();
+            // Closed descriptors leave the set (as when Linux closes the file).
+            interest.retain(|&fd, _| file_of(p, fd as u64).is_ok());
+            interest
+                .iter()
+                .map(|(&fd, &(ev, data, reported))| (fd, ev, data, reported))
+                .collect()
+        };
+        let mut fds: Vec<super::poll::PollFd> = entries
             .iter()
-            .map(|(&fd, &(ev, data))| (fd, ev, data))
-            .collect()
+            .map(|&(fd, ev, _, reported)| super::poll::PollFd::new(fd, wanted(ev, reported) as i16))
+            .collect();
+        let now = frame::time::now_ns();
+        let slice = now.saturating_add(SLICE);
+        let until = deadline.map_or(slice, |d| d.min(slice));
+        let ready = super::poll::poll_fds(p, &mut fds, Some(until))?;
+        let past = deadline.is_some_and(|d| frame::time::now_ns() >= d);
+        if ready > 0
+            || past
+            || (until != slice && e.generation.load(Ordering::Relaxed) == generation)
+        {
+            break (entries, fds);
+        }
     };
-    let mut fds: Vec<super::poll::PollFd> = entries
-        .iter()
-        .map(|&(fd, ev, _)| super::poll::PollFd::new(fd, (ev & EPOLL_POLL_BITS) as i16))
-        .collect();
-    super::poll::poll_fds(p, &mut fds, deadline)?;
+    if super::sys::tracing() {
+        for (f, &(fd, ev, _, rep)) in fds.iter().zip(&entries) {
+            frame::kprintln!(
+                "linuxtrace: epoll fd {fd} events {ev:#x} reported {rep:?} revents {:#x}",
+                f.revents()
+            );
+        }
+    }
     let mut bytes = Vec::new();
     let mut count = 0;
     let mut oneshot = Vec::new();
-    for (f, &(fd, ev, data)) in fds.iter().zip(&entries) {
+    let mut edges = Vec::new();
+    for (f, &(fd, ev, data, _)) in fds.iter().zip(&entries) {
         if f.revents() == 0 || count >= max {
             continue;
+        }
+        if ev & EPOLLET != 0 && f.revents() as u32 & EPOLLOUT != 0 {
+            edges.push(fd);
         }
         bytes.extend_from_slice(&(f.revents() as u16 as u32).to_le_bytes());
         bytes.extend_from_slice(&data.to_le_bytes());
         count += 1;
         if ev & EPOLLONESHOT != 0 {
             oneshot.push(fd);
+        }
+    }
+    if !edges.is_empty() {
+        let now = BLOCKED_WRITES.load(Ordering::Relaxed);
+        let mut interest = e.interest.lock();
+        for fd in edges {
+            if let Some(entry) = interest.get_mut(&fd) {
+                entry.2 = Some(now);
+            }
         }
     }
     if !oneshot.is_empty() {

@@ -627,3 +627,28 @@ musl 的動態連結器**就是** libc.so 本身：只連 libc 的程式（Alpin
 | `stat` 的 mode | 一般檔案是 `0755`（以前 `0644`）：STELA 沒有執行權限，git 這類用 mode 在 PATH 找程式的才找得到（P13 K8） |
 
 測試：`linux/tests/sys.c`（`make test-linux`）。
+
+## 17. Go（P14 K9，自動排程一次做完，**使用者尚未審核**）
+
+Go 的程式是靜態連結、不經過 libc 的 Linux 程式（`CGO_ENABLED=0`）：runtime 直接發 syscall，用很多 libc 程式用不到的東西——一大片 `PROT_NONE` 保留的位址、多執行緒、`epoll` 的 edge-triggered、用 `SIGURG` 在備用堆疊上搶佔 goroutine。
+
+- **工具鏈**：go.dev 的官方 `go1.27.3.linux-amd64.tar.gz`（BSD-3-Clause，SHA-256 `65efbc80…9b40` 寫在 Makefile），下載一次放在 `GO_TARBALL`（預設 `~/stela-ports/sources/go/`；CI 快取在 `build-cache/`），`make go` 解開到 `build/go/`（不進 repo）。`make go-tests` 把 `linux/tests/go/`（一個 module，四個程式）建成 `build/user/linux/go/*`（`GOTOOLCHAIN=local`、`-trimpath`），**不放進 initrd 或 System**（每個 2–9 MB），`make test-go` 放到測試磁碟的 `Data:/go/`。
+- **改了什麼**（`linuxtrace` 開機選項把每個 syscall 印到 serial，找問題用）：
+
+| 問題 | 修正 |
+|---|---|
+| runtime 一開始 `fatal error: failed to reserve page summary memory` | 匿名 `PROT_NONE` 的 `mmap` 只保留位址範圍、不配頁框（Go 這樣保留數百 MiB）；之後 `MAP_FIXED` 的映射或 `mprotect` 成可存取時才配（`memory.rs`）。附帶：`PROT_NONE` 的頁真的不能讀了（P13 起的限制「`PROT_NONE` 可讀」只剩「之前已經有頁的範圍改成 `PROT_NONE` 仍可讀」） |
+| 搶佔（`SIGURG`）的 handler 不在備用堆疊上，Go 判斷「訊號落在不明的堆疊」 | **`sigaltstack` 真的做**：handler 有 `SA_ONSTACK`、執行緒設了備用堆疊、而且不在上面時，frame 推在備用堆疊頂端（`signal::frame_stack`，host 測試）；`uc_stack` 填實際值；`sigaltstack` 回報 `SS_ONSTACK`，在上面時不能換（`EPERM`）、小於 `MINSIGSTKSZ`（2048）→ `ENOMEM`、`SS_DISABLE` |
+| `openat(0xFFFFFF9C, …)` → `EBADF` | `dirfd` 是 int：只看低 32 位元（Go 把 `AT_FDCWD` 傳成沒有符號延伸的值） |
+| `net/http` 等不到回應 | 兩個：① 阻塞中的 `epoll_wait` 只看開始時的清單——另一個執行緒之後 `EPOLL_CTL_ADD` 的 fd 看不到（Go 的 netpoller 就是這樣用）→ 每 20 ms（`SLICE`）重讀清單，`epoll_ctl` 會加 generation；② `EPOLLET` 的 `EPOLLOUT` 原本是 level-triggered，可寫的 socket 讓 netpoller 空轉 → 回報一次，之後要等某個寫入回 `EAGAIN`（`write_would_block`，全系統一個計數）才再回報；`EPOLLIN` 仍是 level |
+| `mincore` | 新增：每頁都在記憶體裡（全部 1） |
+
+- 原本就有的：`clone` 的執行緒旗標組合、`futex`、`rt_sigaction`／`rt_sigreturn`、`tgkill`、`sched_getaffinity`、`madvise`（不做事）、`getrlimit`／`prlimit64`、`epoll_pwait`、`eventfd2`、非阻塞 socket。`/proc/self/auxv` Go 1.27 沒有讀。
+- `tools/with_http.py` 的修正：檢查 DNS 時設的 3 秒預設逾時會跟到伺服器之後接受的每個連線，慢的 guest（Go 程式在 TCG 下從 connect 到送出請求超過 3 秒）會被伺服器關掉；檢查完改回沒有逾時。
+
+| 測試 | 內容 |
+|---|---|
+| host `kernel::linux::signal` | `frame_stack`：`SA_ONSTACK` 換到備用堆疊頂、沒有旗標或已經在上面時照舊、停用時不換；frame 記下 `uc_stack` |
+| `make test-go`（`make test` 在 `GO_TARBALL` 存在時；CI 下載並快取） | `go/hello a b`：版本、參數、`os.Hostname`、exit 7；`go/readdir /Data/go`：4 個項目、`/tmp` 寫讀與 `os.Stat`；`go/goroutine`：8 個 goroutine（channel、mutex、`GOMAXPROCS(4)`）、`GOMAXPROCS(1)` 下一個不呼叫函式的迴圈被搶佔（計時器在約 50 ms 叫醒 main）、`time.After`；`go/httpget`：`net/http` 從 host 拿檔案 |
+
+限制：`epoll_wait` 每 20 ms 醒一次重讀清單（阻塞中的 netpoller 有一點 CPU）；edge-triggered 只做在 `EPOLLOUT`；Go 的 `GOMAXPROCS` 再大，一個行程的執行緒都在同一顆 CPU（`docs/smp.md`）；`os/exec`、`cgo`、race detector 沒有測。

@@ -71,6 +71,9 @@ pub(super) fn user_string(p: &Process, ptr: u64) -> Result<String, i64> {
 /// The Linux path of the folder `dirfd` names (or the working directory).
 fn base_of(p: &Process, dirfd: u64) -> Result<String, i64> {
     let linux = p.linux().ok_or(EBADF)?;
+    // P14 K9: `dirfd` is an int: only its low 32 bits count (Go passes
+    // AT_FDCWD as 0xFFFFFF9C, not sign-extended).
+    let dirfd = dirfd as u32 as i32 as i64 as u64;
     if dirfd == AT_FDCWD {
         return Ok(linux.cwd.lock().clone());
     }
@@ -632,7 +635,10 @@ fn write_file(file: &OpenFile, data: &[u8]) -> Result<usize, i64> {
                 match end.0.write(&data[done..], deadline) {
                     Ok(n) => done += n,
                     Err(abi::Error::TimedOut) if done > 0 => break,
-                    Err(abi::Error::TimedOut) => return Err(errno::EAGAIN),
+                    Err(abi::Error::TimedOut) => {
+                        super::events::write_would_block();
+                        return Err(errno::EAGAIN);
+                    }
                     // EPIPE and SIGPIPE (P12; its default ends the
                     // process).
                     Err(abi::Error::PeerClosed) => {

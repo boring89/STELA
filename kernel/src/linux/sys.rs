@@ -155,12 +155,14 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         nr::MUNMAP => memory::munmap(p, a0, a1),
         nr::MPROTECT => memory::mprotect(p, a0, a1, a2),
         nr::MADVISE => Ok(0),
+        // P14 K9: every page is in memory (no swap, no paging out).
+        nr::MINCORE => mincore(p, a0, a1, a2),
         nr::RT_SIGACTION => signals::rt_sigaction(p, a0, a1, a2),
         nr::RT_SIGPROCMASK => signals::rt_sigprocmask(p, a0, a1, a2),
         nr::RT_SIGRETURN => signals::rt_sigreturn(p, frame),
         nr::RT_SIGPENDING => signals::rt_sigpending(p, a0),
         nr::RT_SIGSUSPEND => signals::rt_sigsuspend(p, a0),
-        nr::SIGALTSTACK => signals::sigaltstack(p, a0, a1),
+        nr::SIGALTSTACK => signals::sigaltstack(p, a0, a1, frame.rsp()),
         nr::PAUSE => signals::pause(),
         nr::KILL => signals::kill(p, a0 as i32 as i64, a1),
         nr::TKILL => signals::tgkill(p, 0, a0, a1),
@@ -256,8 +258,45 @@ pub fn dispatch(frame: &mut SyscallFrame, process: Arc<Process>) {
         _ => unknown(p, number),
     };
     let result = signals::interrupted(number, result);
+    // P14 K9: the boot option linuxtrace prints every call (debugging).
+    if tracing() {
+        frame::kprintln!(
+            "linuxtrace: {} {} {} {}({a0:#x}, {a1:#x}, {a2:#x}, {a3:#x}) = {result:?}",
+            frame::time::now_ns() / 1_000_000,
+            p.id(),
+            task::current_linux().map_or(0, |t| t.tid),
+            number
+        );
+    }
     drop(process);
     frame.set_rax(errno::encode(result));
+}
+
+/// `mincore(addr, len, vec)`: one byte per page, all 1 (resident).
+fn mincore(p: &Process, addr: u64, len: u64, vec: u64) -> LinuxResult {
+    if !addr.is_multiple_of(4096) {
+        return Err(EINVAL);
+    }
+    let pages = len.div_ceil(4096);
+    if pages > 1 << 20 {
+        return Err(errno::ENOMEM);
+    }
+    write_user(p, vec, &alloc::vec![1u8; pages as usize])?;
+    Ok(0)
+}
+
+/// Whether the boot option `linuxtrace` is set (read once).
+pub(super) fn tracing() -> bool {
+    use core::sync::atomic::{AtomicU8, Ordering};
+    static TRACE: AtomicU8 = AtomicU8::new(0);
+    match TRACE.load(Ordering::Relaxed) {
+        0 => {
+            let on = frame::boot_flag("linuxtrace");
+            TRACE.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+        v => v == 2,
+    }
 }
 
 /// `sched_getaffinity(pid, len, mask)`: the one processor the process

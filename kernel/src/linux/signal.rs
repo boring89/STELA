@@ -252,10 +252,46 @@ pub struct Trap {
     pub cr2: u64,
 }
 
+/// `ss_flags` of `sigaltstack`: the thread is on the alternate stack.
+pub const SS_ONSTACK: u32 = 1;
+/// `ss_flags`: no alternate stack.
+pub const SS_DISABLE: u32 = 2;
+/// The smallest alternate stack (`MINSIGSTKSZ` of x86-64 Linux).
+pub const MINSIGSTKSZ: u64 = 2048;
+
+/// Where a handler's frame goes (P14 K9: `sigaltstack` for real, Go's
+/// handlers need it): the top of the alternate stack `alt` (base, size,
+/// flags) when the action has `SA_ONSTACK`, there is one and the thread
+/// is not on it already; else the interrupted stack `rsp`. Also the
+/// `uc_stack` the frame reports (base, flags, size).
+pub fn frame_stack(rsp: u64, alt: (u64, u64, u32), onstack: bool) -> (u64, (u64, u32, u64)) {
+    let (base, size, flags) = alt;
+    let usable = size != 0 && flags & SS_DISABLE == 0;
+    let on_alt = usable && rsp > base && rsp <= base + size;
+    let report = if usable {
+        (base, if on_alt { SS_ONSTACK } else { 0 }, size)
+    } else {
+        (0, SS_DISABLE, 0)
+    };
+    if onstack && usable && !on_alt {
+        (base + size, report)
+    } else {
+        (rsp, report)
+    }
+}
+
+/// Whether `rsp` is on the alternate stack `alt` (base, size, flags).
+pub fn on_alt_stack(rsp: u64, alt: (u64, u64, u32)) -> bool {
+    let (base, size, flags) = alt;
+    size != 0 && flags & SS_DISABLE == 0 && rsp > base && rsp <= base + size
+}
+
 /// Builds the frame for a handler of `info.signo` interrupting `regs`:
 /// `mask` is the mask to restore on return, `fpu` the FXSAVE image,
 /// `restorer` the return address. `stack_top` is where to build it (the
-/// interrupted RSP, or the top of an alternate stack).
+/// interrupted RSP, or the top of an alternate stack); `uc_stack` is
+/// what the frame reports as the alternate stack (base, flags, size).
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     regs: &UserRegs,
     stack_top: u64,
@@ -264,6 +300,7 @@ pub fn build(
     fpu: &[u8; 512],
     restorer: u64,
     trap: Trap,
+    uc_stack: (u64, u32, u64),
 ) -> Placed {
     let below = stack_top.wrapping_sub(RED_ZONE);
     let fpstate = below.wrapping_sub(FPSTATE_SIZE as u64) & !63;
@@ -271,8 +308,10 @@ pub fn build(
     let len = (fpstate - rsp) as usize + FPSTATE_SIZE;
     let mut b = alloc::vec![0u8; len];
     b[0..8].copy_from_slice(&restorer.to_le_bytes());
-    // uc_flags 0, uc_link 0, uc_stack: ss_flags SS_DISABLE (2).
-    b[UC + 24..UC + 28].copy_from_slice(&2u32.to_le_bytes());
+    // uc_flags 0, uc_link 0, uc_stack (ss_sp, ss_flags, ss_size).
+    b[UC + 16..UC + 24].copy_from_slice(&uc_stack.0.to_le_bytes());
+    b[UC + 24..UC + 28].copy_from_slice(&uc_stack.1.to_le_bytes());
+    b[UC + 32..UC + 40].copy_from_slice(&uc_stack.2.to_le_bytes());
     for (i, w) in mcontext_words(regs).iter().enumerate() {
         let at = MCONTEXT + i * 8;
         b[at..at + 8].copy_from_slice(&w.to_le_bytes());
@@ -407,6 +446,7 @@ mod tests {
             &fpu,
             0x40_9000,
             Trap::default(),
+            (0, SS_DISABLE, 0),
         );
         // The handler starts as if called: rsp + 8 is 16-aligned.
         assert_eq!((placed.rsp + 8) % 16, 0);
@@ -462,5 +502,45 @@ mod tests {
             ..Info::default()
         };
         assert_eq!(&i.to_bytes()[16..24], &0x1000u64.to_le_bytes());
+    }
+
+    #[test]
+    fn alternate_stack() {
+        let alt = (0x1000_0000, 0x8000, 0);
+        // SA_ONSTACK and not on it: the frame goes to the top.
+        assert_eq!(
+            frame_stack(0x7fff_0000, alt, true),
+            (0x1000_8000, (0x1000_0000, 0, 0x8000))
+        );
+        // Without SA_ONSTACK: the interrupted stack.
+        assert_eq!(frame_stack(0x7fff_0000, alt, false).0, 0x7fff_0000);
+        // Already on it (a nested signal): below where it is.
+        assert_eq!(
+            frame_stack(0x1000_4000, alt, true),
+            (0x1000_4000, (0x1000_0000, SS_ONSTACK, 0x8000))
+        );
+        // Disabled or none.
+        let off = (0x1000_0000, 0x8000, SS_DISABLE);
+        assert_eq!(
+            frame_stack(0x7fff_0000, off, true),
+            (0x7fff_0000, (0, SS_DISABLE, 0))
+        );
+        assert!(on_alt_stack(0x1000_8000, alt));
+        assert!(!on_alt_stack(0x1000_0000, alt));
+        // The frame records it.
+        let regs = UserRegs::default();
+        let p = build(
+            &regs,
+            0x1000_8000,
+            &Info::default(),
+            0,
+            &[0; 512],
+            0,
+            Trap::default(),
+            (0x1000_0000, 0, 0x8000),
+        );
+        assert!(p.rsp < 0x1000_8000 && p.rsp > 0x1000_0000);
+        assert_eq!(&p.bytes[UC + 16..UC + 24], &0x1000_0000u64.to_le_bytes());
+        assert_eq!(&p.bytes[UC + 32..UC + 40], &0x8000u64.to_le_bytes());
     }
 }

@@ -307,14 +307,18 @@ fn push_frame(
         linux.actions.lock()[(signo - 1) as usize] = Action::default();
     }
     let fpu = frame::task::fpu_state();
+    let alt = t.signals.lock().altstack;
+    let (top, uc_stack) =
+        signal::frame_stack(regs.rsp, alt, action.flags & signal::SA_ONSTACK != 0);
     let placed = signal::build(
         &regs,
-        regs.rsp,
+        top,
         &info,
         restore_mask,
         &fpu,
         action.restorer,
         trap.unwrap_or_default(),
+        uc_stack,
     );
     process
         .space()
@@ -572,12 +576,22 @@ pub fn rt_sigsuspend(p: &Process, mask: u64) -> LinuxResult {
     wait_for_signal()
 }
 
-/// `sigaltstack(ss, old_ss)`: recorded (handlers still run on the
-/// interrupted stack).
-pub fn sigaltstack(p: &Process, ss: u64, old: u64) -> LinuxResult {
+/// `sigaltstack(ss, old_ss)` (P14 K9: handlers with `SA_ONSTACK` run on
+/// it): the old one with `SS_ONSTACK` while on it; a new one is refused
+/// (`EPERM`) while on the old one, `ENOMEM` below `MINSIGSTKSZ`.
+pub fn sigaltstack(p: &Process, ss: u64, old: u64, rsp: u64) -> LinuxResult {
     let t = task::current_linux().ok_or(EINVAL)?;
+    let current = t.signals.lock().altstack;
+    let on = signal::on_alt_stack(rsp, current);
     if old != 0 {
-        let (sp, size, flags) = t.signals.lock().altstack;
+        let (sp, size, flags) = current;
+        let flags = if flags & signal::SS_DISABLE != 0 || size == 0 {
+            signal::SS_DISABLE
+        } else if on {
+            signal::SS_ONSTACK
+        } else {
+            0
+        };
         let mut b = [0u8; 24];
         b[0..8].copy_from_slice(&sp.to_le_bytes());
         b[8..12].copy_from_slice(&flags.to_le_bytes());
@@ -592,7 +606,20 @@ pub fn sigaltstack(p: &Process, ss: u64, old: u64) -> LinuxResult {
             u64::from_le_bytes(w)
         };
         let flags = u32::from_le_bytes([b[8], b[9], b[10], b[11]]);
-        t.signals.lock().altstack = (word(0), word(16), flags);
+        if on {
+            return Err(super::errno::EPERM);
+        }
+        if flags & !(signal::SS_DISABLE | (1 << 31)) != 0 {
+            return Err(EINVAL);
+        }
+        if flags & signal::SS_DISABLE != 0 {
+            t.signals.lock().altstack = (0, 0, signal::SS_DISABLE);
+        } else {
+            if word(16) < signal::MINSIGSTKSZ {
+                return Err(super::errno::ENOMEM);
+            }
+            t.signals.lock().altstack = (word(0), word(16), 0);
+        }
     }
     Ok(0)
 }

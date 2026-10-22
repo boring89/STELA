@@ -179,6 +179,7 @@ fn munmap_shared(p: &Process, addr: u64) -> bool {
 /// Largest `brk` area.
 pub const BRK_MAX: u64 = 256 << 20;
 
+const PROT_READ: u64 = 1;
 const PROT_WRITE: u64 = 2;
 const PROT_EXEC: u64 = 4;
 const MAP_SHARED: u64 = 0x01;
@@ -349,6 +350,12 @@ pub fn mmap(
         executable: false,
     };
     let first = if anonymous { flags } else { writable };
+    // P14 K9: anonymous PROT_NONE only reserves the range (Go reserves
+    // hundreds of MiB this way); its pages come with mprotect or a
+    // MAP_FIXED mapping over it.
+    if anonymous && prot & (PROT_READ | PROT_WRITE | PROT_EXEC) == 0 {
+        return Ok(start);
+    }
     if let Err(e) = map_pages(p, start, start + size, first) {
         give_back(p);
         return Err(e);
@@ -466,10 +473,18 @@ pub fn mprotect(p: &Process, addr: u64, len: u64, prot: u64) -> LinuxResult {
         writable: prot & PROT_WRITE != 0,
         executable: exec,
     };
+    let accessible = prot & (PROT_READ | PROT_WRITE | PROT_EXEC) != 0;
     let mut page = addr;
     while page < end {
-        // Unmapped pages are left alone.
-        let _ = p.space().protect(page, flags);
+        // P14 K9: a page of a PROT_NONE reservation gets its (zeroed) frame
+        // when it becomes accessible; other unmapped pages are left alone.
+        if p.space().protect(page, flags).is_err()
+            && accessible
+            && (abi::layout::MAP_BASE..abi::layout::MAP_END).contains(&page)
+            && p.maps().lock().containing(page).is_some()
+        {
+            map_pages(p, page, page + 4096, flags)?;
+        }
         page += 4096;
     }
     Ok(0)

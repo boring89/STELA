@@ -44,6 +44,8 @@ pub const CLOCK_GETRES: u64 = 229;
 pub const MEMFD_CREATE: u64 = 319;
 pub const COPY_FILE_RANGE: u64 = 326;
 pub const MADVISE: u64 = 28;
+/// P14 K9.
+pub const MINCORE: u64 = 27;
 pub const DUP: u64 = 32;
 pub const DUP2: u64 = 33;
 pub const PAUSE: u64 = 34;

@@ -99,6 +99,20 @@ jobs:
           test -f build-cache/libchewing-0.5.1.tar.bz2 || curl -fsSL -o build-cache/libchewing-0.5.1.tar.bz2 https://github.com/chewing/libchewing/releases/download/v0.5.1/libchewing-0.5.1.tar.bz2
           echo "9708c63415fa6034435c0f38100e7d30d0e1bac927f67bec6dfeb3fef016172b  build-cache/libchewing-0.5.1.tar.bz2" | sha256sum -c -
           echo "CHEWING_TARBALL=$PWD/build-cache/libchewing-0.5.1.tar.bz2" >> "$GITHUB_ENV"
+      - name: Go tarball
+        # P14 K9: Go (BSD-3-Clause) for make test-go: fetched once and
+        # cached; the Makefile checks its SHA-256. With GO_TARBALL there,
+        # test-go is one of the QEMU tests.
+        uses: actions/cache@v4
+        with:
+          path: build-cache/go1.27.3.linux-amd64.tar.gz
+          key: go-65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+      - name: Fetch Go
+        run: |
+          mkdir -p build-cache
+          test -f build-cache/go1.27.3.linux-amd64.tar.gz || curl -fsSL -o build-cache/go1.27.3.linux-amd64.tar.gz https://go.dev/dl/go1.27.3.linux-amd64.tar.gz
+          echo "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40  build-cache/go1.27.3.linux-amd64.tar.gz" | sha256sum -c -
+          echo "GO_TARBALL=$PWD/build-cache/go1.27.3.linux-amd64.tar.gz" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         # Any cargo call makes rustup install the toolchain, targets and
         # components pinned by rust-toolchain.toml (`rustup show` stopped

@@ -41,6 +41,11 @@ def main():
     except OSError:
         env.pop("HOST_DNS", None)
         print("with_http: no DNS on this machine: the DNS check is skipped")
+    finally:
+        # P14 K9: the 3 s were only for the lookup; connections the server
+        # accepts afterwards would inherit them (and be closed while a
+        # slow guest is still writing its request).
+        socket.setdefaulttimeout(None)
     try:
         code = subprocess.call(sys.argv[4:], env=env)
     finally:

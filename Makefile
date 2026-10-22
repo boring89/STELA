@@ -114,8 +114,8 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: test-qemu-all test-qemu-shard
-.PHONY: all boot kernel user initrd system-image musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-update test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+.PHONY: all boot kernel user initrd system-image go go-tests musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-net-user test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-sandbox test-editor test-ime test-alpine test-pipe test-browser test-update test-go test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp system-image
 
@@ -174,7 +174,7 @@ initrd: user linux-tests
 	mkdir -p $(INITRD_ROOT)
 	cp $(addprefix $(USER_DIR)/,$(filter-out $(BUNDLED) $(NOT_IN_INITRD) $(SYSTEM_SINGLES),$(USER_PROGRAMS))) $(INITRD_ROOT)/
 	cp -r $(LINUX_DIR) $(INITRD_ROOT)/linux
-	rm -rf $(INITRD_ROOT)/linux/lib
+	rm -rf $(INITRD_ROOT)/linux/lib $(INITRD_ROOT)/linux/go
 	mkdir -p $(INITRD_ROOT)/bin
 	cp $(addprefix $(USER_DIR)/bin/,$(BIN_PROGRAMS)) $(INITRD_ROOT)/bin/
 	mkdir -p $(INITRD_ROOT)/certs
@@ -231,6 +231,31 @@ $(MUSL_GCC): $(MUSL_DOWNLOAD)
 	# §16); only its install symlink goes into build/, not the host's /lib.
 	$(MAKE) -C $(MUSL_DIR)/src install \
 		LDSO_PATHNAME=$(abspath $(MUSL_DIR))/install/lib/ld-musl-x86_64.so.1 > $(MUSL_DIR)/install.log
+
+# Go (P14 K9, docs/linux.md §17): the official toolchain (BSD-3-Clause)
+# from go.dev, kept in GO_TARBALL (downloaded once, its SHA-256 checked)
+# and unpacked in build/go; the test programs of linux/tests/go are
+# built static (CGO_ENABLED=0) into build/user/linux/go/. Not in the
+# initrd or System: make test-go puts them on its test disk.
+GO_VERSION := 1.27.3
+GO_SHA256  := 65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+GO_TARBALL ?= $(HOME)/stela-ports/sources/go/go$(GO_VERSION).linux-amd64.tar.gz
+GO_DIR     := $(BUILD)/go
+GO_TESTS   := hello goroutine httpget readdir
+GO_ENV      = CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOTOOLCHAIN=local GOFLAGS=-trimpath \
+	GOCACHE=$(abspath $(BUILD))/go-cache GOPATH=$(abspath $(BUILD))/go-path
+go: $(GO_DIR)/bin/go
+$(GO_DIR)/bin/go:
+	@if [ ! -f "$(GO_TARBALL)" ]; then mkdir -p "$$(dirname "$(GO_TARBALL)")" && \
+		curl -fsSL -o "$(GO_TARBALL)" https://go.dev/dl/go$(GO_VERSION).linux-amd64.tar.gz; fi
+	echo "$(GO_SHA256)  $(GO_TARBALL)" | sha256sum -c -
+	rm -rf $(GO_DIR)
+	mkdir -p $(BUILD)
+	tar -C $(BUILD) -xzf "$(GO_TARBALL)"
+go-tests: $(addprefix $(LINUX_DIR)/go/,$(GO_TESTS))
+$(LINUX_DIR)/go/%: linux/tests/go/%/main.go linux/tests/go/go.mod $(GO_DIR)/bin/go
+	mkdir -p $(LINUX_DIR)/go
+	cd linux/tests/go && $(GO_ENV) $(abspath $(GO_DIR))/bin/go build -o $(abspath $@) ./$*
 
 linux-tests: $(addprefix $(LINUX_DIR)/,$(LINUX_TESTS)) $(LINUX_DYN) linux-rust
 
@@ -317,6 +342,9 @@ QEMU_TESTS := test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-imag
 # side with -jN).
 test: test-host test-fuzz
 	$(MAKE) --no-print-directory test-qemu-all
+
+# P14 K9: test-go only where Go is (its tarball downloaded once).
+QEMU_TESTS += $(if $(wildcard $(GO_TARBALL)),test-go,)
 
 test-qemu-all: $(QEMU_TESTS)
 
@@ -442,6 +470,36 @@ test-disk-image: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		--expect "mounted Boot (FAT, ro" --expect "STELA shell" \
 		--expect "from-the-disk-image" --expect "Welcome.txt" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio $(DISK_IMAGE_FLAGS)
+
+# Go (P14 K9, docs/linux.md §17): the four programs of linux/tests/go on
+# a copy of the test disk (Data:/go/): arguments and exit code, a folder
+# and a file in /tmp, goroutines on threads with preemption (SIGURG on
+# the alternate signal stack), net/http from the host. In make test when
+# the Go tarball is there (GO_TARBALL; CI downloads and caches it).
+GO_PORT := 8660
+test-go: esp test-images go-tests $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-go.img
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-go.img mkdir /go
+	for t in $(GO_TESTS); do $(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-go.img \
+		in $(LINUX_DIR)/go/$$t /go/$$t || exit 1; done
+	mkdir -p $(BUILD)/www-go
+	printf 'hello from the host to Go\n' > $(BUILD)/www-go/go.txt
+	python3 tools/with_http.py $(BUILD)/www-go $(GO_PORT) -- \
+		python3 tools/qemu_test.py --timeout 180 --log $(BUILD)/test-go.log \
+		--type "STELA shell" "run go/hello a b\n" \
+		--type "hello exited" "run go/readdir /Data/go\n" \
+		--type "readdir exited" "run go/goroutine\n" \
+		--type "goroutine exited" "run go/httpget http://10.0.2.2:$(GO_PORT)/go.txt\n" \
+		--expect "go: hello from linux/amd64 (go$(GO_VERSION)), 3 args" --expect "go: argv[2] = b" \
+		--expect "hello exited with code 7" \
+		--expect "go: /Data/go has 4 entries: goroutine hello httpget readdir" \
+		--expect "go: read back \"written by Go\\n\", size 14" --expect "readdir exited with code 0" \
+		--expect "go: 8 goroutines done, total 36" --expect "go: preempted after" \
+		--expect "go: timer OK" --expect "goroutine exited with code 0" \
+		--expect "go: HTTP 200, 26 bytes: hello from the host to Go" --expect "httpget exited with code 0" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-go.img \
+		-device ide-hd,drive=sata1,bus=ide.1
 
 # The System update (P14 K7, docs/system.md §7): a disk image with
 # System A (this build's image) and an empty System B; Data holds the

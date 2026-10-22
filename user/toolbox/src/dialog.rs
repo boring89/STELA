@@ -288,6 +288,10 @@ mod modal {
                     FieldResult::Enter => Some(Some(field.text.clone())),
                     _ => None,
                 },
+                Event::Text { ref text, .. } => {
+                    field.insert_text(text);
+                    None
+                }
                 Event::Mouse { x, y, kind, .. } => match click(&mut buttons, kind, x, y) {
                     Some(0) => Some(None),
                     Some(_) => Some(Some(field.text.clone())),
@@ -515,6 +519,10 @@ mod modal {
                     }
                     _ => None,
                 },
+                Event::Text { ref text, .. } if saving => {
+                    field.insert_text(text);
+                    None
+                }
                 Event::Mouse {
                     x, y, kind, clicks, ..
                 } => {

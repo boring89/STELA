@@ -361,6 +361,13 @@ impl Browser {
         self.address.cursor = 0;
     }
 
+    /// Text the IME committed (P13 K3): into the address while editing it.
+    fn text(&mut self, text: &str) {
+        if self.editing {
+            self.address.insert_text(text);
+        }
+    }
+
     fn key(&mut self, key: &KeyEvent) {
         if !key.pressed {
             return;
@@ -520,6 +527,7 @@ fn main() -> i64 {
         };
         match event {
             Event::Key { key, .. } => b.key(&key),
+            Event::Text { text, .. } => b.text(&text),
             Event::Mouse { x, y, kind, .. } => match kind {
                 MouseKind::Down => b.press(x, y),
                 MouseKind::Up => b.release(x, y),

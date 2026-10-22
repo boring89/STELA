@@ -304,7 +304,8 @@ enum SendTarget {
 }
 
 /// `PortSend` to a tty: `CONSOLE_WRITE` is output, `INPUT_KEY` is typed
-/// (as the character it makes); other messages are ignored. Handles are
+/// (as the character it makes), `INPUT_TEXT` is typed text (P13 K3); other
+/// messages are ignored. Handles are
 /// not taken (a tty has nowhere to keep them).
 fn tty_send(tty: &Tty, msg: &Message) -> Result<u64, Error> {
     if msg.handles != 0 {
@@ -318,6 +319,14 @@ fn tty_send(tty: &Tty, msg: &Message) -> Result<u64, Error> {
             {
                 tty.feed(c);
             }
+        }
+        tag::INPUT_TEXT => {
+            let data = msg.payload();
+            let text = match core::str::from_utf8(data) {
+                Ok(t) => t,
+                Err(e) => core::str::from_utf8(&data[..e.valid_up_to()]).unwrap_or(""),
+            };
+            tty.feed_str(text);
         }
         _ => {}
     }

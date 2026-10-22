@@ -7,6 +7,7 @@
 
 use abi::key::KeyEvent;
 use abi::window::{self as proto, event, mouse, window_event};
+use alloc::string::String;
 use libstela::Message;
 
 /// What a mouse event was.
@@ -30,6 +31,14 @@ pub enum Event {
         window: u32,
         /// The key.
         key: KeyEvent,
+    },
+    /// Text the input method committed for `window` (P13 K3,
+    /// `TEXT_INPUT`): insert it as if typed.
+    Text {
+        /// The window with the keyboard.
+        window: u32,
+        /// UTF-8 text.
+        text: String,
     },
     /// The mouse, in `window`'s content coordinates.
     Mouse {
@@ -74,6 +83,10 @@ impl Event {
                 Some(key) => Event::Key { window: w(0), key },
                 None => Event::Other(msg),
             },
+            event::TEXT_INPUT => Event::Text {
+                window: w(0),
+                text: String::from(proto::text_of(&msg)),
+            },
             event::MOUSE => {
                 let kind = match w(4) {
                     mouse::DOWN => MouseKind::Down,
@@ -109,7 +122,9 @@ impl Event {
     /// The window the event is about, if any.
     pub fn window(&self) -> Option<u32> {
         match *self {
-            Event::Key { window, .. } | Event::Mouse { window, .. } => Some(window),
+            Event::Key { window, .. }
+            | Event::Mouse { window, .. }
+            | Event::Text { window, .. } => Some(window),
             Event::Focus(w)
             | Event::Blur(w)
             | Event::Moved(w, ..)
@@ -163,5 +178,15 @@ mod tests {
         );
         let other = Message::with_data(abi::tag::SHELL_READY, b"");
         assert!(matches!(Event::from_message(other), Event::Other(_)));
+        let text: alloc::vec::Vec<Message> = proto::text_input(6, "你好").collect();
+        let e = Event::from_message(text[0]);
+        assert_eq!(
+            e,
+            Event::Text {
+                window: 6,
+                text: String::from("你好")
+            }
+        );
+        assert_eq!(e.window(), Some(6));
     }
 }

@@ -713,6 +713,10 @@ impl Shell {
             }
             let mut msg = Message::new();
             while port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_ok() {
+                if msg.tag == tag::INPUT_TEXT {
+                    let _ = port_send(tty.0, &msg);
+                    continue;
+                }
                 if msg.tag != tag::INPUT_KEY {
                     continue;
                 }
@@ -842,6 +846,10 @@ impl Shell {
             }
             let mut msg = Message::new();
             while port_receive(bootstrap::MAIN_PORT, &mut msg, 0).is_ok() {
+                if msg.tag == tag::INPUT_TEXT {
+                    let _ = port_send(tty.0, &msg);
+                    continue;
+                }
                 if msg.tag != tag::INPUT_KEY {
                     continue;
                 }
@@ -1126,6 +1134,16 @@ fn main() -> i64 {
         {
             if let Some(old) = shell.window_server.replace(ws) {
                 let _ = handle_close(old);
+            }
+            continue;
+        }
+        if msg.tag == tag::INPUT_TEXT {
+            // P13 K3: text from the input method, typed at the prompt.
+            let text = String::from_utf8_lossy(msg.payload()).into_owned();
+            for c in text.chars().filter(|c| !c.is_control()) {
+                if let Edit::Show(s) = editor.feed_key(Key::Char(c)) {
+                    print!("{s}");
+                }
             }
             continue;
         }

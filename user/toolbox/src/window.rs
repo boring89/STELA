@@ -237,6 +237,12 @@ impl Connection {
         self.send(&proto::move_window(window.id, x, y))
     }
 
+    /// Tells the server where the window's text cursor is (window
+    /// coordinates; P13 K3): the IME draws what is being composed there.
+    pub fn set_caret(&self, window: &Window, x: i32, y: i32, h: i32) -> Result<(), Error> {
+        self.send(&proto::set_caret(window.id, x, y, h.max(1) as u32))
+    }
+
     /// Brings `window` to the front with the keyboard.
     pub fn focus(&self, window: &Window) -> Result<(), Error> {
         self.send(&proto::focus_window(window.id))

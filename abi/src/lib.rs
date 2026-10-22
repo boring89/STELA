@@ -761,6 +761,10 @@ pub mod tag {
     /// The kernel to a port given to `VolumeWatch` (P11 K42): a volume was
     /// mounted (data byte 0 = 1) or taken away (2); then its name.
     pub const VOLUME_CHANGED: u32 = 9;
+    /// Typed text (P13 K3, `docs/ime.md`): UTF-8 the input method
+    /// committed, from a terminal to its shell and from the shell to a
+    /// tty (`PortSend`), like a run of `INPUT_KEY`s.
+    pub const INPUT_TEXT: u32 = 10;
 }
 
 /// Capabilities (P11, `docs/userland.md` §2.3): handles whose possession

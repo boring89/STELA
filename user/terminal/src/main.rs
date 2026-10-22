@@ -76,6 +76,8 @@ struct Terminal {
     /// (col, row) of the view; `selecting` while the button is down.
     selection: Option<((usize, usize), (usize, usize))>,
     selecting: bool,
+    /// The cursor cell last told to the server (`SET_CARET`, P13 K3).
+    caret: Option<(usize, usize)>,
 }
 
 impl Terminal {
@@ -121,6 +123,16 @@ impl Terminal {
             }
         }
         let _ = self.conn.damage(&self.window, damaged);
+        // The IME draws what is being composed at the cursor (P13 K3).
+        if self.caret != Some((cx, cy)) {
+            self.caret = Some((cx, cy));
+            let _ = self.conn.set_caret(
+                &self.window,
+                PAD + cx.min(cols - 1) as i32 * font.width,
+                PAD + cy as i32 * font.height,
+                font.height,
+            );
+        }
     }
 
     fn redraw_all(&mut self) {
@@ -316,6 +328,13 @@ impl Terminal {
                 }
                 self.key(&key)
             }
+            Event::Text { text, .. } => {
+                // P13 K3: committed text goes to the shell (and on to the
+                // tty while a program runs) as UTF-8.
+                if let Some(port) = self.shell_port {
+                    let _ = port_send(port, &Message::with_data(tag::INPUT_TEXT, text.as_bytes()));
+                }
+            }
             Event::Mouse { x, y, kind, .. } => self.mouse(x, y, kind),
             Event::Menu(1, 0) => self.copy(),
             Event::Menu(1, 1) => self.paste(),
@@ -415,6 +434,7 @@ fn main() -> i64 {
         active: true,
         selection: None,
         selecting: false,
+        caret: None,
     };
     t.redraw_all();
     t.start_shell();

@@ -512,6 +512,36 @@ impl TextView {
         result
     }
 
+    /// Inserts text the IME committed (`Event::Text`, P13 K3).
+    pub fn insert_text(&mut self, text: &str) -> TextResult {
+        if self.read_only || text.is_empty() {
+            return TextResult::Ignored;
+        }
+        self.buffer.insert(text);
+        self.reveal();
+        TextResult::Changed
+    }
+
+    /// The insertion point in window coordinates (x, y, height), if it
+    /// shows: what `SET_CARET` tells the server (P13 K3).
+    pub fn caret(&self) -> Option<(i32, i32, i32)> {
+        let a = self.area();
+        let (cols, page) = self.size();
+        let rows = self.buffer.rows(cols);
+        let (row, _) = self.buffer.position(&rows, self.buffer.cursor());
+        if row < self.scroll || row >= self.scroll + page {
+            return None;
+        }
+        let start = rows[row].0;
+        let before = &self.buffer.text()[start..self.buffer.cursor()];
+        let cells = crate::cjk::width(&before.replace('\t', " ")) as i32;
+        Some((
+            a.x + 4 + cells * self.font_size.0,
+            a.y + (row - self.scroll) as i32 * self.font_size.1,
+            self.font_size.1,
+        ))
+    }
+
     /// The byte under (x, y) (window coordinates; clamped to the text).
     fn hit(&self, x: i32, y: i32) -> usize {
         let a = self.area();
@@ -768,5 +798,21 @@ mod tests {
         // Column 3 is the right half of the second 中: that character.
         assert_eq!(b.index_at(&rows, 0, 3), 3);
         assert_eq!(b.index_at(&rows, 1, 2), 9);
+    }
+
+    #[test]
+    fn committed_text_and_the_caret() {
+        crate::cjk::set_font(Some(crate::cjk::tests::sample()));
+        let mut v = TextView::new(Rect::new(10, 20, 200, 100), "ab\ncd", (8, 16));
+        v.buffer.set_cursor(4, false);
+        // Row 1, after "c": x = area.x (11) + 4 + 1 cell * 8.
+        assert_eq!(v.caret(), Some((23, 21 + 16, 16)));
+        assert_eq!(v.insert_text("中中"), TextResult::Changed);
+        assert_eq!(v.buffer.text(), "ab\nc中中d");
+        // Two characters of two cells each.
+        assert_eq!(v.caret(), Some((23 + 32, 37, 16)));
+        assert_eq!(v.insert_text(""), TextResult::Ignored);
+        v.read_only = true;
+        assert_eq!(v.insert_text("x"), TextResult::Ignored);
     }
 }

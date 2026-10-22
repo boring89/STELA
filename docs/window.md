@@ -72,6 +72,9 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `SET_CLIPBOARD` 0x109（P11） | 0、長度；長度 > 0 時夾帶裝著 UTF-8 文字的 Memory（最多 `CLIPBOARD_MAX` = 1 MiB） | — |
 | `GET_CLIPBOARD` 0x10A（P11） | 0 | `CLIPBOARD` |
 | `DISCONNECT` 0x10B（P11 K46） | 0 | —（伺服器關掉它的視窗、忘掉這個 client；toolbox 的 `Connection` 被 drop 時送。以前只有程式結束（主 port 關掉）才清，同一個程式反覆連線會每次留下一個 client：`make test-stress` 看到每輪約 11 KB 的 kernel heap） |
+| `REGISTER_IME` 0x10C（P13 K2） | 0（只有經 IME port 連線的 client） | —（`ERROR`：`AccessDenied`、`Busy`）；`docs/ime.md` §4 |
+| `IME_RESULT` 0x10D（P13 K2） | IME 對 `IME_KEY` 的回答：seq、flags、組字與候選（`docs/ime.md` §4） | — |
+| `SET_CARET` 0x10E（P13 K2） | 0、window、x、y、h：文字游標（組字區畫在它下面） | — |
 
 | 事件（server → client） | 內容 |
 |---|---|
@@ -81,6 +84,11 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `MENU_SELECTED` 0x186 | 選單 index、項目 index |
 | `ERROR` 0x187 | 請求的 tag、`abi::Error` |
 | `CLIPBOARD` 0x188（P11） | 長度；長度 > 0 時夾帶一份文字的 Memory（client 讀完關掉） |
+| `IME_KEY` 0x189（P13 K2，給 IME） | seq、`KeyEvent` |
+| `TEXT_INPUT` 0x18A（P13 K2） | window、長度、UTF-8：IME 送出的字（toolbox `Event::Text`） |
+| `IME_RESET` 0x18B（P13 K2，給 IME） | 焦點換了，丟掉組字 |
+
+**輸入法（P13，使用者尚未審核）**：伺服器開機時建一個 IME port、啟動 `Initrd:/ime`；IME 登記後，中文模式（或組字中）的按鍵先給它，它回答之後伺服器才把鍵或送出的字（`TEXT_INPUT`）給焦點視窗；伺服器畫組字區、候選窗與選單列的「注／英」。英文模式的鍵照舊直送。細節見 `docs/ime.md`。
 
 **選單快捷鍵（P11 K43）**：`SET_MENUBAR` 的項目文字結尾 `^K`（字母或數字）表示 Alt-K（Alt 當 Command）。伺服器在選單右邊畫 `Alt-K`；焦點 client 的選單有這個快捷鍵時，Alt+字母（沒有 Ctrl）不送給程式，改送 `MENU_SELECTED`。其他 Alt 組合照樣送（Classic.app 的 Mac 用 Alt 當 Command 不受影響，它的選單沒有快捷鍵）。toolbox：`MenuBar::item` 傳回去掉 `^K` 的標籤、`menu::shortcut`。標準：New^N、Open^O、Save^S、Close^W、Quit^Q、Undo^Z、Cut^X、Copy^C、Paste^V、Select All^A（Kalamos、Mouseion、Echo、Terminal、Monitor、Periplus、Viewer 都加了）。
 

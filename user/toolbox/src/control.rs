@@ -155,6 +155,38 @@ impl TextField {
         }
     }
 
+    /// Inserts text the IME committed (`Event::Text`, P13 K3), as far as
+    /// `max` allows.
+    pub fn insert_text(&mut self, text: &str) -> FieldResult {
+        let mut changed = false;
+        for c in text.chars().filter(|c| !c.is_control()) {
+            if self.text.chars().count() >= self.max {
+                break;
+            }
+            let at = self.byte_at(self.cursor);
+            self.text.insert(at, c);
+            self.cursor += 1;
+            changed = true;
+        }
+        if changed {
+            FieldResult::Changed
+        } else {
+            FieldResult::None
+        }
+    }
+
+    /// The insertion point in window coordinates (x, y, height): what
+    /// `SET_CARET` tells the server (P13 K3).
+    pub fn caret(&self, font: &Font) -> (i32, i32, i32) {
+        let before: alloc::string::String = self.text.chars().take(self.cursor).collect();
+        let r = self.rect;
+        (
+            r.x + 4 + font.text_width(&before),
+            r.y + (r.h - font.height) / 2,
+            font.height,
+        )
+    }
+
     /// Draws it with the insertion point (when `active`).
     pub fn draw(&self, c: &mut Canvas, font: &Font, active: bool) {
         let r = self.rect;
@@ -420,5 +452,23 @@ mod tests {
         l.top = 1;
         assert_eq!(l.click(5, 25, 20), Some(2));
         assert_eq!(l.click(5, 100, 20), None);
+    }
+
+    #[test]
+    fn text_field_takes_committed_text() {
+        crate::cjk::set_font(Some(crate::cjk::tests::sample()));
+        let mut f = TextField::new(Rect::new(0, 0, 100, 20), 4);
+        assert_eq!(f.insert_text("你好"), FieldResult::Changed);
+        assert_eq!((f.text.as_str(), f.cursor), ("你好", 2));
+        // Up to max characters.
+        assert_eq!(f.insert_text("嗎嗎嗎"), FieldResult::Changed);
+        assert_eq!(f.text, "你好嗎嗎");
+        assert_eq!(f.insert_text("x"), FieldResult::None);
+        f.text = String::from("中中");
+        f.cursor = 2;
+        let font = crate::draw::font_for(800);
+        let (x, _, h) = f.caret(font);
+        assert_eq!(h, font.height);
+        assert_eq!(x, 4 + 4 * font.width);
     }
 }

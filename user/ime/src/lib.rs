@@ -143,6 +143,24 @@ impl Ime {
         self.chewing.chinese()
     }
 
+    /// Sets Chinese (true) or English mode (the service starts in
+    /// English).
+    pub fn set_chinese(&mut self, on: bool) {
+        self.chewing.set_chinese(on);
+    }
+
+    /// Drops what is being composed (the focus moved).
+    pub fn reset(&mut self) {
+        for _ in 0..3 {
+            if !self.composing() {
+                break;
+            }
+            self.chewing.key(Key::Esc);
+        }
+        // Esc may commit nothing; a commit left from before is dropped.
+        let _ = self.chewing.commit();
+    }
+
     /// Switches between Chinese and English (Ctrl-Space); what is being
     /// composed is committed first.
     pub fn toggle(&mut self) -> Outcome {

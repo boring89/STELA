@@ -254,6 +254,10 @@ def main():
                     metavar=("TRIGGER", "COMMAND", "JSON"))
     ap.add_argument("--click", nargs=4, action=Ordered, dest="click",
                     metavar=("TRIGGER", "X", "Y", "COUNT"))
+    # P13 K4: a QMP screendump to FILE; the next action may fire on the
+    # same line (a screenshot prints nothing to wait for).
+    ap.add_argument("--screenshot", nargs=2, action=Ordered, dest="screenshot",
+                    metavar=("TRIGGER", "FILE"))
     ap.add_argument("--expect", action="append", required=True)
     ap.add_argument("--log", help="also write the serial output to this file")
     ap.add_argument("--times", action="store_true",
@@ -288,6 +292,8 @@ def main():
             typing.append((v[0], ("mouse", int(v[1]), int(v[2]), v[3])))
         elif kind == "qmp":
             typing.append((v[0], ("qmp", v[1], json.loads(v[2]))))
+        elif kind == "screenshot":
+            typing.append((v[0], ("screenshot", os.path.abspath(v[1]))))
         else:
             typing.append((v[0], ("click", int(v[1]), int(v[2]), int(v[3]))))
     if typing:
@@ -310,8 +316,13 @@ def main():
                 log.append(f"[{time.monotonic() - started:9.3f}] {text}")
             else:
                 log.append(text)
-            if qmp and typing and typing[0][0] in text:
+            while qmp and typing and typing[0][0] in text:
                 action = typing.pop(0)[1]
+                if isinstance(action, tuple) and action[0] == "screenshot":
+                    if os.path.exists(action[1]):
+                        os.unlink(action[1])
+                    command(qmp, "screendump", {"filename": action[1]}, deadline)
+                    continue
                 if isinstance(action, tuple) and action[0] == "qmp":
                     command(qmp, action[1], action[2], deadline)
                 elif isinstance(action, tuple) and action[0] == "click":
@@ -320,6 +331,8 @@ def main():
                     mouse(qmp, action[1], action[2], action[3], deadline)
                 else:
                     send_keys(qmp, action, deadline)
+                # One action per line (besides screenshots).
+                break
             if pending and pending[0] in text:
                 pending.pop(0)
             if not pending and args.exit_code is None:

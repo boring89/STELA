@@ -6,7 +6,7 @@
 use abi::key::{KeyEvent, MouseEvent, button};
 use abi::sysinfo::{FORMAT_RGBX, FramebufferInfo};
 use abi::window::{self as proto, event, flags, mouse, request, window_event};
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -20,8 +20,8 @@ use libstela::wait::{self, WaitSet};
 use libstela::{Error, Handle, Message, Rights, bootstrap, println, tag};
 use toolbox::draw::{Canvas, Font, Rect, color, font_for};
 use windowserver::compose::{
-    Clicks, Damage, Menu, Metrics, Part, Stack, Window, find_shortcut, menu_box, menu_item_at,
-    menu_titles, parse_menus, shortcut, visible_parts,
+    Clicks, Damage, Menu, Metrics, Part, Stack, Window, find_shortcut, ime_boxes, menu_box,
+    menu_item_at, menu_titles, parse_menus, shortcut, visible_parts,
 };
 
 /// The pointer: `X` outline, `.` fill, space transparent (STELA's own
@@ -49,6 +49,14 @@ const ARROW: [&str; 17] = [
 /// Wait-set keys: 0 is the main port, a client id its request port, the
 /// id with this bit its reply port (watched for closing).
 const REPLY_KEY: u64 = 1 << 32;
+/// The wait-set key of the IME port (P13 K2): `CONNECT`s that come on it
+/// may register as the input method.
+const IME_PORT_KEY: u64 = 1 << 33;
+/// How long a key waits for the IME before it goes to the window anyway
+/// (and the IME is dropped).
+const IME_TIMEOUT_NS: u64 = 1_000_000_000;
+/// The IME program the server starts (`docs/ime.md`).
+const IME_PROGRAM: &str = "ime";
 /// The label at the left of the menu bar.
 const LABEL: &str = "STELA";
 
@@ -60,6 +68,38 @@ struct Client {
     /// The client's own request port (we receive; it has a SEND).
     port: Handle,
     menus: Vec<Menu>,
+    /// Connected through the IME port: may send `REGISTER_IME`.
+    may_ime: bool,
+}
+
+/// A key the IME has not answered yet.
+struct PendingKey {
+    seq: u32,
+    key: KeyEvent,
+    /// The window that had the focus when the key came.
+    window: u32,
+    sent: u64,
+}
+
+/// The registered input method (P13 K2) and what it is composing.
+struct Ime {
+    client: u32,
+    chinese: bool,
+    seq: u32,
+    pending: VecDeque<PendingKey>,
+    preedit: String,
+    cursor: usize,
+    candidates: Vec<String>,
+    page: u16,
+    pages: u16,
+    /// Where the composition and the candidates were drawn last.
+    boxes: (Rect, Rect),
+}
+
+impl Ime {
+    fn composing(&self) -> bool {
+        !self.preedit.is_empty() || !self.candidates.is_empty()
+    }
 }
 
 /// A window's pixels, mapped read-only (the client draws them).
@@ -118,6 +158,12 @@ struct Server {
     next_clock: u64,
     /// Zoomed windows: where their content was before (P11 K43).
     zoomed: BTreeMap<u32, Rect>,
+    /// The port the IME program connects through (P13 K2).
+    ime_port: Handle,
+    /// The input method, once it registered.
+    ime: Option<Ime>,
+    /// Where each window's text cursor is (`SET_CARET`: content x, y, h).
+    carets: BTreeMap<u32, (i32, i32, i32)>,
 }
 
 fn screen_rect(s: &Server) -> Rect {
@@ -171,12 +217,16 @@ impl Server {
             return;
         };
         let client = self.clients.remove(at);
+        if self.ime.as_ref().is_some_and(|i| i.client == id) {
+            self.drop_ime();
+        }
         let _ = self.set.remove(client.port);
         let _ = self.set.remove(client.reply);
         // Requests still queued go with the port (and what they carry).
         let _ = handle_close(client.port);
         let _ = handle_close(client.reply);
         for w in self.stack.remove_client(id) {
+            self.carets.remove(&w.id);
             let frame = w.frame(&self.m);
             self.surfaces.remove(&w.id);
             self.mark(frame);
@@ -236,6 +286,7 @@ impl Server {
             );
         }
         self.focus = id;
+        self.reset_ime();
         if let Some(id) = id
             && let Some(w) = self.stack.get(id)
         {
@@ -345,6 +396,19 @@ impl Server {
             _ => None,
         };
         let clock = self.clock.clone();
+        let (ime_text, ime_list) = self.ime_layout();
+        let ime_status = self.ime.as_ref().map(|i| i.chinese);
+        let ime_draw = self.ime.as_ref().filter(|i| i.composing()).map(|i| {
+            (
+                i.preedit.clone(),
+                i.cursor,
+                if i.candidates.is_empty() {
+                    String::new()
+                } else {
+                    candidate_line(i)
+                },
+            )
+        });
         let mut canvas = Canvas::new(&mut self.back, w, h, w as usize);
         canvas.set_clip(r);
         if menubar.overlaps(&r) {
@@ -366,6 +430,46 @@ impl Server {
                 color::BLACK,
                 None,
             );
+            // The IME's mode left of the clock (P13 K2): 注 or 英.
+            if let Some(chinese) = ime_status {
+                let mark = if chinese { "注" } else { "英" };
+                let mx = x - font.text_width(mark) - 2 * font.width;
+                canvas.text(
+                    mx,
+                    (m.menubar - font.height) / 2,
+                    mark,
+                    font,
+                    color::BLACK,
+                    None,
+                );
+            }
+        }
+        // The composition under the caret, the candidates under it.
+        if let Some((preedit, cursor, list)) = ime_draw {
+            if ime_text.overlaps(&r) {
+                canvas.fill(ime_text, color::PARCHMENT);
+                canvas.frame(ime_text, color::BLACK);
+                let (tx, ty) = (ime_text.x + 4, ime_text.y + 4);
+                canvas.text(tx, ty, &preedit, font, color::BLACK, None);
+                let tw = font.text_width(&preedit);
+                canvas.hline(tx, ty + font.height - 1, tw, color::BLACK);
+                let before: String = preedit.chars().take(cursor).collect();
+                let cx = tx + font.text_width(&before);
+                canvas.vline(cx, ty, font.height, color::BLACK);
+            }
+            if !list.is_empty() && ime_list.overlaps(&r) {
+                canvas.fill(ime_list.offset(2, 2), color::BLACK);
+                canvas.fill(ime_list, color::PARCHMENT);
+                canvas.frame(ime_list, color::BLACK);
+                canvas.text(
+                    ime_list.x + 4,
+                    ime_list.y + 4,
+                    &list,
+                    font,
+                    color::BLACK,
+                    None,
+                );
+            }
         }
         if let (Some(area), Some((index, hover))) = (menu_area, open)
             && area.overlaps(&r)
@@ -455,11 +559,260 @@ impl Server {
             self.send(client, &proto::menu_selected(menu as u32, item as u32));
             return;
         }
-        if let Some(id) = self.focus
-            && let Some(client) = self.window_owner(id)
-        {
+        let Some(id) = self.focus else {
+            return;
+        };
+        // P13 K2: the IME sees the key first, unless it is in English
+        // mode with nothing composed and nothing waiting (then only
+        // Ctrl-Space, which switches, goes to it).
+        let toggle = key.code == abi::key::KeyCode::Space
+            && key.modifiers.ctrl
+            && !key.modifiers.alt
+            && !key.modifiers.shift;
+        let now = libstela::now_ns();
+        let owner = self.window_owner(id);
+        let route = match &mut self.ime {
+            Some(ime)
+                if owner != Some(ime.client)
+                    && (ime.chinese || ime.composing() || !ime.pending.is_empty() || toggle) =>
+            {
+                ime.seq = ime.seq.wrapping_add(1).max(1);
+                ime.pending.push_back(PendingKey {
+                    seq: ime.seq,
+                    key,
+                    window: id,
+                    sent: now,
+                });
+                Some((ime.client, ime.seq))
+            }
+            _ => None,
+        };
+        match route {
+            Some((client, seq)) => self.send(client, &proto::ime_key(seq, &key)),
+            None => self.deliver_key(id, key),
+        }
+    }
+
+    /// Sends a key to window `id`'s client.
+    fn deliver_key(&mut self, id: u32, key: KeyEvent) {
+        if let Some(client) = self.window_owner(id) {
             self.send(client, &proto::key(id, &key));
         }
+    }
+
+    /// Sends committed text to window `id`'s client (`TEXT_INPUT`).
+    fn deliver_text(&mut self, id: u32, text: &str) {
+        if let Some(client) = self.window_owner(id) {
+            let msgs: Vec<Message> = proto::text_input(id, text).collect();
+            for m in &msgs {
+                self.send(client, m);
+            }
+        }
+    }
+
+    /// The IME went away (or stopped answering): the keys it holds go to
+    /// their windows as they are, the composition disappears.
+    fn drop_ime(&mut self) {
+        let Some(ime) = self.ime.take() else {
+            return;
+        };
+        let (a, b) = ime.boxes;
+        self.mark(a);
+        self.mark(b);
+        self.mark_menubar();
+        for p in ime.pending {
+            self.deliver_key(p.window, p.key);
+        }
+    }
+
+    /// The focus moved: the IME drops what it composes.
+    fn reset_ime(&mut self) {
+        let Some(ime) = &mut self.ime else {
+            return;
+        };
+        let client = ime.client;
+        if !ime.composing() && ime.pending.is_empty() {
+            return;
+        }
+        ime.preedit.clear();
+        ime.candidates.clear();
+        let (a, b) = ime.boxes;
+        self.mark(a);
+        self.mark(b);
+        self.send(client, &proto::ime_reset());
+    }
+
+    /// When the oldest key sent to the IME times out (0: none waiting).
+    fn ime_deadline(&self) -> u64 {
+        self.ime
+            .as_ref()
+            .and_then(|i| i.pending.front())
+            .map_or(0, |p| p.sent + IME_TIMEOUT_NS)
+    }
+
+    /// `REGISTER_IME`: only through the IME port, one at a time.
+    fn register_ime(&mut self, client: u32) -> Result<(), Error> {
+        if !self.client(client).is_some_and(|c| c.may_ime) {
+            return Err(Error::AccessDenied);
+        }
+        if self.ime.is_some() {
+            return Err(Error::Busy);
+        }
+        self.ime = Some(Ime {
+            client,
+            chinese: false,
+            seq: 0,
+            pending: VecDeque::new(),
+            preedit: String::new(),
+            cursor: 0,
+            candidates: Vec::new(),
+            page: 0,
+            pages: 0,
+            boxes: (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0)),
+        });
+        self.mark_menubar();
+        println!("windowserver: IME registered");
+        Ok(())
+    }
+
+    /// `IME_RESULT`: the answer to a key (or a reset).
+    fn ime_result(&mut self, client: u32, msg: &Message) -> Result<(), Error> {
+        let memory = msg.carried().first().map(|&m| Owned(m));
+        if !self.ime.as_ref().is_some_and(|i| i.client == client) {
+            return Err(Error::AccessDenied);
+        }
+        let h = proto::ime_header_of(msg);
+        let len = h.text_len();
+        let text = if h.flags & proto::ime::MEMORY != 0 {
+            if len > 64 * 1024 {
+                return Err(Error::InvalidArgument);
+            }
+            let memory = memory.ok_or(Error::InvalidArgument)?;
+            let size = (len as u64).next_multiple_of(4096).max(4096);
+            let map = Mapping::new(memory.0, size, false)?;
+            let mut t = vec![0u8; len];
+            map.read(0, &mut t)?;
+            t
+        } else {
+            let t = proto::ime_text_of(msg);
+            t[..len.min(t.len())].to_vec()
+        };
+        let cut = |a: usize, b: usize| {
+            String::from_utf8_lossy(text.get(a..b.min(text.len())).unwrap_or(&[])).into_owned()
+        };
+        let c = h.commit_len as usize;
+        let p = c + h.preedit_len as usize;
+        let commit = cut(0, c);
+        let preedit = cut(c, p);
+        let list = cut(p, len);
+        // The keys answered: this one (and any older one the IME skipped,
+        // which goes on as it is).
+        let mut answered = None;
+        let mut skipped = Vec::new();
+        if let Some(ime) = &mut self.ime {
+            if h.seq != 0 {
+                while let Some(front) = ime.pending.front() {
+                    if front.seq.wrapping_sub(h.seq) as i32 > 0 {
+                        break;
+                    }
+                    let k = ime.pending.pop_front().ok_or(Error::NotFound)?;
+                    if k.seq == h.seq {
+                        answered = Some(k);
+                        break;
+                    }
+                    skipped.push(k);
+                }
+            }
+            ime.chinese = h.flags & proto::ime::CHINESE != 0;
+            ime.preedit = preedit;
+            ime.cursor = h.cursor as usize;
+            ime.candidates = if list.is_empty() {
+                Vec::new()
+            } else {
+                list.split('\n').map(String::from).collect()
+            };
+            ime.page = h.page;
+            ime.pages = h.pages;
+        }
+        for k in skipped {
+            self.deliver_key(k.window, k.key);
+        }
+        if let Some(k) = answered {
+            if !commit.is_empty() {
+                self.deliver_text(k.window, &commit);
+            }
+            if h.flags & proto::ime::CONSUMED == 0 {
+                self.deliver_key(k.window, k.key);
+            }
+        }
+        self.mark_ime();
+        self.mark_menubar();
+        Ok(())
+    }
+
+    /// `SET_CARET`.
+    fn set_caret(&mut self, client: u32, msg: &Message) -> Result<(), Error> {
+        let id = proto::word(msg, 1);
+        self.owned(client, id)?;
+        let h = (proto::word(msg, 4) as i32).clamp(1, 256);
+        self.carets
+            .insert(id, (proto::signed(msg, 2), proto::signed(msg, 3), h));
+        if self.ime.as_ref().is_some_and(Ime::composing) && self.focus == Some(id) {
+            self.mark_ime();
+        }
+        Ok(())
+    }
+
+    /// The composition's boxes now (empty when nothing is composed).
+    fn ime_layout(&self) -> (Rect, Rect) {
+        let none = (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0));
+        let Some(ime) = self.ime.as_ref().filter(|i| i.composing()) else {
+            return none;
+        };
+        let Some(win) = self.focus.and_then(|f| self.stack.get(f)) else {
+            return none;
+        };
+        let (cx, cy, ch) = self.carets.get(&win.id).copied().unwrap_or((
+            4,
+            win.content.h - self.font.height - 4,
+            self.font.height,
+        ));
+        let caret = Rect::new(win.content.x + cx, win.content.y + cy, 1, ch);
+        let text_w = self.font.text_width(&ime.preedit) + self.font.width;
+        let list_w = if ime.candidates.is_empty() {
+            0
+        } else {
+            self.font.text_width(&candidate_line(ime))
+        };
+        ime_boxes(
+            caret,
+            text_w,
+            list_w,
+            self.font.height,
+            self.screen(),
+            self.m.menubar,
+        )
+    }
+
+    /// Marks the old and the new place of the composition.
+    fn mark_ime(&mut self) {
+        let new = self.ime_layout();
+        let old = match &mut self.ime {
+            Some(ime) => core::mem::replace(&mut ime.boxes, new),
+            None => return,
+        };
+        if old.1.is_empty() && !new.1.is_empty() {
+            // For the tests (`make test-ime`): where to look.
+            let r = new.1;
+            println!(
+                "windowserver: IME candidates at {},{},{},{}",
+                r.x, r.y, r.w, r.h
+            );
+        }
+        self.mark(old.0);
+        self.mark(old.1);
+        self.mark(new.0);
+        self.mark(new.1);
     }
 
     /// The zoom box (P11 K43): the window fills the screen below the menu
@@ -817,7 +1170,16 @@ impl Server {
     }
 
     /// A message on the main port: input, or a new client.
-    fn main_message(&mut self, msg: &Message) {
+    fn main_message(&mut self, msg: &Message, from_ime_port: bool) {
+        if from_ime_port {
+            // Only CONNECT comes here (P13 K2).
+            if msg.tag == request::CONNECT {
+                self.connect(msg, true);
+            } else {
+                release(msg);
+            }
+            return;
+        }
         match msg.tag {
             tag::INPUT_KEY => {
                 if let Some(key) = KeyEvent::decode(msg.payload()) {
@@ -829,7 +1191,7 @@ impl Server {
                     self.pointer(e);
                 }
             }
-            request::CONNECT => self.connect(msg),
+            request::CONNECT => self.connect(msg, false),
             // Requests belong on the client's own port.
             _ => release(msg),
         }
@@ -852,6 +1214,9 @@ impl Server {
             request::FOCUS_WINDOW => self.focus_window(client, msg),
             request::SET_CLIPBOARD => self.set_clipboard(msg),
             request::GET_CLIPBOARD => self.get_clipboard(client),
+            request::REGISTER_IME => self.register_ime(client),
+            request::IME_RESULT => self.ime_result(client, msg),
+            request::SET_CARET => self.set_caret(client, msg),
             request::DISCONNECT => {
                 self.drop_client(client);
                 Ok(())
@@ -869,7 +1234,7 @@ impl Server {
 
     /// `CONNECT`: a request port for the new client, watched with its
     /// reply port.
-    fn connect(&mut self, msg: &Message) {
+    fn connect(&mut self, msg: &Message, may_ime: bool) {
         let Some(&reply) = msg.carried().first() else {
             release(msg);
             return;
@@ -907,6 +1272,7 @@ impl Server {
             reply,
             port,
             menus: Vec::new(),
+            may_ime,
         });
         let mut m = proto::connected(
             id,
@@ -1149,6 +1515,7 @@ impl Server {
         }
         self.surfaces.remove(&id);
         self.zoomed.remove(&id);
+        self.carets.remove(&id);
         if matches!(self.drag, Some(Drag::Move { id: d, .. } | Drag::Grow { id: d, .. } | Drag::Close { id: d, .. } | Drag::Content { id: d }) if d == id)
         {
             self.drag = None;
@@ -1170,7 +1537,13 @@ impl Server {
 
     /// Handles up to `max` messages from `port` (the main port, or
     /// client `client`'s).
-    fn drain(&mut self, port: Handle, client: Option<u32>, max: usize) -> Result<(), Error> {
+    fn drain(
+        &mut self,
+        port: Handle,
+        client: Option<u32>,
+        max: usize,
+        from_ime_port: bool,
+    ) -> Result<(), Error> {
         let mut msg = Message::new();
         for _ in 0..max {
             match port_receive(port, &mut msg, 0) {
@@ -1179,7 +1552,7 @@ impl Server {
                 Err(e) => return Err(e),
             }
             match client {
-                None => self.main_message(&msg),
+                None => self.main_message(&msg, from_ime_port),
                 Some(id) => {
                     self.request(id, &msg);
                     if self.client(id).is_none() {
@@ -1408,6 +1781,45 @@ fn start_programs(names: &[String]) {
     }
 }
 
+/// Starts `Initrd:/ime` (if it is there) with a SEND to the IME port as
+/// its bootstrap handle (P13 K2).
+fn start_ime(port: Handle) {
+    let Ok(initrd) = fs::volume_open("Initrd") else {
+        return;
+    };
+    let initrd = Owned(initrd);
+    let Ok(file) = fs::open(initrd.0, IME_PROGRAM, open::READ) else {
+        return;
+    };
+    let file = Owned(file);
+    let handles = [
+        pass(bootstrap::CONSOLE, Rights::SEND | Rights::DUPLICATE),
+        pass(port, Rights::SEND | Rights::DUPLICATE),
+        process::pass_dir(bootstrap::CWD),
+    ];
+    match process::spawn_with(file.0, &[IME_PROGRAM], &handles, &process::inherited()) {
+        Ok(p) => {
+            let _ = handle_close(p);
+        }
+        Err(e) => println!("windowserver: cannot start the IME: {}", e.name()),
+    }
+}
+
+/// The candidate list as one line: `1.你 2.妳 … 1/3`.
+fn candidate_line(ime: &Ime) -> String {
+    let mut line = String::new();
+    for (i, c) in ime.candidates.iter().enumerate() {
+        if i > 0 {
+            line.push(' ');
+        }
+        line.push_str(&alloc::format!("{}.{c}", (i + 1) % 10));
+    }
+    if ime.pages > 1 {
+        line.push_str(&alloc::format!("  {}/{}", ime.page + 1, ime.pages));
+    }
+    line
+}
+
 pub fn main() -> i64 {
     let Some(info) = process::framebuffer_info() else {
         println!("windowserver: no framebuffer");
@@ -1469,7 +1881,22 @@ pub fn main() -> i64 {
         clock: String::new(),
         next_clock: 0,
         zoomed: BTreeMap::new(),
+        ime_port: Handle::NONE,
+        ime: None,
+        carets: BTreeMap::new(),
     };
+    // P13 K2: the IME's own port, and the IME.
+    match port_create() {
+        Ok(port) => {
+            if server.set.add(port, IME_PORT_KEY, wait::READABLE).is_ok() {
+                server.ime_port = port;
+                start_ime(port);
+            } else {
+                let _ = handle_close(port);
+            }
+        }
+        Err(e) => println!("windowserver: no IME port: {}", e.name()),
+    }
     if let Err(e) = input_attach(bootstrap::MAIN_PORT) {
         println!(
             "windowserver: cannot take the keyboard and mouse: {}",
@@ -1488,11 +1915,22 @@ pub fn main() -> i64 {
         if now >= server.next_clock {
             server.update_clock();
         }
-        let timeout = if server.damage.is_empty() {
+        // P13 K2: an IME that does not answer in time is dropped (the
+        // keys it holds go on).
+        let deadline = server.ime_deadline();
+        if deadline != 0 && now >= deadline {
+            println!("windowserver: the IME does not answer; keys go straight to the windows");
+            server.drop_ime();
+        }
+        let deadline = server.ime_deadline();
+        let mut timeout = if server.damage.is_empty() {
             server.next_clock.saturating_sub(now)
         } else {
             0
         };
+        if deadline != 0 {
+            timeout = timeout.min(deadline.saturating_sub(now));
+        }
         let n = match server.set.wait(&mut ready, timeout) {
             Ok(n) => n,
             Err(Error::TimedOut) => 0,
@@ -1503,9 +1941,14 @@ pub fn main() -> i64 {
         };
         for r in &ready[..n] {
             if r.key == 0 {
-                if server.drain(bootstrap::MAIN_PORT, None, 64).is_err() {
+                if server.drain(bootstrap::MAIN_PORT, None, 64, false).is_err() {
                     return 1;
                 }
+                continue;
+            }
+            if r.key == IME_PORT_KEY {
+                let port = server.ime_port;
+                let _ = server.drain(port, None, 16, true);
                 continue;
             }
             let id = (r.key & 0xFFFF_FFFF) as u32;
@@ -1513,7 +1956,7 @@ pub fn main() -> i64 {
                 // The client's main port closed: it ended.
                 server.drop_client(id);
             } else if let Some(port) = server.client(id).map(|c| c.port) {
-                let _ = server.drain(port, Some(id), 64);
+                let _ = server.drain(port, Some(id), 64, false);
             }
         }
         server.flush();

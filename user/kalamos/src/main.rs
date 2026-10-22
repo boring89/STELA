@@ -88,6 +88,10 @@ impl Editor {
             self.view.draw(&mut c, self.font, self.active);
         }
         let _ = self.conn.damage_all(&self.window);
+        // Where the IME composes (P13 K3).
+        if let Some((x, y, h)) = self.view.caret() {
+            let _ = self.conn.set_caret(&self.window, x, y, h);
+        }
         let title = if self.view.buffer.is_dirty() {
             format!("* {}", self.name())
         } else {
@@ -274,6 +278,10 @@ impl Editor {
     fn event(&mut self, event: Event) -> bool {
         let was_dirty = self.view.buffer.is_dirty();
         let go_on = match event {
+            Event::Text { text, .. } => {
+                self.view.insert_text(&text);
+                true
+            }
             Event::Key { key, .. } => match Editor::shortcut(&key) {
                 Some(which) => self.command(which),
                 None => {

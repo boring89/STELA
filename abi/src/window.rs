@@ -68,6 +68,17 @@ pub mod request {
     /// ends (P11 K46: a program that connected again and again left a
     /// client behind each time).
     pub const DISCONNECT: u32 = 0x10B;
+    /// P13 K2 (`docs/ime.md`): the sender becomes the input method. Only a
+    /// client that connected through the server's IME port (the program
+    /// the server starts as its IME) may; one at a time.
+    pub const REGISTER_IME: u32 = 0x10C;
+    /// P13 K2: the IME's answer to an `IME_KEY` (or to `IME_RESET`, seq
+    /// 0): [`ImeHeader`], then the text (committed, composed, candidates)
+    /// in the message or, with [`ime::MEMORY`], in a carried Memory.
+    pub const IME_RESULT: u32 = 0x10D;
+    /// P13 K2: where the text cursor of a window is (window, x, y, h in
+    /// content coordinates): the composition is drawn there.
+    pub const SET_CARET: u32 = 0x10E;
 }
 
 /// Server to client.
@@ -94,6 +105,14 @@ pub mod event {
     /// length: the clipboard's text (P11); carries a Memory with it when
     /// the length is not 0.
     pub const CLIPBOARD: u32 = 0x188;
+    /// P13 K2, to the IME: a key for the focused window (seq, `KeyEvent`).
+    pub const IME_KEY: u32 = 0x189;
+    /// P13 K2, to the focused window: text the IME committed (window,
+    /// length, UTF-8; longer text comes in several).
+    pub const TEXT_INPUT: u32 = 0x18A;
+    /// P13 K2, to the IME: the focus moved; drop what is being composed
+    /// and answer with an `IME_RESULT` of seq 0.
+    pub const IME_RESET: u32 = 0x18B;
     // 0x188 was PING (version 1): the server now sees a client's reply
     // port close at once.
 }
@@ -311,10 +330,214 @@ pub fn error(request: u32, error: u64) -> Message {
     build(event::ERROR, &[request, error as u32], &[])
 }
 
+/// The flags of an `IME_RESULT` (P13 K2).
+pub mod ime {
+    /// The IME took the key: it does not go to the window.
+    pub const CONSUMED: u32 = 1 << 0;
+    /// Chinese mode (the menu bar shows 注; English: 英).
+    pub const CHINESE: u32 = 1 << 1;
+    /// The text is in the carried Memory, not in the message.
+    pub const MEMORY: u32 = 1 << 2;
+}
+
+/// The words of an `IME_RESULT` before its text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ImeHeader {
+    /// The `IME_KEY` answered (0: after `IME_RESET`, or on its own).
+    pub seq: u32,
+    /// [`ime`] flags.
+    pub flags: u32,
+    /// The cursor in the composed text, in characters.
+    pub cursor: u32,
+    /// Bytes of committed text (first in the text).
+    pub commit_len: u32,
+    /// Bytes of composed text (next).
+    pub preedit_len: u32,
+    /// Bytes of candidates, separated by `\n` (last).
+    pub candidates_len: u32,
+    /// The candidate page shown.
+    pub page: u16,
+    /// The number of candidate pages.
+    pub pages: u16,
+}
+
+/// Bytes of text an `IME_RESULT` holds itself.
+pub const IME_INLINE_MAX: usize = MESSAGE_DATA - 32;
+
+impl ImeHeader {
+    /// Bytes of text.
+    pub fn text_len(&self) -> usize {
+        self.commit_len as usize + self.preedit_len as usize + self.candidates_len as usize
+    }
+}
+
+/// `REGISTER_IME`.
+pub fn register_ime() -> Message {
+    build(request::REGISTER_IME, &[0], &[])
+}
+
+/// `IME_RESULT` with the text in the message (`text` at most
+/// [`IME_INLINE_MAX`] bytes; without [`ime::MEMORY`]), or only the header
+/// (the caller adds the Memory).
+pub fn ime_result(h: &ImeHeader, text: &[u8]) -> Message {
+    build(
+        request::IME_RESULT,
+        &[
+            0,
+            h.seq,
+            h.flags,
+            h.cursor,
+            h.commit_len,
+            h.preedit_len,
+            h.candidates_len,
+            u32::from(h.page) | (u32::from(h.pages) << 16),
+        ],
+        text,
+    )
+}
+
+/// The header of an `IME_RESULT`.
+pub fn ime_header_of(msg: &Message) -> ImeHeader {
+    let pages = word(msg, 7);
+    ImeHeader {
+        seq: word(msg, 1),
+        flags: word(msg, 2),
+        cursor: word(msg, 3),
+        commit_len: word(msg, 4),
+        preedit_len: word(msg, 5),
+        candidates_len: word(msg, 6),
+        page: pages as u16,
+        pages: (pages >> 16) as u16,
+    }
+}
+
+/// The text of an `IME_RESULT` that holds it itself.
+pub fn ime_text_of(msg: &Message) -> &[u8] {
+    tail(msg, 8)
+}
+
+/// `SET_CARET`.
+pub fn set_caret(window: u32, x: i32, y: i32, h: u32) -> Message {
+    build(request::SET_CARET, &[0, window, x as u32, y as u32, h], &[])
+}
+
+/// `IME_KEY`.
+pub fn ime_key(seq: u32, event: &KeyEvent) -> Message {
+    build(event::IME_KEY, &[seq], &event.encode())
+}
+
+/// The sequence number and key of an `IME_KEY`.
+pub fn ime_key_of(msg: &Message) -> Option<(u32, KeyEvent)> {
+    let t = tail(msg, 1);
+    Some((word(msg, 0), KeyEvent::decode(t.get(..KEY_EVENT_SIZE)?)?))
+}
+
+/// `IME_RESET`.
+pub fn ime_reset() -> Message {
+    build(event::IME_RESET, &[0], &[])
+}
+
+/// Bytes of text one `TEXT_INPUT` holds.
+pub const TEXT_INPUT_MAX: usize = MESSAGE_DATA - 8;
+
+/// `TEXT_INPUT` messages for `text`, cut at character boundaries.
+pub fn text_input(window: u32, text: &str) -> impl Iterator<Item = Message> + '_ {
+    let mut rest = text;
+    core::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let mut n = rest.len().min(TEXT_INPUT_MAX);
+        while !rest.is_char_boundary(n) {
+            n -= 1;
+        }
+        let (chunk, more) = rest.split_at(n);
+        rest = more;
+        Some(build(
+            event::TEXT_INPUT,
+            &[window, chunk.len() as u32],
+            chunk.as_bytes(),
+        ))
+    })
+}
+
+/// The text of a `TEXT_INPUT` (invalid UTF-8 is cut off).
+pub fn text_of(msg: &Message) -> &str {
+    let t = tail(msg, 2);
+    let t = &t[..t.len().min(word(msg, 1) as usize)];
+    match core::str::from_utf8(t) {
+        Ok(s) => s,
+        Err(e) => core::str::from_utf8(&t[..e.valid_up_to()]).unwrap_or(""),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::key::{KeyCode, Modifiers};
+    extern crate std;
+    use std::string::String;
+    use std::vec::Vec;
+
+    #[test]
+    fn ime_messages_round_trip() {
+        assert_eq!(
+            (
+                request::REGISTER_IME,
+                request::IME_RESULT,
+                request::SET_CARET
+            ),
+            (0x10C, 0x10D, 0x10E)
+        );
+        assert_eq!(
+            (event::IME_KEY, event::TEXT_INPUT, event::IME_RESET),
+            (0x189, 0x18A, 0x18B)
+        );
+        assert_eq!(word(&register_ime(), 0), 0);
+        let h = ImeHeader {
+            seq: 7,
+            flags: ime::CONSUMED | ime::CHINESE,
+            cursor: 2,
+            commit_len: 3,
+            preedit_len: 6,
+            candidates_len: 0,
+            page: 1,
+            pages: 3,
+        };
+        let m = ime_result(&h, "你好嗎".as_bytes());
+        assert_eq!(m.tag, request::IME_RESULT);
+        assert_eq!(word(&m, 0), 0);
+        assert_eq!(ime_header_of(&m), h);
+        assert_eq!(h.text_len(), 9);
+        assert_eq!(ime_text_of(&m), "你好嗎".as_bytes());
+        assert_eq!(IME_INLINE_MAX, 80);
+
+        let key = KeyEvent {
+            code: KeyCode::S,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        };
+        assert_eq!(ime_key_of(&ime_key(9, &key)), Some((9, key)));
+        let c = set_caret(4, -1, 20, 16);
+        assert_eq!((word(&c, 0), word(&c, 1), signed(&c, 2)), (0, 4, -1));
+        assert_eq!((signed(&c, 3), word(&c, 4)), (20, 16));
+    }
+
+    #[test]
+    fn text_input_is_cut_at_characters() {
+        let one: Vec<Message> = text_input(3, "你好").collect();
+        assert_eq!(one.len(), 1);
+        assert_eq!(word(&one[0], 0), 3);
+        assert_eq!(text_of(&one[0]), "你好");
+        // 40 three-byte characters: 104 bytes hold 34 of them.
+        let long: String = core::iter::repeat_n('字', 40).collect();
+        let parts: Vec<Message> = text_input(3, &long).collect();
+        assert_eq!(parts.len(), 2);
+        let joined: String = parts.iter().map(text_of).collect();
+        assert_eq!(joined, long);
+        assert_eq!(text_of(&parts[0]).len(), 102);
+        assert_eq!(text_input(3, "").count(), 0);
+    }
 
     #[test]
     fn values_are_fixed() {

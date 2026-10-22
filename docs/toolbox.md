@@ -108,3 +108,10 @@ host `toolbox`：`draw`（矩形運算、填色與裁切、stride 外的像素�
 - P11 起有對話框與 `TextView`；沒有焦點在控制項之間的切換（Tab）、非模態的對話框、對話框的鍵盤捷徑（除了 Enter／Escape）。
 - 剪貼簿只有純文字；`TextField` 沒有選取（貼上要程式自己做）。
 - `Connection` 等回覆時其他事件存在記憶體裡沒有上限。
+
+## P13：輸入法（使用者尚未審核）
+
+- `Event::Text { window, text }`：IME 送出的字（`TEXT_INPUT`），當作打字插入。
+- `TextField::insert_text`、`TextView::insert_text`：插入一串字（唯讀的 TextView 不收）；`TextField::caret(font)`、`TextView::caret()`：游標在視窗座標的位置與高度（中文字算兩格）。
+- `Connection::set_caret(window, x, y, h)`：告訴伺服器文字游標在哪裡，組字區畫在它下面。Kalamos 每次重畫、terminal 在游標移動時送。
+- 細節見 `docs/ime.md`。

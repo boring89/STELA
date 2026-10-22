@@ -203,3 +203,23 @@ fn one_context_at_a_time() {
     // And the slot is free again.
     drop(start(&[]));
 }
+
+#[test]
+fn reset_drops_the_composition() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ime = start(&[]);
+    type_keys(&mut ime, "su3");
+    ime.key(&press(KeyCode::Down));
+    assert!(!ime.composition().candidates.is_empty());
+    ime.reset();
+    assert!(!ime.composing());
+    assert_eq!(
+        ime.composition(),
+        Composition {
+            chinese: true,
+            ..Composition::default()
+        }
+    );
+    ime.set_chinese(false);
+    assert!(!ime.chinese());
+}

@@ -494,6 +494,41 @@ impl Clicks {
     }
 }
 
+/// Where the IME's composition goes (P13 K2, `docs/ime.md`): a box of
+/// `text_w` x `line` just below the caret (screen coordinates) and the
+/// candidate box of `list_w` x `line` (0: none) under it; both stay on the
+/// screen below the menu bar, and go above the caret when there is no
+/// room below.
+pub fn ime_boxes(
+    caret: Rect,
+    text_w: i32,
+    list_w: i32,
+    line: i32,
+    screen: Rect,
+    menubar: i32,
+) -> (Rect, Rect) {
+    let pad = 4;
+    let w_text = text_w + 2 * pad;
+    let w_list = if list_w > 0 { list_w + 2 * pad } else { 0 };
+    let h = line + 2 * pad;
+    let total = if w_list > 0 { 2 * h } else { h };
+    let mut y = caret.bottom() + 2;
+    if y + total > screen.bottom() {
+        y = (caret.y - 2 - total).max(menubar);
+    }
+    let place = |w: i32, y: i32| {
+        let x = caret.x.min(screen.right() - w).max(screen.x);
+        Rect::new(x, y, w, h)
+    };
+    let text = place(w_text, y);
+    let list = if w_list > 0 {
+        place(w_list, y + h)
+    } else {
+        Rect::new(0, 0, 0, 0)
+    };
+    (text, list)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -652,5 +687,27 @@ mod tests {
         assert_eq!(find_shortcut(&menus, 'C'), Some((1, 0)));
         assert_eq!(find_shortcut(&menus, 'O'), None);
         assert_eq!(shortcut("New^N"), ("New", Some('N')));
+    }
+
+    #[test]
+    fn ime_boxes_follow_the_caret_and_stay_on_screen() {
+        let screen = Rect::new(0, 0, 800, 600);
+        let caret = Rect::new(100, 200, 1, 16);
+        let (t, l) = ime_boxes(caret, 50, 120, 16, screen, 24);
+        assert_eq!(t, Rect::new(100, 218, 58, 24));
+        assert_eq!(l, Rect::new(100, 242, 128, 24));
+        // No list.
+        let (_, l) = ime_boxes(caret, 50, 0, 16, screen, 24);
+        assert!(l.is_empty());
+        // At the right edge: moved left.
+        let (t, _) = ime_boxes(Rect::new(780, 200, 1, 16), 50, 0, 16, screen, 24);
+        assert_eq!(t.right(), 800);
+        // At the bottom: above the caret.
+        let (t, l) = ime_boxes(Rect::new(10, 570, 1, 16), 50, 60, 16, screen, 24);
+        assert_eq!(l.bottom(), 570 - 2);
+        assert_eq!(t.bottom(), l.y);
+        // Never over the menu bar.
+        let (t, _) = ime_boxes(Rect::new(10, 30, 1, 560), 50, 60, 16, screen, 24);
+        assert_eq!(t.y, 24);
     }
 }

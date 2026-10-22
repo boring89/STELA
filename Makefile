@@ -90,7 +90,7 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -231,7 +231,7 @@ $(BUILD)/OVMF_VARS.fd:
 run: esp $(BUILD)/OVMF_VARS.fd
 	$(QEMU) $(QEMU_FLAGS) -serial stdio
 
-test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-browser
+test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-disk-image test-net test-tls test-pkg test-setup test-sound test-window test-storage test-shell test-pipe test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-browser
 
 # Images the host tests read (FAT made by mtools, GPT made by sgdisk).
 host-images:
@@ -960,6 +960,38 @@ test-editor: esp test-images $(BUILD)/OVMF_VARS.fd
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-editor.img out /notes.txt $(BUILD)/notes.txt
 	printf 'Hello from Kalamos.\nThe second line\n' | cmp - $(BUILD)/notes.txt
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-editor.img | grep -q "unmounted cleanly"
+
+# The input method (P13 K4, docs/ime.md): in Kalamos, Ctrl-Space switches
+# to Zhuyin; su3 and Down open the candidate list (a screenshot: the box
+# the server reports, parchment with text, over the white page); 1 takes
+# the first (你), cl3 and Enter commit 你好; Alt-S saves, Ctrl-Q quits,
+# Ctrl-Space back to English and shutdown. The file is 你好 on the host.
+test-ime: esp test-images $(BUILD)/OVMF_VARS.fd
+	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-ime.img
+	python3 tools/qemu_test.py --exit-code 0 --timeout 150 --log $(BUILD)/test-ime.log \
+		--type "STELA shell" "run Kalamos.app /ime.txt\n" \
+		--send-keys "kalamos: new Data:/ime.txt" "ctrl-spc" \
+		--send-keys "ime: 注" "s u 3 down" \
+		--screenshot "ime: candidates" $(BUILD)/ime.ppm \
+		--send-keys "ime: candidates" "1 c l 3 ret" \
+		--send-keys "kalamos: modified" "alt-s" \
+		--send-keys "kalamos: saved Data:/ime.txt" "ctrl-q" \
+		--send-keys "Kalamos exited with code 0" "ctrl-spc" \
+		--type "ime: 英" "shutdown\n" \
+		--expect "ime: ready" --expect "windowserver: IME registered" \
+		--expect "kalamos: new Data:/ime.txt" --expect "ime: 注" \
+		--expect "ime: candidates" --expect "IME candidates at" --expect "kalamos: modified" \
+		--expect "kalamos: saved Data:/ime.txt (6 bytes)" --expect "kalamos: closed" \
+		--expect "ime: 英" --expect "power: turning off" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-ime.img \
+		-device ide-hd,drive=sata1,bus=ide.1
+	box=$$(sed -n 's/.*IME candidates at \([0-9,]*\).*/\1/p' $(BUILD)/test-ime.log | head -1); \
+		python3 tools/fb_check.py $(BUILD)/ime.ppm --expect-rect $$box,#F2E8D5 --expect-text $$box,#F2E8D5,1
+	rm -f $(BUILD)/ime.txt
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-ime.img out /ime.txt $(BUILD)/ime.txt
+	printf '你好' | cmp - $(BUILD)/ime.txt
+	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-ime.img | grep -q "unmounted cleanly"
 
 # The browser (P11, docs/apps.md §4): Periplus starts on its home page
 # with the address field ready; the host serves build/www (tools/

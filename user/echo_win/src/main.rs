@@ -120,6 +120,7 @@ fn main() -> i64 {
                 FieldResult::Changed => dirty = true,
                 _ => {}
             },
+            Event::Text { text, .. } => dirty |= field.insert_text(&text) == FieldResult::Changed,
             Event::Mouse { x, y, kind, .. } => match kind {
                 MouseKind::Down => {
                     dirty |= clear.press(x, y);

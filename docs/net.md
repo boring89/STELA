@@ -223,3 +223,7 @@ libstela `net`：`Socket::{udp, tcp, icmp, bind, connect, listen, accept, send, 
 - 任何程式都能開 socket（沒有能力限制）。
 - e1000 輪詢：P11 起沒有 socket（或沒有 link）時每 100 ms 才看一次——DHCP、ARP 照常（慢一點），開了 socket 的程式第一個封包最多晚 100 ms。
 - I219（P520）只依資料手冊與 68k_HAL 的經驗實作，**沒有在實機驗證**（PHY、ULP、Management Engine 都可能讓 link 起不來）。
+
+## P13：USB 網卡與換卡（K10，使用者尚未審核）
+
+網卡不再只在開機時決定：PCI 有線網卡優先；沒有時 USB 乙太網卡（CDC-ECM、CDC-NCM、RNDIS、AX88179，`docs/usb.md` §13）來了就用、走了就沒有網卡。每次換卡是一個新的 `Stack`（generation +1，DHCP 重來），舊的 socket 一律 `NetworkDown`。網路執行緒在沒有網卡時照樣跑（每 100 ms 看一次有沒有新的網卡）。

@@ -101,8 +101,9 @@ mod system {
         WAITER.store(id, Ordering::Release);
     }
 
-    /// Wakes the waiting thread (from the drivers' interrupt handlers).
-    pub(super) fn wake_waiter() {
+    /// Wakes the waiting thread (from the drivers' interrupt handlers, and
+    /// the USB thread for USB adapters, P13 K10).
+    pub fn wake_waiter() {
         crate::sync::wake(WAITER.load(Ordering::Acquire));
     }
 

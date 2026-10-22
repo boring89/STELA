@@ -156,3 +156,20 @@ usb: 7: hub (0409:55aa, full speed)
 - **拔除**：`detach` 把磁碟標成 gone（之後的請求一律 `IoError`），另開執行緒卸載它的卷宗（`docs/vfs.md` §6.2）。
 - 測試：`make test-usb` 的 QEMU 多一個 `usb-storage`（接在 hub 的 port 2，全速；K42 加：QMP `device_del` 拔掉 → `vfs: unmounted STICK (usb1 went away)`、Mouseion `volume STICK went` → `device_add` 插一支複本（第二個映像，`-blockdev`）→ 掛成 `usb2`、shell `echo written by STELA > STICK:/new.txt` 再 `cat` 回來，結束後 host 的 `mtype` 找到那個檔），映像是 `build/images/usb-stick.img`（64 MiB，MBR 一個 FAT32 分割區、卷標 STICK、`HELLO.TXT`；mtools 只寫這個檔）；看到 `vfs: mounted STICK (FAT, 62 MiB) from usb1`，shell `cat STICK:/hello.txt` 印出內容。
 - 限制：只有 Bulk-Only（沒有 UAS）；只看 LUN 0；STALL 不復原（指令失敗就算失敗）；READ CAPACITY (16)（2 TiB 以上）沒有做；寫入時沒有 SYNCHRONIZE CACHE；一次 4 KiB。
+
+## 13. USB 乙太網路（P13 K10，使用者尚未審核）
+
+**比喻**：USB 網卡是一台「把網路封包裝進 USB 信封」的機器，各家信封樣式不同：ECM 不加任何東西（一個傳輸一個 frame）；NCM 把好幾個 frame 裝進一個有目錄的大箱子（NTB16：`NCMH` 標頭、`NCM0` 目錄）；RNDIS 每個 frame 前面一張 44 bytes 的單子，控制命令走 endpoint 0 的「封裝命令」；AX88179 是 ASIX 自己的格式（送：8 bytes 標頭；收：一串 frame 後面接每個 frame 的 4 bytes 標頭與一個說明在哪裡的尾巴）。
+
+| 種類 | 辨認 | MAC | 測試 |
+|---|---|---|---|
+| CDC-ECM | 控制介面 02/06，資料介面 0A 的 alternate setting（有兩個 bulk endpoint 的那個，SET_INTERFACE） | Ethernet 功能描述子的 `iMACAddress` 字串（12 個十六進位字） | QEMU `usb-net`（`make test-net` 的第四張卡） |
+| CDC-NCM | 02/0D，同上 | 同上 | 只有 host 測試（`ncm::wrap`/`unwrap`） |
+| RNDIS | E0/01/03、02/02/FF、EF/04/01 | `INITIALIZE` → `QUERY OID_802_3_PERMANENT_ADDRESS` → `SET OID_GEN_CURRENT_PACKET_FILTER`（SEND/GET_ENCAPSULATED_COMMAND/RESPONSE） | QEMU `usb-net` 的 RNDIS configuration（開機選項 `usbrndis`，`make test-net-rndis`） |
+| AX88179／178A | vendor 0B95、product 1790／178A | 暫存器 `NODE_ID`（0x10）；初始化寫入的數值與順序照 Linux `ax88179_178a.c`（只抄數值） | 只有 host 測試；**沒有在實機驗證** |
+
+- **選 configuration**：網卡可能有好幾個 configuration（QEMU 的 usb-net：第一個 RNDIS、第二個 ECM）。列舉時讀每個 configuration（最多 4 個），挑最好的網路功能（AX88179 > NCM > ECM > RNDIS；`usbrndis` 時挑 RNDIS），`SET_CONFIGURATION` 它。
+- **資料流**（都在 USB 執行緒）：收——一個 bulk IN 的 Normal TRB 一直掛在 16 KiB（AX88179 32 KiB）的接收緩衝上；完成事件（`dispatch` → `net_event`）把傳輸拆成 frame 放進 `UsbNetCard` 的接收佇列、叫醒網路執行緒、再掛一個。送——網路執行緒的 `send` 把 frame 放進傳送佇列並叫醒 USB 執行緒；`serve_net` 每個 frame 包好、一次同步的 bulk OUT。兩個佇列各最多 256 個 frame。
+- **接進網路**（`kernel/src/net.rs`）：開機有 PCI 有線網卡就用它到底；沒有時網路執行緒照樣起來，等 USB 網卡（`NetHooks::attach`）：來了就**換一個新的 stack**（新的 generation，DHCP 重來）；正在用的 USB 網卡拔掉（`detach`）就變回沒有網卡。舊 stack 的 socket 之後的操作都是 `NetworkDown`（socket 記住自己的 generation），等待中的都被叫醒。PCI 卡在用時插進來的 USB 網卡不用（印一行）。
+- `make test-net`：四張卡（e1000、e1000e、virtio-net、**usb-net**＝CDC-ECM）各跑一次 ifconfig、ping、DNS、fetch、`linux/net`；`make test-net-rndis`：RNDIS、ping、fetch，QMP `device_del` 拔掉（`net: usb-rndis went away; no network card`）、`device_add` 換一支不同 MAC 的（DHCP 拿到 10.0.2.16）、再 fetch。
+- 限制：一次一張網卡（新的 USB 網卡取代舊的 USB 網卡要先拔掉舊的）；收送沒有批次（一次一個 bulk OUT）；NCM 的 NTB 大小用預設、沒有 `SET_NTB_INPUT_SIZE`；ECM 的 `SET_ETHERNET_PACKET_FILTER` 失敗就不管；RNDIS 不處理 `INDICATE_STATUS`（連線狀態一律 up）；AX88179 只有 high speed 的佇列設定、沒有讀 PHY 的連線速度、沒有 checksum offload。

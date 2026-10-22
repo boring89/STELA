@@ -17,6 +17,11 @@
 //! The stack lives behind one SpinLock (its operations are short and
 //! never sleep); a waiting call re-checks its condition after every
 //! wake-up.
+//!
+//! P13 K10: the card can change. A wired PCI card found at boot is used
+//! for good; without one, a USB Ethernet adapter is used when it comes
+//! (a new stack, DHCP again) and dropped when it goes. Every stack has a
+//! generation; a socket of an older one gets `NetworkDown`.
 
 use crate::object::{Entry, KernelObject};
 use crate::task::queue::WaitQueue;
@@ -32,6 +37,12 @@ use net::{Kind, NetError, SocketId, Stack};
 struct Net {
     stack: Stack,
     card: Arc<dyn NetDevice>,
+    /// The card is a USB adapter (it may go away).
+    usb: bool,
+    /// Which stack this is (sockets remember theirs).
+    generation: u64,
+    /// The DHCP address was printed.
+    reported: bool,
     waiters: WaitQueue,
     /// Frames and bytes received and sent (P11, `NetInfo`).
     counts: Counts,
@@ -48,18 +59,26 @@ struct Counts {
 static NET: SpinLock<Option<Net>> = SpinLock::new(None);
 /// Sockets whose last handle went away: closed by the net thread (a
 /// handle may drop while NET is held).
-static CLOSING: SpinLock<Vec<SocketId>> = SpinLock::new(Vec::new());
+static CLOSING: SpinLock<Vec<(SocketId, u64)>> = SpinLock::new(Vec::new());
+/// The last stack's generation.
+static GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// A USB adapter that came (P13 K10), for the net thread.
+static USB_CAME: SpinLock<Option<Arc<dyn NetDevice>>> = SpinLock::new(None);
+/// A USB adapter that went.
+static USB_WENT: SpinLock<Option<Arc<dyn NetDevice>>> = SpinLock::new(None);
 /// The net thread, for wake-ups (0 before it runs).
 static THREAD: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// A socket: what a `Socket` handle refers to.
 pub struct Socket {
     id: SocketId,
+    /// The stack it belongs to.
+    generation: u64,
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        CLOSING.lock().push(self.id);
+        CLOSING.lock().push((self.id, self.generation));
         task::wake(THREAD.load(core::sync::atomic::Ordering::Acquire));
     }
 }
@@ -84,25 +103,95 @@ fn flush(net: &mut Net) {
     }
 }
 
+/// A new stack on `card` (DHCP started); the old one's waiters are woken
+/// (their sockets now fail).
+fn install(card: Arc<dyn NetDevice>, usb: bool) {
+    let mac = card.mac();
+    let seed = frame::time::now_ns() ^ frame::time::wall_clock_ns().rotate_left(29);
+    let generation = GENERATION.fetch_add(1, core::sync::atomic::Ordering::AcqRel) + 1;
+    let mut net = Net {
+        stack: Stack::new(mac, seed),
+        card,
+        usb,
+        generation,
+        reported: false,
+        waiters: WaitQueue::new(),
+        counts: Counts::default(),
+    };
+    net.stack.start_dhcp(now_ms());
+    flush(&mut net);
+    let old = NET.lock().replace(net);
+    if let Some(mut old) = old {
+        while let Some(id) = old.waiters.pop() {
+            task::wake(id);
+        }
+    }
+}
+
+/// A USB Ethernet adapter came (from the USB thread, P13 K10).
+pub fn usb_attached(card: Arc<dyn NetDevice>) {
+    *USB_CAME.lock() = Some(card);
+    task::wake(THREAD.load(core::sync::atomic::Ordering::Acquire));
+}
+
+/// A USB Ethernet adapter went away.
+pub fn usb_detached(card: Arc<dyn NetDevice>) {
+    *USB_WENT.lock() = Some(card);
+    task::wake(THREAD.load(core::sync::atomic::Ordering::Acquire));
+}
+
+/// Takes the USB adapter changes: a new adapter is used unless a PCI card
+/// is; the adapter in use going away leaves no card.
+fn card_changes() {
+    if let Some(gone) = USB_WENT.lock().take() {
+        let mut guard = NET.lock();
+        if guard
+            .as_ref()
+            .is_some_and(|n| n.usb && Arc::ptr_eq(&n.card, &gone))
+        {
+            frame::kprintln!("net: {} went away; no network card", gone.name());
+            if let Some(mut old) = guard.take() {
+                while let Some(id) = old.waiters.pop() {
+                    task::wake(id);
+                }
+            }
+        }
+    }
+    let came = USB_CAME.lock().take();
+    if let Some(card) = came {
+        let wired = NET.lock().as_ref().is_some_and(|n| !n.usb);
+        if wired {
+            frame::kprintln!("net: {} not used (the PCI card stays)", card.name());
+        } else {
+            let m = card.mac();
+            frame::kprintln!(
+                "net: {} MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}: DHCP",
+                card.name(),
+                m[0],
+                m[1],
+                m[2],
+                m[3],
+                m[4],
+                m[5]
+            );
+            install(card, true);
+        }
+    }
+}
+
 /// Probes the network card and starts the net thread with DHCP. Call
 /// once at boot, after `block::probe`. The boot option `nonet` leaves the
-/// card alone.
+/// cards alone (PCI and USB).
 pub fn start() {
     if frame::boot_flag("nonet") {
         frame::kprintln!("net: off (boot option nonet)");
         return;
     }
-    let Some(card) = drivers::net::probe() else {
-        return;
-    };
-    let mac = card.mac();
-    let seed = frame::time::now_ns() ^ frame::time::wall_clock_ns().rotate_left(29);
-    *NET.lock() = Some(Net {
-        stack: Stack::new(mac, seed),
-        card,
-        waiters: WaitQueue::new(),
-        counts: Counts::default(),
-    });
+    // A wired PCI card if there is one; otherwise the thread waits for a
+    // USB adapter (P13 K10).
+    if let Some(card) = drivers::net::probe() {
+        install(card, false);
+    }
     if let Err(e) = task::spawn("net", run) {
         frame::kprintln!("net: cannot start the thread: {e:?}");
     }
@@ -112,23 +201,23 @@ fn run() {
     let me = task::current_id();
     THREAD.store(me, core::sync::atomic::Ordering::Release);
     drivers::net::set_waiter(me);
-    let interrupts = {
-        let mut guard = NET.lock();
-        let Some(net) = guard.as_mut() else { return };
-        net.stack.start_dhcp(now_ms());
-        flush(net);
-        net.card.interrupts()
-    };
     let mut buf = vec![0u8; drivers::net::BUFFER_SIZE];
-    let mut reported = false;
     loop {
-        let closing: Vec<SocketId> = core::mem::take(&mut *CLOSING.lock());
-        {
+        card_changes();
+        let closing: Vec<(SocketId, u64)> = core::mem::take(&mut *CLOSING.lock());
+        let interrupts = {
             let mut guard = NET.lock();
-            let Some(net) = guard.as_mut() else { return };
+            let Some(net) = guard.as_mut() else {
+                drop(guard);
+                // No card: wait for a USB adapter.
+                task::block_until(Some(frame::time::now_ns() + 100_000_000));
+                continue;
+            };
             let now = now_ms();
-            for id in closing {
-                net.stack.close(id, now);
+            for (id, generation) in closing {
+                if generation == net.generation {
+                    net.stack.close(id, now);
+                }
             }
             while let Some(n) = net.card.receive(&mut buf) {
                 net.counts.rx_packets += 1;
@@ -137,8 +226,8 @@ fn run() {
             }
             net.stack.poll(now);
             flush(net);
-            if !reported && net.stack.configured() {
-                reported = true;
+            if !net.reported && net.stack.configured() {
+                net.reported = true;
                 let c = net.stack.config();
                 let [a, b, cc, d] = c.ip;
                 let [g0, g1, g2, g3] = c.gateway;
@@ -147,7 +236,8 @@ fn run() {
                     "net: DHCP: {a}.{b}.{cc}.{d}, gateway {g0}.{g1}.{g2}.{g3}, DNS {d0}.{d1}.{d2}.{d3}"
                 );
             }
-        }
+            net.card.interrupts()
+        };
         // With MSI the card wakes us; the timers need 100 ms steps. A
         // polled card (e1000) is looked at every 5 ms only while its link
         // is up and a socket is open (P11), else every 100 ms.
@@ -226,6 +316,16 @@ pub fn dns_server() -> Option<[u8; 4]> {
     (dns != [0; 4]).then_some(dns)
 }
 
+/// The stack's id of socket `s`; `NetworkDown` if `s` belongs to an
+/// earlier stack (the card changed, P13 K10).
+fn sid(net: &Net, s: &Socket) -> Result<SocketId, Error> {
+    if s.generation == net.generation {
+        Ok(s.id)
+    } else {
+        Err(Error::NetworkDown)
+    }
+}
+
 /// The `abi::wait` events of socket `s` (`CLOSED` without a card).
 pub fn events(s: &Socket) -> u32 {
     use abi::wait;
@@ -233,7 +333,10 @@ pub fn events(s: &Socket) -> u32 {
     let Some(net) = guard.as_mut() else {
         return wait::CLOSED;
     };
-    let r = net.stack.readiness(s.id);
+    let Ok(id) = sid(net, s) else {
+        return wait::CLOSED;
+    };
+    let r = net.stack.readiness(id);
     let mut e = 0;
     if r.readable {
         e |= wait::READABLE;
@@ -274,13 +377,16 @@ fn deadline(timeout: u64) -> Option<u64> {
 
 /// A new socket of `kind`.
 pub fn create(kind: Kind) -> Result<Arc<Socket>, Error> {
-    let id = with(|net| net.stack.socket(kind).map_err(net_error))?;
-    Ok(Arc::new(Socket { id }))
+    let (id, generation) = with(|net| {
+        let id = net.stack.socket(kind).map_err(net_error)?;
+        Ok((id, net.generation))
+    })?;
+    Ok(Arc::new(Socket { id, generation }))
 }
 
 /// Binds local port `port` (0: any); returns the port.
 pub fn bind(s: &Socket, port: u16) -> Result<u16, Error> {
-    with(|net| net.stack.bind(s.id, port).map_err(net_error))
+    with(|net| net.stack.bind(sid(net, s)?, port).map_err(net_error))
 }
 
 /// TCP: connects, waiting up to `timeout` ns (`u64::MAX`: forever);
@@ -288,22 +394,28 @@ pub fn bind(s: &Socket, port: u16) -> Result<u16, Error> {
 pub fn connect(s: &Socket, ip: [u8; 4], port: u16, timeout: u64) -> Result<(), Error> {
     with(|net| {
         net.stack
-            .connect(s.id, ip, port, now_ms())
+            .connect(sid(net, s)?, ip, port, now_ms())
             .map_err(net_error)
     })?;
-    let udp = with(|net| Ok(net.stack.connected(s.id) == Err(NetError::InvalidState)))?;
+    let udp = with(|net| Ok(net.stack.connected(sid(net, s)?) == Err(NetError::InvalidState)))?;
     if udp {
         return Ok(());
     }
-    let r = wait(deadline(timeout), |net| match net.stack.connected(s.id) {
-        Ok(true) => Some(Ok(())),
-        Ok(false) => None,
-        Err(e) => Some(Err(net_error(e))),
+    let r = wait(deadline(timeout), |net| {
+        let id = match sid(net, s) {
+            Ok(id) => id,
+            Err(e) => return Some(Err(e)),
+        };
+        match net.stack.connected(id) {
+            Ok(true) => Some(Ok(())),
+            Ok(false) => None,
+            Err(e) => Some(Err(net_error(e))),
+        }
     });
     if r == Err(Error::TimedOut) {
         // Give up the half-open connection.
         let _ = with(|net| {
-            net.stack.close(s.id, now_ms());
+            net.stack.close(sid(net, s)?, now_ms());
             Ok(())
         });
     }
@@ -312,28 +424,40 @@ pub fn connect(s: &Socket, ip: [u8; 4], port: u16, timeout: u64) -> Result<(), E
 
 /// TCP: listens on the bound port.
 pub fn listen(s: &Socket, backlog: usize) -> Result<(), Error> {
-    with(|net| net.stack.listen(s.id, backlog).map_err(net_error))
+    with(|net| net.stack.listen(sid(net, s)?, backlog).map_err(net_error))
 }
 
 /// TCP: the next connection, waiting up to `timeout` ns.
 pub fn accept(s: &Socket, timeout: u64) -> Result<Arc<Socket>, Error> {
-    let id = wait(deadline(timeout), |net| match net.stack.accept(s.id) {
-        Ok(Some(id)) => Some(Ok(id)),
-        Ok(None) => None,
-        Err(e) => Some(Err(net_error(e))),
+    let (id, generation) = wait(deadline(timeout), |net| {
+        let listener = match sid(net, s) {
+            Ok(id) => id,
+            Err(e) => return Some(Err(e)),
+        };
+        match net.stack.accept(listener) {
+            Ok(Some(id)) => Some(Ok((id, net.generation))),
+            Ok(None) => None,
+            Err(e) => Some(Err(net_error(e))),
+        }
     })?;
-    Ok(Arc::new(Socket { id }))
+    Ok(Arc::new(Socket { id, generation }))
 }
 
 /// Sends `data` (TCP: waits for room and returns how much was queued;
 /// UDP: one datagram to `to` or the connected peer; ICMP: an echo request
 /// with `to`'s port as the sequence number).
 pub fn send(s: &Socket, data: &[u8], to: Option<([u8; 4], u16)>) -> Result<usize, Error> {
-    wait(None, |net| match net.stack.send(s.id, data, to, now_ms()) {
-        // TCP with a full buffer: wait for room.
-        Ok(0) if !data.is_empty() => None,
-        Ok(n) => Some(Ok(n)),
-        Err(e) => Some(Err(net_error(e))),
+    wait(None, |net| {
+        let id = match sid(net, s) {
+            Ok(id) => id,
+            Err(e) => return Some(Err(e)),
+        };
+        match net.stack.send(id, data, to, now_ms()) {
+            // TCP with a full buffer: wait for room.
+            Ok(0) if !data.is_empty() => None,
+            Ok(n) => Some(Ok(n)),
+            Err(e) => Some(Err(net_error(e))),
+        }
     })
 }
 
@@ -342,7 +466,11 @@ pub fn send(s: &Socket, data: &[u8], to: Option<([u8; 4], u16)>) -> Result<usize
 pub fn recv(s: &Socket, max: usize, timeout: u64) -> Result<(Vec<u8>, [u8; 4], u16), Error> {
     let mut data = vec![0u8; max];
     let (n, ip, port) = wait(deadline(timeout), |net| {
-        match net.stack.recv(s.id, &mut data) {
+        let id = match sid(net, s) {
+            Ok(id) => id,
+            Err(e) => return Some(Err(e)),
+        };
+        match net.stack.recv(id, &mut data) {
             Ok(Some(r)) => Some(Ok(r)),
             Ok(None) => None,
             Err(e) => Some(Err(net_error(e))),
@@ -354,20 +482,27 @@ pub fn recv(s: &Socket, max: usize, timeout: u64) -> Result<(Vec<u8>, [u8; 4], u
 
 /// TCP: no more sending (FIN), reading goes on.
 pub fn shutdown(s: &Socket) -> Result<(), Error> {
-    with(|net| net.stack.shutdown(s.id, now_ms()).map_err(net_error))
+    with(|net| {
+        net.stack
+            .shutdown(sid(net, s)?, now_ms())
+            .map_err(net_error)
+    })
 }
 
 /// Our address and the socket's local port.
 pub fn local_addr(s: &Socket) -> Result<([u8; 4], u16), Error> {
     with(|net| {
-        let port = net.stack.local_port(s.id).map_err(net_error)?;
+        let port = net.stack.local_port(sid(net, s)?).map_err(net_error)?;
         Ok((net.stack.config().ip, port))
     })
 }
 
 /// The connected peer.
 pub fn peer_addr(s: &Socket) -> Result<([u8; 4], u16), Error> {
-    with(|net| net.stack.peer(s.id).ok_or(Error::InvalidArgument))
+    with(|net| {
+        let id = sid(net, s)?;
+        net.stack.peer(id).ok_or(Error::InvalidArgument)
+    })
 }
 
 /// The socket behind `handle`.

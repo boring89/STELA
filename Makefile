@@ -92,7 +92,7 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
 .PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
-	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
+	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-net-rndis test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-ime test-alpine test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
 
@@ -480,7 +480,7 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 # linux/net (BSD sockets) must work; DNS (ifconfig resolve) only when the
 # host itself resolves names (tools/with_http.py sets HOST_DNS).
 NET_PORT    := 8642
-NET_CARDS   := e1000 e1000e virtio-net-pci
+NET_CARDS   := e1000 e1000e virtio-net-pci usb-net
 NET_DNS_TYPE   = $(if $(HOST_DNS),--type "ping exited" "ifconfig resolve example.com\n",)
 NET_DNS_EXPECT = $(if $(HOST_DNS),--expect "example.com has address",)
 NET_FETCH_AFTER = $(if $(HOST_DNS),ifconfig exited,ping exited)
@@ -489,7 +489,7 @@ NET_LINUX_EXPECT = $(if $(HOST_DNS),--expect "net: resolved example.com to",)
 test-net: esp $(BUILD)/OVMF_VARS.fd
 	mkdir -p $(BUILD)/www
 	printf 'hello from the host over TCP\n' > $(BUILD)/www/hello.txt
-	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- $(MAKE) --no-print-directory test-net-cards
+	python3 tools/with_http.py $(BUILD)/www $(NET_PORT) -- $(MAKE) --no-print-directory test-net-cards test-net-rndis
 
 # TLS (P12, docs/tls.md §5): HTTPS servers on the host (Python's ssl,
 # TLS 1.3 only) with certificates from a test root made here; fetch gets
@@ -646,9 +646,33 @@ test-net-cards:
 			--expect "  received " \
 			--expect "bytes from 10.0.2.2: seq=1" $(NET_DNS_EXPECT) --expect "hello from the host over TCP" \
 			--expect "net: connected from 10.0.2.15" $(NET_LINUX_EXPECT) --expect "net: OK" \
-			-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio -nic none \
+			-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio -nic none -device qemu-xhci \
 			-netdev user,id=n0 -device $$card,netdev=n0 || exit 1; \
 	done
+
+# P13 K10: QEMU's usb-net also offers RNDIS (its first configuration);
+# the boot option usbrndis makes STELA take it instead of CDC-ECM. Then
+# hot plugging: QMP removes the adapter (no network card), adds another
+# (a new stack, DHCP again, fetch works).
+ESP_RNDIS := $(BUILD)/esp-rndis
+test-net-rndis:
+	rm -rf $(ESP_RNDIS)
+	cp -r $(ESP) $(ESP_RNDIS)
+	printf 'usbrndis\n' > $(ESP_RNDIS)/STELA/boot.cfg
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-net-rndis.log \
+		--type "STELA shell" "ifconfig\n" \
+		--type "inet 10.0.2.15" "ping 10.0.2.2 2\n" \
+		--type "ping exited" "fetch http://10.0.2.2:$(NET_PORT)/hello.txt\n" \
+		--qmp "fetch exited" device_del '{"id": "un"}' \
+		--qmp "no network card" device_add '{"driver": "usb-net", "id": "un", "netdev": "n0", "mac": "40:54:00:12:34:58"}' \
+		--type "net: DHCP: 10.0.2.16" "fetch http://10.0.2.2:$(NET_PORT)/hello.txt\n" \
+		--expect "network usb-rndis: MAC 40:54:00:12:34:57" --expect "net: DHCP: 10.0.2.15" \
+		--expect "bytes from 10.0.2.2: seq=1" --expect "hello from the host over TCP" \
+		--expect "net: usb-rndis went away; no network card" \
+		--expect "network usb-rndis: MAC 40:54:00:12:34:58" --expect "net: DHCP: 10.0.2.16" \
+		--expect "hello from the host over TCP" \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_RNDIS) -display none -serial stdio \
+		-nic none -device qemu-xhci -netdev user,id=n0 -device usb-net,id=un,netdev=n0,mac=40:54:00:12:34:57
 
 # Sound (docs/sound.md): QEMU's Intel HDA with a codec that records to a
 # WAV file; the shell plays `tone` (440 Hz, 1 s), then shuts down so that

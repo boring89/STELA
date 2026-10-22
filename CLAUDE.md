@@ -124,7 +124,7 @@ classic/       Classic 環境（Classic.app，STELA 原生程式；docs/classic.
   src/              ffi.rs（唯一的 unsafe）、keys.rs（ADB 鍵碼）、screen.rs（改變的列、Mac 時鐘）、main.rs（Classic.app）、tests.rs（tests/m68k 在 host 跑）
 linux/tests/   Linux 人格的測試程式（C，musl 靜態連結）（docs/linux.md）
 linux/rust/    P12：Rust std 的 Linux 測試程式（hello-std，自己的 workspace，x86_64-unknown-linux-musl）
-drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）：PCI、AHCI、NVMe、USB（usb/：描述子、HID、TRB、Bulk-Only 大量儲存（storage.rs，P11）純邏輯 host 測試；xhci.rs）、網卡（net/：e1000.rs（e1000、e1000e/I219）、virtio.rs）、HDA 音效（hda.rs：codec 路徑純邏輯 host 測試）、sync（排程 hooks、SleepLock、SleepMutex）（docs/pci.md、docs/storage.md、docs/usb.md、docs/net.md、docs/sound.md）
+drivers/       裝置驅動（safe Rust，透過 frame 的 API 碰硬體）：PCI、AHCI、NVMe、USB（usb/：描述子、HID、TRB、Bulk-Only 大量儲存（storage.rs，P11）、USB 乙太（net.rs：ECM／NCM／RNDIS／AX88179，P13）純邏輯 host 測試；xhci.rs）、網卡（net/：e1000.rs（e1000、e1000e/I219）、virtio.rs）、HDA 音效（hda.rs：codec 路徑純邏輯 host 測試）、sync（排程 hooks、SleepLock、SleepMutex）（docs/pci.md、docs/storage.md、docs/usb.md、docs/net.md、docs/sound.md）
 third_party/   第三方資料（spleen/：Spleen 字型，BSD-2-Clause；fusion-pixel/：Fusion Pixel 12px 轉成的字形檔，SIL OFL 1.1（P11）；mozilla-ca/：curl.se 的 cacert.pem，MPL-2.0（P12）；README.md：清單、SHA-256、TLS 與簽章用的 crate）
 docs/          設計文件（每個元件完成後寫 docs/<元件>.md）
 assets/        圖示（PPM／PBM，**草稿**）與產生的 Rust 資料（generated/）（docs/identity.md）
@@ -233,7 +233,7 @@ Claude 依照上方工作規則直接實作。
 - 實機：kernel 會把看到的任何 GPT 磁碟上的 eHFS 分割區掛成可寫，包括 P520 上 68k_HAL 磁碟（sda）的 Data 分割區（格式相容，不會損壞，但 Mouseion 會寫入 Finder 資訊）；實機測試時留意或先拔掉（docs/p520.md §1）。
 - 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；有 `INIT` 能力的程式（預設所有人）都能請 init 關機；關機前不通知程式（docs/acpi.md §9）。
 - Linux 人格（P12 起有執行緒、fork、execve、wait、訊號、pty、/proc；P13 起有動態連結與 PIE，`docs/linux.md` §16）：沒有 ASLR，可執行的映射只限 lib 資料夾與程式自己資料夾的檔案；fork 是 copy-on-write（P13，參考計數 `frame::mm::cow`）、一個行程的執行緒都在同一顆 CPU；epoll 是 level-triggered 的 poll、timerfd 沒有 kernel 計時器、`MAP_SHARED` 只在 msync／munmap／execve／exit 寫回（被殺掉的行程最後的修改會丟）且不同範圍不共用（docs/linux.md §16.7–16.9）；沒有 inotify、signalfd、停止／繼續（job control 的 stop）；`sigaltstack` 只記錄；mode／owner／時間不能改；Linux 程式看得到 `[3]`、`[4]` 的整個卷宗（不只那個資料夾以下）；`PROT_NONE` 可讀；被訊號或例外結束的 exit code 是 128 + 訊號（docs/linux.md §15）。
-- 網路：一次一張網卡；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 的等待者被任何事件全部叫醒；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
+- 網路：一次一張網卡（P13：PCI 有線優先，否則 USB 網卡，USB 可熱插拔，`docs/usb.md` §13）；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 的等待者被任何事件全部叫醒；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
 - 音效：只有輸出、48 kHz 16 位元雙聲道、一次一個程式、沒有混音與音量、輪詢 LPIB；實機 codec 未驗證（docs/sound.md §7）。
 - IPC：訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；共享記憶體是 eager；WaitSet 的行程成員以 id 記，要自己移除（`docs/ipc.md` §12、§13）。
 - 能力（P11）：`NETWORK` 與 `INIT` 預設往下傳給所有程式（沙箱還沒有拿掉它們的地方）；`FilePath` 讓持有資料夾 handle 的程式知道上面各層的名字（docs/userland.md §2.3、docs/vfs.md §4.4）。

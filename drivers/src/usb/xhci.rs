@@ -178,6 +178,87 @@ enum Role {
         disk: Arc<super::storage::UsbDisk>,
         name: String,
     },
+    /// A USB Ethernet adapter (P13 K10, `net`).
+    Net {
+        kind: super::net::Kind,
+        out_dci: u8,
+        in_dci: u8,
+        out_ring: Ring,
+        in_ring: Ring,
+        /// Where bulk IN transfers land.
+        rx: DmaBuffer,
+        /// What bulk OUT sends.
+        tx: DmaBuffer,
+        /// NCM's NTB sequence number.
+        seq: u16,
+        card: Arc<UsbNetCard>,
+    },
+}
+
+/// A USB Ethernet adapter as the kernel's network thread sees it (P13
+/// K10): frames pass through two queues; the USB thread moves them.
+pub struct UsbNetCard {
+    kind: super::net::Kind,
+    mac: [u8; 6],
+    rx: SpinLock<alloc::collections::VecDeque<Vec<u8>>>,
+    tx: SpinLock<alloc::collections::VecDeque<Vec<u8>>>,
+    gone: core::sync::atomic::AtomicBool,
+}
+
+/// Frames waiting in either direction, at most.
+const NET_QUEUE: usize = 256;
+
+impl crate::net::NetDevice for UsbNetCard {
+    fn name(&self) -> &'static str {
+        self.kind.name()
+    }
+    fn mac(&self) -> [u8; 6] {
+        self.mac
+    }
+    fn link_up(&self) -> bool {
+        !self.gone.load(Ordering::Relaxed)
+    }
+    fn send(&self, frame: &[u8]) -> Result<(), crate::net::NetError> {
+        if frame.is_empty() || frame.len() > 1518 {
+            return Err(crate::net::NetError::BadLength);
+        }
+        {
+            let mut tx = self.tx.lock();
+            if tx.len() >= NET_QUEUE || self.gone.load(Ordering::Relaxed) {
+                return Err(crate::net::NetError::Busy);
+            }
+            tx.push_back(frame.to_vec());
+        }
+        kick();
+        Ok(())
+    }
+    fn receive(&self, buf: &mut [u8]) -> Option<usize> {
+        let f = self.rx.lock().pop_front()?;
+        let n = f.len().min(buf.len());
+        buf[..n].copy_from_slice(&f[..n]);
+        Some(n)
+    }
+    fn interrupts(&self) -> bool {
+        // The USB thread wakes the network thread for every transfer.
+        true
+    }
+}
+
+/// What the kernel does when a USB network adapter comes and goes (P13
+/// K10).
+#[derive(Clone, Copy)]
+pub struct NetHooks {
+    /// An adapter is ready.
+    pub attach: fn(Arc<dyn crate::net::NetDevice>),
+    /// That adapter went away.
+    pub detach: fn(Arc<dyn crate::net::NetDevice>),
+}
+
+static NET_HOOKS: SpinLock<Option<NetHooks>> = SpinLock::new(None);
+
+/// Sets what happens when a USB network adapter comes and goes.
+pub fn set_net_hooks(hooks: NetHooks) {
+    *NET_HOOKS.lock() = Some(hooks);
 }
 
 /// What the kernel does when a disk comes and goes (P11 K41).
@@ -341,7 +422,7 @@ impl Controller {
                     self.changed_ports |= 1 << port;
                 }
             }
-            kind::TRANSFER_EVENT => self.hid_event(e),
+            kind::TRANSFER_EVENT if !self.net_event(e) => self.hid_event(e),
             _ => {}
         }
     }
@@ -476,6 +557,7 @@ impl Controller {
                     Role::Hid { mouse: false, .. } => "keyboard",
                     Role::Hub { .. } => "hub",
                     Role::Storage { .. } => "storage",
+                    Role::Net { .. } => "net",
                     Role::Other => "other",
                 },
             })
@@ -582,21 +664,30 @@ impl Controller {
         if let Some(d) = self.devices.get_mut(&slot) {
             d.ids = (device.vendor, device.product);
         }
-        let mut c9 = [0u8; 9];
-        self.control(
-            slot,
-            Setup::get_descriptor(descriptor::CONFIGURATION, 0, 9),
-            &mut c9,
-        )?;
-        let total = configuration_length(&c9)
-            .ok_or(UsbError::BadDescriptor)?
-            .min(1024);
-        let mut all = vec![0u8; usize::from(total)];
-        self.control(
-            slot,
-            Setup::get_descriptor(descriptor::CONFIGURATION, 0, total),
-            &mut all,
-        )?;
+        // P13 K10: a network adapter may offer several configurations
+        // (QEMU's usb-net: RNDIS, then CDC-ECM); the best network one is
+        // used, otherwise the first.
+        // The boot option usbrndis prefers RNDIS (to test it on QEMU).
+        let rndis = frame::boot_flag("usbrndis");
+        let mut all = self.read_configuration(slot, 0)?;
+        let mut net = super::net::find_function(&all, device.vendor, device.product);
+        for index in 1..device.configurations.min(4) {
+            let Ok(other) = self.read_configuration(slot, index) else {
+                continue;
+            };
+            if let Some(f) = super::net::find_function(&other, device.vendor, device.product)
+                && net.is_none_or(|n| {
+                    if rndis {
+                        f.kind == super::net::Kind::Rndis
+                    } else {
+                        f.better_than(&n)
+                    }
+                })
+            {
+                net = Some(f);
+                all = other;
+            }
+        }
         let config = parse_configuration(&all).ok_or(UsbError::BadDescriptor)?;
         self.control(slot, Setup::set_configuration(config.value), &mut [])?;
         let path = self
@@ -616,6 +707,13 @@ impl Controller {
                 speed.name()
             );
             self.publish();
+        } else if let Some(f) = net {
+            let what = self.setup_net(slot, f)?;
+            frame::kprintln!(
+                "usb: {path}: network {what} ({ids}, {} speed)",
+                speed.name()
+            );
+            self.publish();
         } else {
             frame::kprintln!(
                 "usb: {path}: device {ids} (class {}) not used",
@@ -623,6 +721,359 @@ impl Controller {
             );
         }
         Ok(())
+    }
+
+    /// Configuration descriptor set `index` of `slot` (at most 1 KiB).
+    fn read_configuration(&mut self, slot: u8, index: u8) -> Result<Vec<u8>, UsbError> {
+        let mut c9 = [0u8; 9];
+        self.control(
+            slot,
+            Setup::get_descriptor(descriptor::CONFIGURATION, index, 9),
+            &mut c9,
+        )?;
+        let total = configuration_length(&c9)
+            .ok_or(UsbError::BadDescriptor)?
+            .min(1024);
+        let mut all = vec![0u8; usize::from(total)];
+        self.control(
+            slot,
+            Setup::get_descriptor(descriptor::CONFIGURATION, index, total),
+            &mut all,
+        )?;
+        Ok(all)
+    }
+
+    /// Configures `slot`'s bulk endpoints `ep_out` and `ep_in` with their
+    /// rings (xHCI 1.2 6.2.3: CErr 3, type 2 bulk OUT / 6 bulk IN).
+    fn configure_bulk(
+        &mut self,
+        slot: u8,
+        ep_out: super::Endpoint,
+        ep_in: super::Endpoint,
+        out_ring: &Ring,
+        in_ring: &Ring,
+    ) -> Result<(), UsbError> {
+        let (out_dci, in_dci) = (ep_out.dci(), ep_in.dci());
+        let c = self.ctx;
+        let input_phys = {
+            let dev = self.devices.get(&slot).ok_or(UsbError::BadDescriptor)?;
+            let input = &dev.input;
+            input.zero();
+            Self::write_ctx(input, c, 0, 1, 1 | 1 << out_dci | 1 << in_dci);
+            Self::write_ctx(
+                input,
+                c,
+                1,
+                0,
+                dev.route | (dev.speed as u32) << 20 | u32::from(out_dci.max(in_dci)) << 27,
+            );
+            Self::write_ctx(input, c, 1, 1, u32::from(dev.root_port) << 16);
+            for (ep, ring, ty) in [(ep_out, out_ring, 2u32), (ep_in, in_ring, 6u32)] {
+                let at = usize::from(ep.dci()) + 1;
+                let mp = u32::from(ep.max_packet);
+                Self::write_ctx(input, c, at, 0, 0);
+                Self::write_ctx(input, c, at, 1, 3 << 1 | ty << 3 | mp << 16);
+                Self::write_ctx(input, c, at, 2, ring.phys() as u32 | 1);
+                Self::write_ctx(input, c, at, 3, (ring.phys() >> 32) as u32);
+                Self::write_ctx(input, c, at, 4, 3072);
+            }
+            input.phys()
+        };
+        self.command(Trb::command(kind::CONFIGURE_ENDPOINT, slot, input_phys))?;
+        Ok(())
+    }
+
+    /// Sets up a USB Ethernet adapter (P13 K10): the data interface's
+    /// alternate setting, both bulk endpoints, the MAC address (ECM/NCM
+    /// string, RNDIS query, AX88179 register) and the receive filter;
+    /// queues the first receive and tells the kernel.
+    fn setup_net(&mut self, slot: u8, f: super::net::Function) -> Result<String, UsbError> {
+        use super::net::{Kind, ax88179, mac_from_string, rndis};
+        if f.alt != 0 {
+            // SET_INTERFACE (USB 2.0 9.4.10).
+            let set = Setup {
+                request_type: 0x01,
+                request: 11,
+                value: u16::from(f.alt),
+                index: u16::from(f.data),
+                length: 0,
+            };
+            self.control(slot, set, &mut [])?;
+        }
+        let out_ring = Ring::new()?;
+        let in_ring = Ring::new()?;
+        self.configure_bulk(slot, f.bulk_out, f.bulk_in, &out_ring, &in_ring)?;
+        let mac = match f.kind {
+            Kind::Ecm | Kind::Ncm => {
+                let mut d = [0u8; 64];
+                let n = self.control(
+                    slot,
+                    Setup::get_descriptor(3, f.mac_string, 64).with_index(0x0409),
+                    &mut d,
+                )?;
+                // SET_ETHERNET_PACKET_FILTER: directed, broadcast,
+                // multicast (CDC ECM 1.2 6.2.4); not every device has it.
+                let filter = Setup {
+                    request_type: 0x21,
+                    request: 0x43,
+                    value: 0x1C,
+                    index: u16::from(f.control),
+                    length: 0,
+                };
+                let _ = self.control(slot, filter, &mut []);
+                mac_from_string(&d[..n]).ok_or(UsbError::BadDescriptor)?
+            }
+            Kind::Rndis => {
+                self.rndis_request(
+                    slot,
+                    f.control,
+                    &rndis::initialize(1),
+                    rndis::INITIALIZE_CMPLT,
+                    1,
+                )?;
+                let a = self.rndis_request(
+                    slot,
+                    f.control,
+                    &rndis::query(2, rndis::OID_PERMANENT_ADDRESS),
+                    rndis::QUERY_CMPLT,
+                    2,
+                )?;
+                self.rndis_request(
+                    slot,
+                    f.control,
+                    &rndis::set(3, rndis::OID_PACKET_FILTER, rndis::FILTER),
+                    rndis::SET_CMPLT,
+                    3,
+                )?;
+                a.get(..6)
+                    .and_then(|m| <[u8; 6]>::try_from(m).ok())
+                    .ok_or(UsbError::BadDescriptor)?
+            }
+            Kind::Ax88179 => {
+                for (reg, bytes) in ax88179::init_writes() {
+                    let mut data = bytes.clone();
+                    let w = Setup {
+                        request_type: 0x40,
+                        request: ax88179::ACCESS_MAC,
+                        value: reg,
+                        index: data.len() as u16,
+                        length: data.len() as u16,
+                    };
+                    self.control(slot, w, &mut data)?;
+                    spin(10_000_000);
+                }
+                let mut m = [0u8; 6];
+                let r = Setup {
+                    request_type: 0xC0,
+                    request: ax88179::ACCESS_MAC,
+                    value: ax88179::NODE_ID,
+                    index: 6,
+                    length: 6,
+                };
+                self.control(slot, r, &mut m)?;
+                m
+            }
+        };
+        let pages = if f.kind == Kind::Ax88179 { 8 } else { 4 };
+        let rx = DmaBuffer::new(pages).ok_or(UsbError::NoMemory)?;
+        let tx = DmaBuffer::new(1).ok_or(UsbError::NoMemory)?;
+        let card = Arc::new(UsbNetCard {
+            kind: f.kind,
+            mac,
+            rx: SpinLock::new(alloc::collections::VecDeque::new()),
+            tx: SpinLock::new(alloc::collections::VecDeque::new()),
+            gone: core::sync::atomic::AtomicBool::new(false),
+        });
+        if let Some(dev) = self.devices.get_mut(&slot) {
+            dev.role = Role::Net {
+                kind: f.kind,
+                out_dci: f.bulk_out.dci(),
+                in_dci: f.bulk_in.dci(),
+                out_ring,
+                in_ring,
+                rx,
+                tx,
+                seq: 0,
+                card: Arc::clone(&card),
+            };
+        }
+        self.queue_receive(slot);
+        if let Some(h) = *NET_HOOKS.lock() {
+            (h.attach)(card);
+        }
+        Ok(format!(
+            "{}: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            f.kind.name(),
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5]
+        ))
+    }
+
+    /// One RNDIS control message on interface `iface` and its completion
+    /// (SEND_ENCAPSULATED_COMMAND, then GET_ENCAPSULATED_RESPONSE until an
+    /// answer comes: CDC 1.2 6.2.1-6.2.2); the information buffer.
+    fn rndis_request(
+        &mut self,
+        slot: u8,
+        iface: u8,
+        msg: &[u8],
+        kind_done: u32,
+        id: u32,
+    ) -> Result<Vec<u8>, UsbError> {
+        let mut out = msg.to_vec();
+        let send = Setup {
+            request_type: 0x21,
+            request: 0,
+            value: 0,
+            index: u16::from(iface),
+            length: out.len() as u16,
+        };
+        self.control(slot, send, &mut out)?;
+        for _ in 0..50 {
+            let mut reply = vec![0u8; 1024];
+            let get = Setup {
+                request_type: 0xA1,
+                request: 1,
+                value: 0,
+                index: u16::from(iface),
+                length: 1024,
+            };
+            if let Ok(n) = self.control(slot, get, &mut reply)
+                && n > 0
+            {
+                reply.truncate(n);
+                if let Some(info) = super::net::rndis::completion(&reply, kind_done, id) {
+                    return Ok(info.to_vec());
+                }
+            }
+            spin(10_000_000);
+        }
+        Err(UsbError::Timeout)
+    }
+
+    /// Queues a bulk IN transfer into a network adapter's receive buffer.
+    fn queue_receive(&mut self, slot: u8) {
+        let Some(dev) = self.devices.get_mut(&slot) else {
+            return;
+        };
+        let Role::Net {
+            in_dci,
+            in_ring,
+            rx,
+            ..
+        } = &mut dev.role
+        else {
+            return;
+        };
+        let dci = *in_dci;
+        in_ring.push(Trb::normal(rx.phys(), rx.len() as u32));
+        self.ring_doorbell(slot, dci);
+    }
+
+    /// A transfer event that may be a received network transfer.
+    fn net_event(&mut self, e: Trb) -> bool {
+        let slot = e.slot();
+        let Some(dev) = self.devices.get_mut(&slot) else {
+            return false;
+        };
+        let Role::Net {
+            kind,
+            in_dci,
+            rx,
+            card,
+            ..
+        } = &mut dev.role
+        else {
+            return false;
+        };
+        if e.endpoint() != *in_dci {
+            return false;
+        }
+        match e.completion() {
+            completion::SUCCESS | completion::SHORT_PACKET => {
+                let n = rx.len().saturating_sub(e.residual() as usize);
+                let mut bytes = vec![0u8; n];
+                let _ = rx.read(0, &mut bytes);
+                let frames: Vec<&[u8]> = match kind {
+                    super::net::Kind::Ecm => alloc::vec![&bytes[..]],
+                    super::net::Kind::Ncm => super::net::ncm::unwrap(&bytes),
+                    super::net::Kind::Rndis => super::net::rndis::unwrap(&bytes),
+                    super::net::Kind::Ax88179 => super::net::ax88179::unwrap(&bytes),
+                };
+                {
+                    let mut q = card.rx.lock();
+                    for f in frames {
+                        if !f.is_empty() && q.len() < NET_QUEUE {
+                            q.push_back(f.to_vec());
+                        }
+                    }
+                }
+                crate::net::wake_waiter();
+                self.queue_receive(slot);
+            }
+            c => frame::kprintln!("usb: slot {slot}: receive failed (completion {c})"),
+        }
+        true
+    }
+
+    /// Sends the frames the network adapters have waiting.
+    fn serve_net(&mut self) {
+        let slots: Vec<u8> = self
+            .devices
+            .iter()
+            .filter(
+                |(_, d)| matches!(&d.role, Role::Net { card, .. } if !card.tx.lock().is_empty()),
+            )
+            .map(|(&s, _)| s)
+            .collect();
+        for slot in slots {
+            loop {
+                let (block, out_dci, phys) = {
+                    let Some(dev) = self.devices.get_mut(&slot) else {
+                        break;
+                    };
+                    let Role::Net {
+                        kind,
+                        out_dci,
+                        tx,
+                        seq,
+                        card,
+                        ..
+                    } = &mut dev.role
+                    else {
+                        break;
+                    };
+                    let Some(frame) = card.tx.lock().pop_front() else {
+                        break;
+                    };
+                    let block = match kind {
+                        super::net::Kind::Ecm => frame,
+                        super::net::Kind::Ncm => {
+                            *seq = seq.wrapping_add(1);
+                            super::net::ncm::wrap(&frame, *seq)
+                        }
+                        super::net::Kind::Rndis => super::net::rndis::wrap(&frame),
+                        super::net::Kind::Ax88179 => super::net::ax88179::wrap(&frame),
+                    };
+                    let _ = tx.write(0, &block);
+                    (block, *out_dci, tx.phys())
+                };
+                if self.bulk(slot, out_dci, phys, block.len() as u32).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Whether a network adapter has frames to send.
+    fn net_waiting(&self) -> bool {
+        self.devices
+            .values()
+            .any(|d| matches!(&d.role, Role::Net { card, .. } if !card.tx.lock().is_empty()))
     }
 
     /// Sets up a HID boot keyboard or mouse; `None` if there is none.
@@ -826,14 +1277,20 @@ impl Controller {
     fn bulk(&mut self, slot: u8, dci: u8, phys: u64, len: u32) -> Result<u32, UsbError> {
         let at = {
             let dev = self.devices.get_mut(&slot).ok_or(UsbError::BadDescriptor)?;
-            let Role::Storage {
-                out_dci,
-                out_ring,
-                in_ring,
-                ..
-            } = &mut dev.role
-            else {
-                return Err(UsbError::BadDescriptor);
+            let (out_dci, out_ring, in_ring) = match &mut dev.role {
+                Role::Storage {
+                    out_dci,
+                    out_ring,
+                    in_ring,
+                    ..
+                }
+                | Role::Net {
+                    out_dci,
+                    out_ring,
+                    in_ring,
+                    ..
+                } => (out_dci, out_ring, in_ring),
+                _ => return Err(UsbError::BadDescriptor),
             };
             let ring = if dci == *out_dci { out_ring } else { in_ring };
             ring.push(Trb::normal(phys, len))
@@ -1235,6 +1692,14 @@ impl Controller {
                 (h.detach)(&name);
             }
         }
+        // P13 K10: a network adapter went away.
+        if let Some(Role::Net { card, .. }) = self.devices.get(&slot).map(|d| &d.role) {
+            card.gone.store(true, Ordering::Release);
+            let card = Arc::clone(card);
+            if let Some(h) = *NET_HOOKS.lock() {
+                (h.detach)(card);
+            }
+        }
         if let Some((hub, port)) = self.devices.get(&slot).and_then(|d| d.parent)
             && let Some(Role::Hub { children, .. }) =
                 self.devices.get_mut(&hub).map(|d| &mut d.role)
@@ -1430,10 +1895,15 @@ pub fn run(mut c: Controller) -> ! {
     loop {
         c.service(&mut last_hub_poll);
         c.serve_storage();
+        c.serve_net();
         wait_for(
             50_000_000,
             |me| WAITER.store(me, Ordering::Release),
-            || c.peek_event().is_some() || !super::storage::JOBS.lock().is_empty(),
+            || {
+                c.peek_event().is_some()
+                    || !super::storage::JOBS.lock().is_empty()
+                    || c.net_waiting()
+            },
         );
     }
 }

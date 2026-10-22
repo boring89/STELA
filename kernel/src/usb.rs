@@ -29,6 +29,11 @@ pub fn start() {
             }
         },
     });
+    // USB network adapters (P13 K10): the network thread takes them.
+    drivers::usb::xhci::set_net_hooks(drivers::usb::xhci::NetHooks {
+        attach: crate::net::usb_attached,
+        detach: crate::net::usb_detached,
+    });
     if let Err(e) = task::spawn("usb", move || drivers::usb::xhci::run(controller)) {
         frame::kprintln!("usb: cannot start the thread: {e:?}");
     }

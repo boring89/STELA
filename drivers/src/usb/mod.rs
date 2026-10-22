@@ -9,6 +9,7 @@
 //! chapter 10 "Keyboard/Keypad Page").
 
 pub mod hid;
+pub mod net;
 pub mod storage;
 pub mod trb;
 #[cfg(target_os = "none")]
@@ -100,6 +101,11 @@ impl Setup {
             index: 0,
             length,
         }
+    }
+
+    /// The same request with `wIndex` set (a language id, an interface).
+    pub const fn with_index(self, index: u16) -> Setup {
+        Setup { index, ..self }
     }
 
     /// SET_CONFIGURATION.

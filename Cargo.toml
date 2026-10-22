@@ -41,6 +41,7 @@ members = [
     "user/stress",
     "user/pkgcore",
     "user/pkg",
+    "user/ime",
     "user/setup",
     "classic",
     "tools/ehfs",

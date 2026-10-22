@@ -29,6 +29,19 @@ jobs:
           test -f build-cache/musl-1.2.5.tar.gz || curl -fsSL -o build-cache/musl-1.2.5.tar.gz https://musl.libc.org/releases/musl-1.2.5.tar.gz
           echo "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4  build-cache/musl-1.2.5.tar.gz" | sha256sum -c -
           echo "MUSL_TARBALL=$PWD/build-cache/musl-1.2.5.tar.gz" >> "$GITHUB_ENV"
+      - name: libchewing tarball
+        # The IME's engine (LGPL-2.1-or-later, docs/ime.md): fetched once
+        # and cached; the Makefile checks its SHA-256.
+        uses: actions/cache@v4
+        with:
+          path: build-cache/libchewing-0.5.1.tar.bz2
+          key: libchewing-9708c63415fa6034435c0f38100e7d30d0e1bac927f67bec6dfeb3fef016172b
+      - name: Fetch libchewing
+        run: |
+          mkdir -p build-cache
+          test -f build-cache/libchewing-0.5.1.tar.bz2 || curl -fsSL -o build-cache/libchewing-0.5.1.tar.bz2 https://github.com/chewing/libchewing/releases/download/v0.5.1/libchewing-0.5.1.tar.bz2
+          echo "9708c63415fa6034435c0f38100e7d30d0e1bac927f67bec6dfeb3fef016172b  build-cache/libchewing-0.5.1.tar.bz2" | sha256sum -c -
+          echo "CHEWING_TARBALL=$PWD/build-cache/libchewing-0.5.1.tar.bz2" >> "$GITHUB_ENV"
       - name: Install Rust toolchain
         # Any cargo call makes rustup install the toolchain, targets and
         # components pinned by rust-toolchain.toml (`rustup show` stopped

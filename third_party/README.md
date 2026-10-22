@@ -4,6 +4,7 @@
 |---|---|---|---|
 | Spleen font 8x16, 16x32 (Frederic Cambus) | `spleen/` | BSD-2-Clause (`spleen/LICENSE`) | the console and UI text |
 | Fusion Pixel 12px Mono zh_TW 2026.10.16 (TakWolf; glyphs from Ark Pixel, Cubic 11, Galmuri) | `fusion-pixel/` (converted glyphs) | SIL Open Font License 1.1 (`fusion-pixel/OFL.txt`, `fusion-pixel/LICENSES/`) | characters beyond ASCII in the toolbox (P11) |
+| libchewing 0.5.1 (P13) | **not in the repository**; unpacked in `build/chewing/` by `make chewing` | LGPL-2.1-or-later | the Zhuyin input method (`user/ime`, `docs/ime.md`) |
 | musl 1.2.5 | **not in the repository**; built in `build/musl/` by `make musl` | MIT | only to build the Linux test programs (`linux/tests/`) |
 
 ## musl
@@ -19,6 +20,27 @@
   `make install`; the programs are compiled with `build/musl/install/bin/musl-gcc -static
   -no-pie`. No musl source or binary is committed; the test programs in the initrd contain
   statically linked musl code (MIT).
+
+## libchewing (P13 K1)
+
+- Tarball: the official GitHub release `chewing/libchewing` v0.5.1,
+  `libchewing-0.5.1.tar.bz2`, SHA-256
+  `9708c63415fa6034435c0f38100e7d30d0e1bac927f67bec6dfeb3fef016172b` (downloaded
+  2026-10-22, allowed in P13_PLAN.md; the Makefile checks it, `CHEWING_SHA256`). 0.5.1 is
+  the last release written in C; later ones are Rust with crates of their own.
+- Locally the tarball is copied from `~/stela-ports/sources/` (`CHEWING_TARBALL=`), or else
+  `make chewing` downloads it to `build/downloads/`; CI fetches it once and caches it.
+- `make chewing` unpacks it into `build/chewing/src` and builds libchewing's host tool
+  `init_database` (with `user/ime/c/config.h`), which turns `data/phone.cin` and
+  `data/tsi.src` into `dictionary.dat` and `index_tree.dat` in `build/chewing/data`;
+  `pinyin.tab`, `swkb.dat` and `symbols.dat` are copied as they are. The five files go
+  into the initrd as `chewing/` (about 3.7 MB).
+- `user/ime/build.rs` compiles the library (the hash user-phrase back end, no sqlite3)
+  freestanding against STELA's stand-in C library (`user/ime/c/`), unchanged.
+- License: LGPL-2.1-or-later (`COPYING` in the tarball). The IME links it statically into a
+  GPL-3.0-or-later program, which the LGPL allows (GPL-3.0 is a later version the LGPL lets
+  the library be used under); the library's source is the published tarball above and
+  the build steps are the Makefile's.
 
 ## Fusion Pixel (P11 K39)
 

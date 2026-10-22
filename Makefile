@@ -10,7 +10,7 @@ BOOT_EFI    := $(BUILD)/target/$(UEFI_TARGET)/release/stela-boot.efi
 KERNEL_ELF  := $(BUILD)/target/$(KERNEL_TARGET)/release/kernel
 # User programs packed into the initrd (user/<name>, built for the same
 # bare-metal target as the kernel, linked with user/user.ld).
-USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup
+USER_PROGRAMS := hello spin fault ipc_server ipc_client keyecho fstest proctest init shell windowserver terminal echo_win mouseion viewer classic ifconfig ping fetch tone hwinfo bench kalamos monitor periplus stress setup ime
 USER_DIR    := $(BUILD)/user
 # The command-line tools (P11, docs/apps.md): one package, user/bin, with
 # a program each in src/bin/; they go to Initrd:/bin/, on the shell's path.
@@ -36,6 +36,20 @@ MUSL_TARBALL ?= $(HOME)/文件/68k_HAL/third_party/downloads/musl/musl-$(MUSL_VE
 MUSL_DOWNLOAD := $(BUILD)/downloads/musl-$(MUSL_VERSION).tar.gz
 MUSL_DIR    := $(BUILD)/musl
 MUSL_GCC    := $(MUSL_DIR)/install/bin/musl-gcc
+# libchewing (LGPL-2.1-or-later, P13 K1, docs/ime.md): the input method's
+# engine, never part of the repository. The release tarball is copied
+# from ~/stela-ports/sources/ (CHEWING_TARBALL=...) or else downloaded
+# from GitHub, checked against its SHA-256 and unpacked in build/chewing/src;
+# the host tool init_database turns its phone.cin and tsi.src into the
+# dictionary in build/chewing/data (Initrd:/chewing/). user/ime/build.rs
+# compiles the library itself.
+CHEWING_VERSION := 0.5.1
+CHEWING_SHA256 := 9708c63415fa6034435c0f38100e7d30d0e1bac927f67bec6dfeb3fef016172b
+CHEWING_URL := https://github.com/chewing/libchewing/releases/download/v$(CHEWING_VERSION)/libchewing-$(CHEWING_VERSION).tar.bz2
+CHEWING_TARBALL ?= $(HOME)/stela-ports/sources/libchewing-$(CHEWING_VERSION).tar.bz2
+CHEWING_DOWNLOAD := $(BUILD)/downloads/libchewing-$(CHEWING_VERSION).tar.bz2
+CHEWING_DIR := $(BUILD)/chewing
+CHEWING_DATA := $(CHEWING_DIR)/data/index_tree.dat
 # Linux test programs (linux/tests/<name>.c), static, packed into the
 # initrd's linux/ folder.
 LINUX_TESTS := hello files memory time tty nosys net poll pipe threads signals procs misc
@@ -66,7 +80,7 @@ QEMU_MIN_FLAGS := $(QEMU_TEST_FLAGS) -cpu Conroe,-nx -m 128M
 # Crates that run on the host and have unit tests.
 HOST_CRATES := abi block bootinfo drivers ehfs ehfs-tools elfload frame libstela net toolbox pkgcore
 # Crates with a bare-metal binary whose library part has host unit tests.
-HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic bin periplus
+HOST_LIB_CRATES := kernel windowserver terminal mouseion viewer classic bin periplus ime
 # Crates built for the bare-metal kernel target.
 KERNEL_CRATES := abi block bootinfo drivers ehfs frame kernel net
 # User-space crates (same target).
@@ -75,7 +89,7 @@ USER_CRATES := libstela toolbox pkgcore bin $(BIN_PROGRAMS) $(USER_PACKAGES)
 # dependency, P12), so the workspace's is named with its version.
 USER_PACKAGES := $(patsubst spin,spin@0.1.0,$(USER_PROGRAMS))
 
-.PHONY: all boot kernel user initrd musl linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
+.PHONY: all boot kernel user initrd musl chewing linux-tests assets draft-assets esp esp-test run bench test test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode test-window \
 	disk-image linux-rust test-ports test-tls test-pkg test-setup test-disk-image classic test-classic test-net test-net-cards test-sound host-images test-images test-storage test-shell test-shutdown test-linux test-usb test-panic test-mouseion test-editor test-pipe test-browser test-stress ehfs-tools test-ehfs-compat clippy fmt clean
 
 all: esp
@@ -86,7 +100,7 @@ boot:
 kernel:
 	cargo build --release -p kernel --target $(KERNEL_TARGET)
 
-user:
+user: $(CHEWING_DATA)
 	cargo build --release $(addprefix -p ,$(USER_PACKAGES)) -p bin $(addprefix -p ,$(BIN_PROGRAMS)) --target $(KERNEL_TARGET)
 	mkdir -p $(USER_DIR)/bin
 	cp $(addprefix $(BUILD)/target/$(KERNEL_TARGET)/release/,$(USER_PROGRAMS)) $(USER_DIR)/
@@ -107,6 +121,8 @@ initrd: user linux-tests
 	mkdir -p $(INITRD_ROOT)/certs
 	python3 tools/cacert_to_der.py third_party/mozilla-ca/cacert.pem $(INITRD_ROOT)/certs/cacert.der
 	cp tools/pkg.pub $(INITRD_ROOT)/certs/pkg.pub
+	mkdir -p $(INITRD_ROOT)/chewing
+	cp $(CHEWING_DIR)/data/* $(INITRD_ROOT)/chewing/
 	for b in $(BUNDLES); do p=$${b%%:*}; n=$${b#*:}; mkdir -p $(INITRD_ROOT)/$$n.app; \
 		cp $(USER_DIR)/$$p $(INITRD_ROOT)/$$n.app/exec; \
 		printf '%s\n%s\n' "$$n" "$$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" > $(INITRD_ROOT)/$$n.app/info.txt; done
@@ -122,6 +138,24 @@ assets:
 draft-assets:
 	python3 tools/make_draft_assets.py assets
 	python3 tools/img_to_rs.py assets assets/generated
+
+chewing: $(CHEWING_DATA)
+
+$(CHEWING_DOWNLOAD):
+	mkdir -p $(dir $@)
+	if [ -f $(CHEWING_TARBALL) ]; then cp $(CHEWING_TARBALL) $@; \
+	else curl -fsSL -o $@ $(CHEWING_URL); fi
+
+$(CHEWING_DATA): $(CHEWING_DOWNLOAD) user/ime/c/config.h
+	echo "$(CHEWING_SHA256)  $(CHEWING_DOWNLOAD)" | sha256sum -c -
+	rm -rf $(CHEWING_DIR)
+	mkdir -p $(CHEWING_DIR)/src $(CHEWING_DIR)/data
+	tar -xjf $(CHEWING_DOWNLOAD) -C $(CHEWING_DIR)/src --strip-components=1
+	cd $(CHEWING_DIR)/src && gcc -O2 -w -DHAVE_CONFIG_H -I$(abspath user/ime/c) -Iinclude -Iinclude/internal \
+		-Isrc -Isrc/porting_layer/include -o ../init_database \
+		src/tools/init_database.c src/common/chewing-utf8-util.c src/common/key2pho.c
+	cd $(CHEWING_DIR)/data && env LC_ALL=C ../init_database ../src/data/phone.cin ../src/data/tsi.src > ../init_database.log
+	cp $(addprefix $(CHEWING_DIR)/src/data/,pinyin.tab swkb.dat symbols.dat) $(CHEWING_DIR)/data/
 
 musl: $(MUSL_GCC)
 
@@ -203,7 +237,7 @@ test: test-host test-fuzz test-qemu test-qemu-smp test-qemu-min test-textmode te
 host-images:
 	python3 tools/make_test_images.py host $(BUILD)/images
 
-test-host: initrd host-images
+test-host: initrd host-images $(CHEWING_DATA)
 	python3 tools/img_to_rs.py assets $(BUILD)/assets-check > /dev/null
 	diff -r $(BUILD)/assets-check assets/generated
 	cargo test $(addprefix -p ,$(HOST_CRATES))
@@ -673,7 +707,8 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--type "> cd t" "pwd\n" \
 		--type "Data:/t" "cat nothing\n" \
 		--type "cat: " "run hello\n" \
-		--type "hello exited with code" "ps\n" \
+		--type "hello exited with code" "ime type su3cl3\n" \
+		--type "ime exited with code" "ps\n" \
 		--type "ended)" "mem\n" \
 		--type "memory: " "uptime\n" \
 		--type "uptime: " "{up}{up}\n" \
@@ -694,6 +729,7 @@ test-shell: esp test-images $(BUILD)/OVMF_VARS.fd
 		--expect "welcome.txt" --expect "item(s)" --expect "> mkdir t" --expect "> cd t" \
 		--expect "Data:/t" --expect "cat: Data:/t/nothing: not found" \
 		--expect "hello from user mode" --expect "hello exited with code 0" \
+		--expect "ime: 你好" --expect "ime exited with code 0" \
 		--expect "shell" --expect "ended)" --expect "memory: " --expect "uptime: " \
 		--expect "memory: " --expect "Initrd     initrd" \
 		--expect "中文.txt" \
@@ -1003,7 +1039,7 @@ test-ports: musl esp test-images ehfs-tools
 	STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py all all
 	STELA_ROOT=$(CURDIR) python3 $(PORTS_DIR)/tools/portbuild.py index
 
-clippy:
+clippy: $(CHEWING_DATA)
 	cargo clippy --release -p stela-boot --target $(UEFI_TARGET) -- -D warnings
 	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) -- -D warnings
 	cargo clippy --release $(addprefix -p ,$(KERNEL_CRATES)) --target $(KERNEL_TARGET) --features kernel/selftest -- -D warnings

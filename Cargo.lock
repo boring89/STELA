@@ -547,6 +547,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ime"
+version = "0.1.0"
+dependencies = [
+ "abi",
+ "libstela",
+ "toolbox",
+]
+
+[[package]]
 name = "init"
 version = "0.1.0"
 dependencies = [

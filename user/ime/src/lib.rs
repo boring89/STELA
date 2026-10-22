@@ -61,6 +61,137 @@ pub struct Composition {
     pub chinese: bool,
 }
 
+/// A keyboard layout (P14 K1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// 大千 (the standard Zhuyin keyboard).
+    Dachen,
+    /// 倚天.
+    Eten,
+    /// 漢語拼音 (Hanyu Pinyin).
+    Pinyin,
+}
+
+impl Layout {
+    /// All of them, in the settings' order.
+    pub const ALL: [Layout; 3] = [Layout::Dachen, Layout::Eten, Layout::Pinyin];
+
+    /// The name in the settings file.
+    pub fn code(self) -> &'static str {
+        match self {
+            Layout::Dachen => "dachen",
+            Layout::Eten => "eten",
+            Layout::Pinyin => "pinyin",
+        }
+    }
+
+    /// The name shown.
+    pub fn label(self) -> &'static str {
+        match self {
+            Layout::Dachen => "大千",
+            Layout::Eten => "倚天",
+            Layout::Pinyin => "漢語拼音",
+        }
+    }
+
+    /// libchewing's number (`KB_DEFAULT`, `KB_ET`, `KB_HANYU_PINYIN`).
+    fn kb_type(self) -> u8 {
+        match self {
+            Layout::Dachen => 0,
+            Layout::Eten => 4,
+            Layout::Pinyin => 9,
+        }
+    }
+}
+
+/// The IME's settings (`Data:/.stela/ime/settings`, P14 K1): one
+/// `key=value` per line, `layout=dachen|eten|pinyin`, `candidates=N`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Settings {
+    /// The keyboard layout.
+    pub layout: Layout,
+    /// Candidates on a page of the list.
+    pub candidates: u8,
+}
+
+/// The fewest and most candidates on a page (libchewing allows 1 to 10;
+/// the keys 1-9 and 0 pick them).
+pub const CANDIDATES: core::ops::RangeInclusive<u8> = 4..=10;
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            layout: Layout::Dachen,
+            candidates: 9,
+        }
+    }
+}
+
+impl Settings {
+    /// The settings in `text`; lines not understood are skipped.
+    pub fn parse(text: &str) -> Settings {
+        let mut s = Settings::default();
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                continue;
+            };
+            match (key.trim(), value.trim()) {
+                ("layout", v) => {
+                    if let Some(l) = Layout::ALL.iter().find(|l| l.code() == v) {
+                        s.layout = *l;
+                    }
+                }
+                ("candidates", v) => {
+                    if let Ok(n) = v.parse::<u8>()
+                        && CANDIDATES.contains(&n)
+                    {
+                        s.candidates = n;
+                    }
+                }
+                _ => {}
+            }
+        }
+        s
+    }
+
+    /// The file's text.
+    pub fn text(&self) -> String {
+        alloc::format!(
+            "layout={}\ncandidates={}\n",
+            self.layout.code(),
+            self.candidates
+        )
+    }
+
+    /// The next (`forward`) or previous layout.
+    pub fn step_layout(&mut self, forward: bool) {
+        let n = Layout::ALL.len();
+        let at = Layout::ALL
+            .iter()
+            .position(|l| *l == self.layout)
+            .unwrap_or(0);
+        let at = if forward {
+            (at + 1) % n
+        } else {
+            (at + n - 1) % n
+        };
+        self.layout = Layout::ALL[at];
+    }
+
+    /// One more (`up`) or one fewer candidate per page, within
+    /// [`CANDIDATES`].
+    pub fn step_candidates(&mut self, up: bool) {
+        let n = if up {
+            self.candidates.saturating_add(1)
+        } else {
+            self.candidates.saturating_sub(1)
+        };
+        if CANDIDATES.contains(&n) {
+            self.candidates = n;
+        }
+    }
+}
+
 /// The input method.
 pub struct Ime {
     chewing: Chewing,
@@ -130,6 +261,14 @@ impl Ime {
         Ok(Ime {
             chewing: Chewing::new(files, user)?,
         })
+    }
+
+    /// Applies the layout and the candidates per page; what is being
+    /// composed is dropped.
+    pub fn apply(&mut self, settings: &Settings) {
+        self.reset();
+        self.chewing
+            .set_layout(settings.layout.kb_type(), settings.candidates);
     }
 
     /// Whether something is being composed.

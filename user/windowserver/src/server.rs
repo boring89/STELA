@@ -56,6 +56,9 @@ const IME_PORT_KEY: u64 = 1 << 33;
 /// How long a key waits for the IME before it goes to the window anyway
 /// (and the IME is dropped).
 const IME_TIMEOUT_NS: u64 = 1_000_000_000;
+/// An IME that ends this soon after it was started again stays ended
+/// (P14 K1).
+const IME_RESTART_NS: u64 = 10_000_000_000;
 /// The IME program the server starts (`docs/ime.md`).
 const IME_PROGRAM: &str = "ime";
 /// The label at the left of the menu bar.
@@ -167,6 +170,8 @@ struct Server {
     ime_port: Handle,
     /// The input method, once it registered.
     ime: Option<Ime>,
+    /// When the IME was last started again after it ended (P14 K1).
+    ime_restarted: Option<u64>,
     /// Where each window's text cursor is (`SET_CARET`: content x, y, h).
     carets: BTreeMap<u32, (i32, i32, i32)>,
     /// The sound output's master volume and mute (P13 K19), if there is
@@ -309,6 +314,7 @@ impl Server {
         let client = self.clients.remove(at);
         if self.ime.as_ref().is_some_and(|i| i.client == id) {
             self.drop_ime();
+            self.restart_ime();
         }
         let _ = self.set.remove(client.port);
         let _ = self.set.remove(client.reply);
@@ -1046,6 +1052,31 @@ impl Server {
         }
     }
 
+    /// The IME program ended (P14 K1): it is started again, once; if the
+    /// new one ends within [`IME_RESTART_NS`] too, keys stay going
+    /// straight to the windows.
+    fn restart_ime(&mut self) {
+        let now = libstela::now_ns();
+        if self
+            .ime_restarted
+            .is_some_and(|t| now.saturating_sub(t) < IME_RESTART_NS)
+        {
+            println!("windowserver: the IME ended again; keys go straight to the windows");
+            return;
+        }
+        println!("windowserver: the IME ended; starting it again");
+        self.ime_restarted = Some(now);
+        start_ime(self.ime_port);
+    }
+
+    /// Where the IME's mark (注 or 英) is in the menu bar.
+    fn ime_mark_rect(&self) -> Rect {
+        let f = self.font;
+        let x = self.width - f.text_width(&self.clock) - 2 * f.width;
+        let w = f.text_width("注");
+        Rect::new(x - w - 2 * f.width, 0, w, self.m.menubar)
+    }
+
     /// The focus moved: the IME drops what it composes.
     fn reset_ime(&mut self) {
         let Some(ime) = &mut self.ime else {
@@ -1092,7 +1123,12 @@ impl Server {
             boxes: (Rect::new(0, 0, 0, 0), Rect::new(0, 0, 0, 0)),
         });
         self.mark_menubar();
-        println!("windowserver: IME registered");
+        let r = self.ime_mark_rect();
+        println!(
+            "windowserver: IME registered (mark at {},{})",
+            r.x + r.w / 2,
+            r.y + r.h / 2
+        );
         Ok(())
     }
 
@@ -1416,6 +1452,14 @@ impl Server {
 
     fn press(&mut self, x: i32, y: i32, buttons: u8) {
         if self.volume_press(x, y) {
+            return;
+        }
+        // P14 K1: the IME's mark opens its settings.
+        if let Some(client) = self.ime.as_ref().map(|i| i.client)
+            && self.ime_mark_rect().contains(x, y)
+        {
+            println!("windowserver: IME settings");
+            self.send(client, &proto::ime_settings());
             return;
         }
         let part = self.stack.hit(x, y, &self.m);
@@ -2544,6 +2588,7 @@ pub fn main() -> i64 {
         zoomed: BTreeMap::new(),
         ime_port: Handle::NONE,
         ime: None,
+        ime_restarted: None,
         carets: BTreeMap::new(),
         volume: libstela::audio::master().map(|(v, m, _)| (v, m)),
         speaker: Rect::new(0, 0, 0, 0),

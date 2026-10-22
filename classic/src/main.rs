@@ -257,7 +257,14 @@ fn start(config: &Config) -> Option<Mac> {
         }
         Err(_) => {}
     }
-    let clock = mac_seconds(process::wall_clock_ns().unwrap_or(0));
+    // P14 K1: the Mac keeps local time (a Mac has no zones), unless
+    // classic.cfg says clock=utc.
+    let now = if config.local_clock {
+        libstela::time::local_ns().map_or(0, |ns| ns.max(0) as u64)
+    } else {
+        process::wall_clock_ns().unwrap_or(0)
+    };
+    let clock = mac_seconds(now);
     let fs = if config.fs {
         data_volume().map(|fs| (fs, "Data"))
     } else {

@@ -15,6 +15,8 @@
 //!  fs=off              the Data volume is not given to the Mac
 //!  disk2=Apps.img      a second disk from Data:/Classic/ (",ro": read
 //!                      only)
+//!  clock=utc           the Mac's clock in UTC (default local: the zone
+//!                      of Data:/.stela/timezone, P14 K1)
 //! ```
 
 use alloc::format;
@@ -37,6 +39,8 @@ pub struct Config {
     /// A second disk: its file name in `Data:/Classic/` and whether it is
     /// read only.
     pub disk2: Option<(String, bool)>,
+    /// Whether the Mac's clock shows the local time (else UTC).
+    pub local_clock: bool,
 }
 
 impl Default for Config {
@@ -48,6 +52,7 @@ impl Default for Config {
             scale: None,
             fs: true,
             disk2: None,
+            local_clock: true,
         }
     }
 }
@@ -142,6 +147,13 @@ impl Config {
                     Some((String::from(name.trim()), ro))
                 };
             }
+            "clock" => {
+                self.local_clock = match value {
+                    "local" => true,
+                    "utc" => false,
+                    _ => return Err(bad()),
+                };
+            }
             _ => return Err(format!("unknown setting \"{key}\"")),
         }
         Ok(())
@@ -182,7 +194,7 @@ mod tests {
 
     #[test]
     fn every_setting() {
-        let text = "# my Mac\nram = 64\nresolution=1024x768  # big\ndepth=32\nscale=1\nfs=off\n\ndisk2=Apps.img,ro\n";
+        let text = "# my Mac\nram = 64\nresolution=1024x768  # big\ndepth=32\nscale=1\nfs=off\n\ndisk2=Apps.img,ro\nclock=utc\n";
         let (c, p) = Config::parse(text);
         assert!(p.is_empty(), "{p:?}");
         assert_eq!(c.ram_mib, 64);
@@ -192,15 +204,17 @@ mod tests {
         assert_eq!(c.scale_for((4000, 3000), (640, 480)), 1);
         assert!(!c.fs);
         assert_eq!(c.disk2, Some((String::from("Apps.img"), true)));
+        assert!(!c.local_clock);
+        assert!(Config::default().local_clock);
     }
 
     #[test]
     fn problems_are_reported_and_skipped() {
         let (c, p) = Config::parse(
-            "ram=4\nram=2048\ndepth=3\nscale=3\nfs=maybe\nfoo=1\njunk\ndisk2=a/b\nresolution=800y600",
+            "ram=4\nram=2048\ndepth=3\nscale=3\nfs=maybe\nfoo=1\njunk\ndisk2=a/b\nresolution=800y600\nclock=mars",
         );
         assert_eq!(c, Config::default());
-        assert_eq!(p.len(), 9);
+        assert_eq!(p.len(), 10);
         assert!(p[0].starts_with("line 1"));
         assert!(p[5].contains("unknown setting"));
     }

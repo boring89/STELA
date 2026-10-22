@@ -1216,6 +1216,10 @@ test-editor: esp test-images $(BUILD)/OVMF_VARS.fd
 # the server reports, parchment with text, over the white page); 1 takes
 # the first (你), cl3 and Enter commit 你好; Alt-S saves, Ctrl-Q quits,
 # Ctrl-Space back to English and shutdown. The file is 你好 on the host.
+# P14 K1: the IME's mark in the menu bar (2560x1600 at scale 2; the
+# server prints it: "IME registered (mark at X,Y)").
+IME_MARK ?= 2400 20
+ESP_IME := $(BUILD)/esp-ime
 test-ime: esp test-images $(BUILD)/OVMF_VARS.fd
 	cp $(IMAGES)/ahci.img $(IMAGES)/ahci-ime.img
 	python3 tools/qemu_test.py --exit-code 0 --timeout 150 --log $(BUILD)/test-ime.log \
@@ -1227,12 +1231,15 @@ test-ime: esp test-images $(BUILD)/OVMF_VARS.fd
 		--send-keys "kalamos: modified" "alt-s" \
 		--send-keys "kalamos: saved Data:/ime.txt" "ctrl-q" \
 		--send-keys "Kalamos exited with code 0" "ctrl-spc" \
-		--type "ime: 英" "shutdown\n" \
+		--click "ime: 英" $(IME_MARK) 1 \
+		--send-keys "ime: settings open" "right right down left left ret" \
+		--type "ime: settings pinyin, 7 candidates" "shutdown\n" \
 		--expect "ime: ready" --expect "windowserver: IME registered" \
 		--expect "kalamos: new Data:/ime.txt" --expect "ime: 注" \
 		--expect "ime: candidates" --expect "IME candidates at" --expect "kalamos: modified" \
 		--expect "kalamos: saved Data:/ime.txt (6 bytes)" --expect "kalamos: closed" \
-		--expect "ime: 英" --expect "power: turning off" \
+		--expect "ime: 英" --expect "windowserver: IME settings" --expect "ime: settings open" \
+		--expect "ime: settings pinyin, 7 candidates" --expect "power: turning off" \
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-ime.img \
 		-device ide-hd,drive=sata1,bus=ide.1
@@ -1241,6 +1248,24 @@ test-ime: esp test-images $(BUILD)/OVMF_VARS.fd
 	rm -f $(BUILD)/ime.txt
 	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-ime.img out /ime.txt $(BUILD)/ime.txt
 	printf '你好' | cmp - $(BUILD)/ime.txt
+	$(EHFS_TOOLS)/ehfs-cp --offset 83968 $(IMAGES)/ahci-ime.img out /.stela/ime/settings $(BUILD)/ime-settings
+	printf 'layout=pinyin\ncandidates=7\n' | cmp - $(BUILD)/ime-settings
+	# P14 K1: an IME that ends is started again, once (boot option
+	# imecrash: it ends at once, so the second one ends within 10 s too);
+	# the new one reads the settings.
+	rm -rf $(ESP_IME)
+	cp -r $(ESP) $(ESP_IME)
+	printf 'imecrash\n' > $(ESP_IME)/STELA/boot.cfg
+	python3 tools/qemu_test.py --timeout 120 --log $(BUILD)/test-ime-crash.log \
+		--type "STELA shell" "echo imecrash-ok\n" \
+		--expect "ime: ready (libchewing 0.5.1, pinyin, 7 candidates)" --expect "ime: imecrash: ending" \
+		--expect "windowserver: the IME ended; starting it again" \
+		--expect "ime: imecrash: ending" \
+		--expect "windowserver: the IME ended again; keys go straight to the windows" \
+		--expect "imecrash-ok" \
+		-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_IME) -display none -serial stdio \
+		-drive if=none,id=sata1,format=raw,file=$(IMAGES)/ahci-ime.img \
+		-device ide-hd,drive=sata1,bus=ide.1
 	$(EHFS_TOOLS)/fsck.ehfs --offset 83968 $(IMAGES)/ahci-ime.img | grep -q "unmounted cleanly"
 
 # The browser (P11, docs/apps.md §4): Periplus starts on its home page

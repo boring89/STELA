@@ -74,6 +74,7 @@ libchewing 用路徑讀字典（`/sys/dictionary.dat`，用 `open` + `mmap`）�
 | `IME_KEY` 0x189 | 伺服器 → IME | seq、`KeyEvent` |
 | `TEXT_INPUT` 0x18A | 伺服器 → client | window、長度、UTF-8（每則最多 104 bytes，切在字元邊界；更長的分幾則） |
 | `IME_RESET` 0x18B | 伺服器 → IME | 焦點換了：丟掉組字，回一個 seq 0 的 `IME_RESULT` |
+| `IME_SETTINGS` 0x18E（P14 K1） | 伺服器 → IME | 選單列的「注／英」被點了：開設定視窗（已經開著就叫到前面） |
 
 ### 4.1 誰可以當 IME
 
@@ -111,6 +112,27 @@ IME 看得到每一個按鍵（包括密碼），所以不能讓任何程式登�
 
 libchewing 的設定：每頁 9 個候選、組字區最多 16 字、空白鍵選字（`spaceAsSelection`）、Esc 清掉全部、選字後游標右移、選字從游標往後找（`phraseChoiceRearward`）。Shift + 字母輸入英文字母（libchewing 內建）。
 
+### 4.4 設定與自動重啟（P14 K1，自動排程一次做完，**使用者尚未審核**）
+
+**設定**：點選單列的「注／英」→ 伺服器送 `IME_SETTINGS` → IME 自己開一個視窗（它本來就是視窗伺服器的 client；送給 IME 自己的視窗的鍵不經過 IME）。兩行：
+
+```
+ > 鍵盤配置 Layout:  [大千]  倚天   漢語拼音
+   候選字數 Candidates:  < 9 >
+ Enter: OK   Esc: Cancel   ←→: change
+```
+
+上下選行、左右改值、Enter 存檔並套用（`ime: settings pinyin, 7 candidates`）、Esc 或關閉框不存。存在 `Data:/.stela/ime/settings`（與 `uhash.dat` 同一個資料夾；計畫寫「`Data:/.stela/ime` 存設定」，那已是資料夾，所以用裡面的 `settings` 檔——**計畫外的決定**）：
+
+```
+layout=pinyin        # dachen | eten | pinyin
+candidates=7         # 4–10
+```
+
+解析是純邏輯（`ime::Settings`，host 測試）。套用是 `chewing_set_KBType`（libchewing 的 `KB_DEFAULT` 0、`KB_ET` 4、`KB_HANYU_PINYIN` 9，`include/internal/bopomofo-private.h`）與 `chewing_set_candPerPage`；組到一半的字丟掉。IME 啟動時讀它，`ime: ready (libchewing 0.5.1, pinyin, 7 candidates)`。
+
+**自動重啟**：IME 的 client 被移除（它的回覆 port 關了 = 程式結束）時，伺服器重新啟動 `Initrd:/ime` 一次（`the IME ended; starting it again`）；上次重啟後 10 秒內又結束就放棄（`the IME ended again; keys go straight to the windows`），之後鍵一律直送。10 秒以上才結束的會再重啟（每次重啟都重新計時）。逾時（IME 不回答）只是不用它，不重啟（程式可能還活著）。
+
 ## 5. 畫面
 
 - **組字區**：游標（`SET_CARET`）正下方一個羊皮紙底、黑框的小方塊：組字的文字、底線、游標的直線。
@@ -134,15 +156,16 @@ libchewing 的設定：每頁 9 個候選、組字區最多 16 字、空白鍵�
 | host `windowserver::compose` | `ime_boxes`：跟著游標、右邊界、底部翻到上方、不蓋選單列 |
 | host `toolbox` | `Event::Text` 的解碼；`TextView`／`TextField` 的 `insert_text` 與 `caret`（中文字兩格） |
 | `make test-shell` | `ime type su3cl3` 印 `ime: 你好`（freestanding 的 libchewing 在 STELA 裡跑） |
-| `make test-ime` | Kalamos：Ctrl-Space（`ime: 注`）、`su3` + Down（`ime: candidates`，伺服器印候選窗的位置，**截圖**檢查那裡是羊皮紙底、有一列字）、`1`、`cl3`、Enter、Alt-S、Ctrl-Q、Ctrl-Space（`ime: 英`）、`shutdown`；host 讀回 `/ime.txt` 是「你好」（6 bytes）、fsck 乾淨 |
+| `make test-ime` | Kalamos：Ctrl-Space（`ime: 注`）、`su3` + Down（`ime: candidates`，伺服器印候選窗的位置，**截圖**檢查那裡是羊皮紙底、有一列字）、`1`、`cl3`、Enter、Alt-S、Ctrl-Q、Ctrl-Space（`ime: 英`）、`shutdown`；host 讀回 `/ime.txt` 是「你好」（6 bytes）、fsck 乾淨；P14 K1：之後點選單列的「注」（伺服器印它的位置 `mark at X,Y`）、設定視窗 Right Right Down Left Left Enter → 拼音、7 個候選，host 讀回 `settings`；第二次開機 `boot.cfg` = `imecrash`（IME 一啟動就結束，測試用）：新的 IME 讀到設定、伺服器重啟一次、第二個也結束 → 放棄，shell 照樣能打字 |
+| host `ime`（P14 K1） | `Settings` 的解析與輸出、左右循環、候選數的範圍；拼音配置打 `ni3hao3` 組出「你好」、5 個候選的頁 |
 
 `qemu_test.py` 多了 `--screenshot TRIGGER FILE`（QMP `screendump`；之後的動作可以在同一行觸發，因為截圖本身不會印東西）。IME 只在切換（`ime: 注`／`ime: 英`）與開候選窗（`ime: candidates`）時印一行，**不印任何打的字**。
 
 ## 8. 已知限制
 
-- 只有大千配置的注音；沒有拼音、倚天等配置的選擇介面（libchewing 有，沒接）；沒有設定畫面。
+- 配置只接了大千、倚天、漢語拼音三種（libchewing 還有許氏、IBM、精業、倚天 26 鍵、Dvorak 等，P14 K1）；設定視窗只有鍵盤操作。
 - 組字區與候選窗用單一字型（12px 的中文點陣字，16x32 字型時 2 倍放大）；候選窗不能用滑鼠點。
 - Ctrl-Space 一律給 IME（Classic.app 收不到）；每個視窗沒有各自的中英狀態（全系統一個）。
 - 使用者詞庫每次改變就整個寫回（`uhash.dat`，每筆 125 bytes）；沒有匯入／匯出。
-- IME 程式結束不會自動重啟（伺服器改回直送）。
+- IME 程式結束只自動重啟一次（10 秒內再結束就改回直送，P14 K1）；不回答（逾時）的 IME 不會被殺掉重啟。
 - libchewing 0.5.1 是 2016 年的版本；之後的修正與詞庫更新（Rust 版）沒有。

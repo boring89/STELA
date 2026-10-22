@@ -180,6 +180,9 @@ pub mod event {
     /// then its path); carries the file (`READ`, and `WRITE` when
     /// writable).
     pub const DROPPED: u32 = 0x18D;
+    /// P14 K1, to the IME: its mark in the menu bar was clicked; show the
+    /// settings.
+    pub const IME_SETTINGS: u32 = 0x18E;
     // 0x188 was PING (version 1): the server now sees a client's reply
     // port close at once.
 }
@@ -504,6 +507,11 @@ pub fn ime_reset() -> Message {
     build(event::IME_RESET, &[0], &[])
 }
 
+/// `IME_SETTINGS` (P14 K1).
+pub fn ime_settings() -> Message {
+    build(event::IME_SETTINGS, &[0], &[])
+}
+
 /// Bytes of text one `TEXT_INPUT` holds.
 pub const TEXT_INPUT_MAX: usize = MESSAGE_DATA - 8;
 
@@ -651,6 +659,8 @@ mod tests {
             (event::IME_KEY, event::TEXT_INPUT, event::IME_RESET),
             (0x189, 0x18A, 0x18B)
         );
+        assert_eq!(event::IME_SETTINGS, 0x18E);
+        assert_eq!(ime_settings().tag, event::IME_SETTINGS);
         assert_eq!(word(&register_ime(), 0), 0);
         let h = ImeHeader {
             seq: 7,

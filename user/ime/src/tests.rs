@@ -223,3 +223,47 @@ fn reset_drops_the_composition() {
     ime.set_chinese(false);
     assert!(!ime.chinese());
 }
+
+#[test]
+fn settings_parse_and_print() {
+    assert_eq!(Settings::parse(""), Settings::default());
+    let s = Settings::parse("layout=pinyin\ncandidates=7\njunk\ncandidates=99\n");
+    assert_eq!(s.layout, Layout::Pinyin);
+    assert_eq!(s.candidates, 7);
+    assert_eq!(Settings::parse(&s.text()), s);
+    let mut s = Settings::default();
+    s.step_layout(true);
+    assert_eq!(s.layout, Layout::Eten);
+    s.step_layout(false);
+    s.step_layout(false);
+    assert_eq!(s.layout, Layout::Pinyin);
+    s.candidates = 10;
+    s.step_candidates(true);
+    assert_eq!(s.candidates, 10);
+    s.candidates = 4;
+    s.step_candidates(false);
+    assert_eq!(s.candidates, 4);
+}
+
+#[test]
+fn pinyin_and_fewer_candidates() {
+    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ime = start(&[]);
+    ime.apply(&Settings {
+        layout: Layout::Pinyin,
+        candidates: 5,
+    });
+    let (text, _) = type_keys(&mut ime, "ni3hao3");
+    assert_eq!(text, "");
+    assert_eq!(ime.composition().preedit, "你好");
+    ime.apply(&Settings {
+        layout: Layout::Dachen,
+        candidates: 5,
+    });
+    assert!(!ime.composing(), "apply drops the composition");
+    type_keys(&mut ime, "su3");
+    ime.key(&press(KeyCode::Down));
+    let c = ime.composition();
+    assert_eq!(c.candidates.len(), 5);
+    assert!(c.pages > 1);
+}

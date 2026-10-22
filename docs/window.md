@@ -89,6 +89,7 @@ client 的 `[2]` 是伺服器主 port 的 `SEND`，主 port 只收 `CONNECT` 與
 | `IME_KEY` 0x189（P13 K2，給 IME） | seq、`KeyEvent` |
 | `TEXT_INPUT` 0x18A（P13 K2） | window、長度、UTF-8：IME 送出的字（toolbox `Event::Text`） |
 | `IME_RESET` 0x18B（P13 K2，給 IME） | 焦點換了，丟掉組字 |
+| `IME_SETTINGS` 0x18E（P14 K1，給 IME） | 選單列的「注／英」被點了：開設定視窗 |
 
 **輸入法（P13，使用者已於 2026-10-22 審核）**：伺服器開機時建一個 IME port、啟動 `Initrd:/ime`；IME 登記後，中文模式（或組字中）的按鍵先給它，它回答之後伺服器才把鍵或送出的字（`TEXT_INPUT`）給焦點視窗；伺服器畫組字區、候選窗與選單列的「注／英」。英文模式的鍵照舊直送。細節見 `docs/ime.md`。
 

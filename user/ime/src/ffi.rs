@@ -38,6 +38,7 @@ unsafe extern "C" {
     fn chewing_set_ChiEngMode(ctx: *mut Context, mode: c_int);
     fn chewing_get_ChiEngMode(ctx: *const Context) -> c_int;
     fn chewing_set_candPerPage(ctx: *mut Context, n: c_int);
+    fn chewing_set_KBType(ctx: *mut Context, kbtype: c_int) -> c_int;
     fn chewing_set_maxChiSymbolLen(ctx: *mut Context, n: c_int);
     fn chewing_set_spaceAsSelection(ctx: *mut Context, mode: c_int);
     fn chewing_set_escCleanAllBuf(ctx: *mut Context, mode: c_int);
@@ -306,6 +307,17 @@ impl Chewing {
     pub fn chinese(&self) -> bool {
         // SAFETY: ctx is live.
         unsafe { chewing_get_ChiEngMode(self.ctx) == 1 }
+    }
+
+    /// The keyboard layout (libchewing's `KB_*` number: 0 Dachen, 4 ETen,
+    /// 9 Hanyu Pinyin; `include/internal/bopomofo-private.h`) and the
+    /// candidates per page (1 to 10).
+    pub fn set_layout(&mut self, kb_type: u8, per_page: u8) {
+        // SAFETY: ctx is live.
+        unsafe {
+            chewing_set_KBType(self.ctx, c_int::from(kb_type));
+            chewing_set_candPerPage(self.ctx, c_int::from(per_page));
+        }
     }
 
     /// Switches between Chinese and English mode.

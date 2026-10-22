@@ -119,7 +119,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 - 磁碟：`System.img`，P11 K25 起加一顆 `disk2`（§11；`.Disk` 支援到 drive 11，但設定只有一個 `disk2`）。P11 起 Data 卷宗經 FSM 給 Mac（§7）；只有 Data 一顆，沒有 Desktop Manager（Finder 自己在 Data 的根建 `Desktop` 檔）。不能在 Mac 執行中換磁碟（沒有退出／插入）。
 - 聲音（ASC）已接到 `Audio`（S 完成後補上，`--test-beep` 驗證 SysBeep）；最近鄰的重新取樣、沒有音量控制；Classic.app 開著時別的程式（`tone`）拿不到音效（`Busy`）。
 - 序列埠、網路、SCSI 裝置都沒有。
-- 時鐘當成 UTC（STELA 的 RTC 也當成 UTC，`docs/time.md` §5.5），所以 Mac 的時間比台灣時間慢 8 小時。
+- 時鐘：P14 K1 起是本地時間（Mac 沒有時區的概念，只有「牆上的時間」；`Data:/.stela/timezone`，沒有就 +08:00，`docs/time.md` §5.6）；`classic.cfg` 的 `clock=utc` 改回 UTC。只在 Classic.app 啟動（與 Restart）時設一次，之後 Mac 自己數。
 - 效能：TCG 下約 22 fps（比真的 IIci 慢約 3 倍）；實機（KVM 或 P520）應該可以到 60 fps，沒有驗證。
 - Classic.app 一次一個（C 的全域狀態是每個行程一份，所以兩個 Classic.app 行程其實可以同時跑，只是會用同一個 `System.img`——不要這樣做）。
 - P11 起設定在 `classic.cfg`（§9）；開機選項 `classic=off` 仍然有效。
@@ -183,6 +183,7 @@ CI 要裝 `binutils-m68k-linux-gnu`（`.github/workflows/ci.yml`）。
 | `scale=2` | （沒有：螢幕寬 ≥ 1920 且放大後放得下時 2，否則 1） | 視窗像素／Mac 像素（§10） |
 | `fs=off` | on | 不把 Data 卷宗給 Mac（§7） |
 | `disk2=Applications.img` | （沒有） | `Data:/Classic/` 裡的第二顆磁碟（§11）；`,ro` 唯讀、`,rw` 讀寫（預設） |
+| `clock=utc` | local | Mac 的時鐘：`local` = `Data:/.stela/timezone` 的本地時間（`libstela::time::local_ns`，P14 K1）；`utc` = UTC |
 
 ```
 # Data:/Classic/classic.cfg

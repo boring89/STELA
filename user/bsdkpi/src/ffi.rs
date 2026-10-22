@@ -47,6 +47,21 @@ unsafe extern "C" {
     fn bsdkpi_em_interrupt();
     fn bsdkpi_em_tick();
     fn bsdkpi_em_transmit(data: *const u8, len: usize) -> i32;
+    fn bsdkpi_iwm_probe(vendor: u16, device: u16, desc: *mut u8, n: usize) -> i32;
+}
+
+/// FreeBSD's iwm probe (K15, compile-only Wi-Fi): its description of the
+/// PCI id when it knows it. Needs no device and no [`HOST`].
+pub fn iwm_probe(vendor: u16, device: u16) -> Option<alloc::string::String> {
+    let mut desc = [0u8; 80];
+    // SAFETY: the C half writes at most `desc.len()` bytes (NUL included)
+    // and calls no host function but print.
+    let r = unsafe { bsdkpi_iwm_probe(vendor, device, desc.as_mut_ptr(), desc.len()) };
+    if r == 0 {
+        return None;
+    }
+    let n = desc.iter().position(|&b| b == 0).unwrap_or(desc.len());
+    Some(alloc::string::String::from_utf8_lossy(&desc[..n]).into_owned())
 }
 
 /// Attaches if_em to the device in [`HOST`]; its MAC address, or the

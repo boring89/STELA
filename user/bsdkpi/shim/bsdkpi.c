@@ -667,6 +667,22 @@ static void refill(if_ctx_t ctx, int count)
 	t->ift_rxd_flush(ctx->softc, 0, 0, ctx->rx_pidx);
 }
 
+/* A driver's device_probe for a PCI id, without the device (P14 K15):
+ * the probe's result (BUS_PROBE_* or ENXIO) and its description. */
+int bsdkpi_probe(const driver_t *drv, uint16_t vendor, uint16_t device, const char **desc)
+{
+	struct bsdkpi_device dev;
+	memset(&dev, 0, sizeof dev);
+	dev.vendor = vendor;
+	dev.device = device;
+	int (*probe)(device_t) = (int (*)(device_t))method(drv, "device_probe");
+	if (!probe)
+		return ENXIO;
+	int r = probe(&dev);
+	*desc = dev.desc;
+	return r;
+}
+
 /* Finds and attaches the card: the em driver's register method, then
  * what iflib_device_register does. Returns 0 or an errno. */
 int bsdkpi_em_attach(uint16_t vendor, uint16_t device, uint16_t subvendor, uint16_t subdevice,

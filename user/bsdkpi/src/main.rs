@@ -9,6 +9,10 @@
 //! starts it with the `DEVICES` capability for the boot option
 //! `usernet=bsd`.
 //!
+//! FreeBSD's iwm (Intel Wi-Fi, K15) is compiled and linked in too, but
+//! only its probe runs: an Intel Wi-Fi card is named and left alone, and
+//! `bsdnet --probe VVVV:DDDD` asks iwm about a PCI id (no device needed).
+//!
 //! One thread: the card's interrupts (MSI, `DEVICE_IRQ`) or a 5 ms poll,
 //! the kernel's frames (`NET_TX_READY`) and the timers all come through
 //! the main port.
@@ -26,7 +30,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use libstela::device::{Device, NetTap};
 use libstela::ipc::{handle_duplicate, port_receive};
-use libstela::{Message, bootstrap, println};
+use libstela::{Message, bootstrap, println, process};
 
 libstela::entry!(main);
 
@@ -40,6 +44,10 @@ fn find() -> Option<(Device, alloc::string::String, (u16, u16, u16, u16, u8))> {
         let ids = d.config_read(0, 4).unwrap_or(0);
         let class = d.config_read(0x0B, 1).unwrap_or(0);
         if ids as u16 != 0x8086 || class != 0x02 {
+            continue;
+        }
+        if let Some(name) = ffi::iwm_probe(0x8086, (ids >> 16) as u16) {
+            println!("bsdnet: {location} is {name}: iwm is compile-only (no net80211, firmware)");
             continue;
         }
         let sub = d.config_read(0x2C, 4).unwrap_or(0);
@@ -56,7 +64,35 @@ fn find() -> Option<(Device, alloc::string::String, (u16, u16, u16, u16, u8))> {
     None
 }
 
+/// `--probe VVVV:DDDD`: what iwm says about the id.
+fn probe(id: &str) -> i64 {
+    let parsed = id.split_once(':').and_then(|(v, d)| {
+        Some((
+            u16::from_str_radix(v, 16).ok()?,
+            u16::from_str_radix(d, 16).ok()?,
+        ))
+    });
+    let Some((vendor, device)) = parsed else {
+        println!("bsdnet: usage: bsdnet --probe VVVV:DDDD");
+        return 2;
+    };
+    match ffi::iwm_probe(vendor, device) {
+        Some(name) => {
+            println!("bsdnet: {vendor:04x}:{device:04x}: iwm: {name}");
+            0
+        }
+        None => {
+            println!("bsdnet: {vendor:04x}:{device:04x}: not an iwm card");
+            1
+        }
+    }
+}
+
 fn main() -> i64 {
+    let args = process::args();
+    if args.len() == 3 && args[1] == "--probe" {
+        return probe(&args[2]);
+    }
     let Some((device, location, ids)) = find() else {
         println!("bsdnet: no free Intel Ethernet on bus 0 (boot option usernet=bsd?)");
         return 1;

@@ -983,7 +983,8 @@ test-net-user: esp $(BUILD)/OVMF_VARS.fd
 			-nic none -netdev user,id=n0 -device $$dev,netdev=n0 || exit 1; \
 	done
 	# P14 K14 (docs/bsdkpi.md): usernet=bsd: FreeBSD 14.3's own if_em
-	# (bsdnet) instead of e1000u, on both cards.
+	# (bsdnet) instead of e1000u, on both cards. K15: iwm's probe (Wi-Fi is
+	# compile-only) through `bsdnet --probe`.
 	rm -rf $(ESP_BSDNET)
 	cp -r $(ESP) $(ESP_BSDNET)
 	printf 'usernet=bsd\n' > $(ESP_BSDNET)/STELA/boot.cfg
@@ -993,9 +994,11 @@ test-net-user: esp $(BUILD)/OVMF_VARS.fd
 		python3 tools/qemu_test.py --timeout 150 --log $(BUILD)/test-net-bsd-$$dev.log \
 			--type "net: DHCP: 10.0.2.15" "ping 10.0.2.2 2\n" \
 			--type "ping exited" "fetch http://10.0.2.2:$(USERNET_PORT)/hello.txt\n" \
+			--type "hello from the host over TCP" "bsdnet --probe 8086:24fd\n" \
 			--expect "bsdnet: 00:02.0" --expect "$$chip" \
 			--expect "bsdnet: em0 MAC 52:54:00:12:34:56, $$how" --expect "net: DHCP: 10.0.2.15" \
 			--expect "bytes from 10.0.2.2: seq=1" --expect "hello from the host over TCP" \
+			--expect "bsdnet: 8086:24fd: iwm: Intel(R) Dual Band Wireless AC 8265" \
 			-- $(QEMU) $(QEMU_BASE) -drive format=raw,file=fat:rw:$(ESP_BSDNET) $(SYSTEM_DRIVE) -display none -serial stdio \
 			-nic none -netdev user,id=n0 -device $$dev,netdev=n0 || exit 1; \
 	done

@@ -1,10 +1,12 @@
 // Copyright (C) 2026 YuanChi Hsieh
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Builds bsdnet's C half (P14 K13-K14, `docs/bsdkpi.md`): FreeBSD's
-//! `sys/dev/e1000` (BSD-2-Clause, as it is in `freebsd/dev/e1000`) and
-//! the shim (`shim/`, MIT) with gcc into `libbsdkpi_c.a`, freestanding
-//! as Classic's C (`classic/build.rs`). The FreeBSD code is compiled
+//! Builds bsdnet's C half (P14 K13-K15, `docs/bsdkpi.md`): FreeBSD's
+//! `sys/dev/e1000` (BSD-2-Clause, as it is in `freebsd/dev/e1000`),
+//! `sys/dev/iwm` (ISC/BSD, `freebsd/dev/iwm`, with the net80211 headers
+//! of `freebsd/net80211`; compile-only, K15) and the shim (`shim/`, MIT)
+//! with gcc into `libbsdkpi_c.a`, freestanding as Classic's C
+//! (`classic/build.rs`). The FreeBSD code is compiled
 //! without warnings (it is not ours); the shim with `-Werror`.
 
 use std::env;
@@ -25,14 +27,27 @@ fn main() {
     println!("cargo:rerun-if-changed=shim");
     println!("cargo:rerun-if-changed=freebsd");
     let e1000 = root.join("freebsd/dev/e1000");
-    let mut sources: Vec<(PathBuf, bool)> = std::fs::read_dir(&e1000)
-        .expect("read_dir")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|e| e == "c"))
-        .map(|p| (p, false))
-        .collect();
-    sources.sort();
-    sources.push((root.join("shim/bsdkpi.c"), true));
+    let iwm = root.join("freebsd/dev/iwm");
+    let em_flags = vec![format!("-I{}", e1000.display())];
+    let wifi_flags = vec![
+        format!("-I{}", root.join("freebsd").display()),
+        format!("-I{}", iwm.display()),
+        "-DBSDKPI_WIFI".into(),
+    ];
+    // (source, ours (-Werror), extra flags)
+    let mut sources: Vec<(PathBuf, bool, &[String])> = Vec::new();
+    for (dir, flags) in [(&e1000, &em_flags), (&iwm, &wifi_flags)] {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+            .expect("read_dir")
+            .map(|e| e.expect("entry").path())
+            .filter(|p| p.extension().is_some_and(|e| e == "c"))
+            .collect();
+        found.sort();
+        sources.extend(found.into_iter().map(|p| (p, false, flags.as_slice())));
+    }
+    sources.push((root.join("shim/bsdkpi.c"), true, &em_flags));
+    sources.push((root.join("shim/wifi.c"), true, &wifi_flags));
+    sources.push((root.join("shim/wifi_stubs.c"), true, &[]));
     let gcc_include = Command::new("gcc")
         .arg("-print-file-name=include")
         .output()
@@ -52,18 +67,17 @@ fn main() {
         "-fno-builtin".into(),
         format!("-isystem{}", root.join("shim/include").display()),
         format!("-isystem{}", gcc_include.trim()),
-        format!("-I{}", e1000.display()),
     ];
     let obj_dir = out.join("obj");
     std::fs::create_dir_all(&obj_dir).expect("obj");
     let mut objects = Vec::new();
-    for (i, (src, own)) in sources.iter().enumerate() {
+    for (i, (src, own, flags)) in sources.iter().enumerate() {
         let stem = Path::new(src.file_stem().expect("stem"))
             .display()
             .to_string();
         let obj = obj_dir.join(format!("{i:02}_{stem}.o"));
         let mut cmd = Command::new("gcc");
-        cmd.args(&common);
+        cmd.args(&common).args(flags.iter());
         if *own {
             cmd.args(["-Wall", "-Wextra", "-Werror"]);
         } else {

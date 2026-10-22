@@ -453,6 +453,7 @@ struct mbuf {
 	char *m_buf;
 	int m_size;
 	bus_addr_t m_phys;
+	struct { char *ext_buf; unsigned ext_size; } m_ext;
 };
 #define M_PKTHDR 0x0002
 #define M_VLANTAG 0x0080
@@ -639,4 +640,8 @@ typedef struct cpuset cpuset_t;
 /* ---- the iflib methods the driver calls itself (ifdi_if.m) ---- */
 void IFDI_INTR_DISABLE(if_ctx_t ctx);
 void IFDI_INTR_ENABLE(if_ctx_t ctx);
+int bsdkpi_probe(const driver_t *drv, uint16_t vendor, uint16_t device, const char **desc);
+#ifdef BSDKPI_WIFI
+#include "bsdkpi_wifi.h"
+#endif
 #endif

@@ -17,8 +17,8 @@ pub struct Audio {
 }
 
 impl Audio {
-    /// Opens the output (48 kHz, stereo); `Busy` if another program has
-    /// it, `NotSupported` without a sound card.
+    /// Opens an output (48 kHz, stereo; P13 K18: programs are mixed),
+    /// `NotSupported` without a sound card.
     pub fn open() -> Result<Audio, Error> {
         let mut out = [0u64; 2];
         syscall3(
@@ -39,6 +39,16 @@ impl Audio {
                 Err(e)
             }
         }
+    }
+
+    /// This output's volume, 0-100 (P13 K18).
+    pub fn set_volume(&self, volume: u8) -> Result<(), Error> {
+        crate::sys::syscall2(
+            Syscall::AudioSetVolume,
+            self.handle.raw(),
+            u64::from(volume),
+        )
+        .map(|_| ())
     }
 
     fn u32_at(&self, at: usize) -> u32 {
@@ -111,6 +121,37 @@ impl Drop for Audio {
     fn drop(&mut self) {
         let _ = syscall1(Syscall::AudioClose, self.handle.raw());
     }
+}
+
+/// The master volume (0-100), mute and sessions open (`SysInfo(AUDIO)`,
+/// P13 K18); `None` without a sound card.
+pub fn master() -> Option<(u8, bool, u32)> {
+    let mut b = [0u8; 12];
+    match crate::sys::syscall3(
+        Syscall::SysInfo,
+        abi::sysinfo::AUDIO,
+        b.as_mut_ptr() as u64,
+        b.len() as u64,
+    ) {
+        Ok(1) => {
+            let w = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+            Some((w(0).min(100) as u8, w(4) != 0, w(8)))
+        }
+        _ => None,
+    }
+}
+
+/// Sets the master volume and mute (P13 K18); needs the `POWER`
+/// capability.
+pub fn set_master(volume: u8, mute: bool) -> Result<(), Error> {
+    let power = crate::process::capability(abi::capability::POWER).ok_or(Error::AccessDenied)?;
+    crate::sys::syscall3(
+        Syscall::AudioMaster,
+        u64::from(volume),
+        u64::from(mute),
+        power.raw(),
+    )
+    .map(|_| ())
 }
 
 /// A square wave of `hz` at `amplitude` for `frames` frames starting at

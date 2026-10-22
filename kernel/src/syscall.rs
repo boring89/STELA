@@ -875,6 +875,8 @@ fn file_call(call: Syscall, args: [u64; 6]) -> Result<u64, Error> {
         Syscall::NetInfo => crate::net::net_info(&p, a0),
         Syscall::AudioOpen => crate::audio::audio_open(&p, a0, a1, a2),
         Syscall::AudioClose => crate::audio::audio_close(&p, a0),
+        Syscall::AudioSetVolume => crate::audio::audio_set_volume(&p, a0, a1),
+        Syscall::AudioMaster => crate::audio::audio_master(&p, a0, a1, a2),
         _ => Err(Error::InvalidSyscall),
     }
 }

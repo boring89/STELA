@@ -94,7 +94,7 @@ kernel/        kernel 主體（safe Rust，x86_64-unknown-none，linker.ld）；
   src/vfs/          卷宗、資料夾／檔案 Node、eHFS、FAT、Initrd（資料夾樹）與 Tmp（tmpfs.rs，記憶體）後端、掛載（docs/vfs.md）；src/fsyscall.rs  檔案 syscall
   src/linux/        Linux 人格：號碼（nr）、errno、fd 表、合成根目錄的路徑、初始堆疊（host 測試）；分派（sys）、檔案（files）、brk／mmap（memory）、BSD socket（socket）（docs/linux.md）
   src/net.rs        網路：net 執行緒、Socket 物件、socket syscall（docs/net.md）
-  src/audio.rs      音效：audio 執行緒、Audio 物件、AudioOpen/AudioClose；src/audiofeed.rs  餵 DMA 的帳（host 測試）（docs/sound.md）
+  src/audio.rs      音效：audio 執行緒、Audio 物件（會話，P13 混音與音量）、AudioOpen/AudioClose/AudioSetVolume/AudioMaster；src/audiofeed.rs  餵 DMA 的帳與混音（host 測試）（docs/sound.md）
   src/device.rs     P13：使用者空間驅動的 Device、NetTap 物件與 syscall、devirq 執行緒（docs/devices.md）
   src/psyscall.rs   行程 syscall（ProcessSpawn、ProcessOpen 等）、SysInfo、SystemPower（docs/userland.md、docs/acpi.md）
   src/hwinfo.rs     硬體報告 SysInfo(HARDWARE)（格式化 host 測試；docs/hwinfo.md）
@@ -236,7 +236,7 @@ Claude 依照上方工作規則直接實作。
 - 電源：只認常數 Package 的 `\_S5`（沒有 AML 直譯器、不看 SSDT、不跑 `\_PTS`）；有 `INIT` 能力的程式（預設所有人）都能請 init 關機；關機前不通知程式（docs/acpi.md §9）。
 - Linux 人格（P12 起有執行緒、fork、execve、wait、訊號、pty、/proc；P13 起有動態連結與 PIE，`docs/linux.md` §16）：沒有 ASLR，可執行的映射只限 lib 資料夾與程式自己資料夾的檔案；fork 是 copy-on-write（P13，參考計數 `frame::mm::cow`）、一個行程的執行緒都在同一顆 CPU；epoll 是 level-triggered 的 poll、timerfd 沒有 kernel 計時器、`MAP_SHARED` 只在 msync／munmap／execve／exit 寫回（被殺掉的行程最後的修改會丟）且不同範圍不共用（docs/linux.md §16.7–16.9）；沒有 inotify、signalfd、停止／繼續（job control 的 stop）；`sigaltstack` 只記錄；mode／owner／時間不能改；Linux 程式看得到 `[3]`、`[4]` 的整個卷宗（不只那個資料夾以下）；`PROT_NONE` 可讀；被訊號或例外結束的 exit code 是 128 + 訊號（docs/linux.md §15）。
 - 網路：一次一張網卡（P13：PCI 有線優先，否則 USB 網卡，USB 可熱插拔，`docs/usb.md` §13）；TCP 沒有亂序重組、壅塞控制；沒有 IPv6、分片重組、DHCP 續租；socket 的等待者被任何事件全部叫醒；e1000（82540EM）輪詢；I219 未在實機驗證（docs/net.md §10）。
-- 音效：只有輸出、48 kHz 16 位元雙聲道、一次一個程式、沒有混音與音量、輪詢 LPIB；實機 codec 未驗證（docs/sound.md §7）。
+- 音效：只有輸出、48 kHz 16 位元雙聲道；P13 起多個程式混音、每會話音量與主音量（線性、只在 kernel 的混音裡、codec 的 amp 不動）；輪詢 LPIB；實機 codec 未驗證（docs/sound.md §7）。
 - IPC：訊息夾帶自己 port 的 handle 會形成 Arc 循環；送滿／表滿的競爭邊界會放掉夾帶的 handle；共享記憶體是 eager；WaitSet 的行程成員以 id 記，要自己移除（`docs/ipc.md` §12、§13）。
 - 能力（P11）：`NETWORK` 與 `INIT` 預設往下傳給所有程式（沙箱還沒有拿掉它們的地方）；P13 的 `DEVICES` 只有 init 給它啟動的驅動，沒有 IOMMU，所以持有它等於持有整台機器（docs/devices.md）；`FilePath` 讓持有資料夾 handle 的程式知道上面各層的名字（docs/userland.md §2.3、docs/vfs.md §4.4）。
 - 中文與時區（P11）：只有 BMP 的 12px 字型（16x32 字型時 2 倍放大）、沒有中文輸入法、kernel 主控台與 panic 畫面只有 ASCII；時區是固定的 UTC 偏移（沒有夏令時間、沒有時區資料庫）（docs/toolbox.md §6.3、docs/time.md §5.6）。

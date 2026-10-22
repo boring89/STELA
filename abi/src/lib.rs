@@ -289,6 +289,12 @@ pub enum Syscall {
     NetDeliver = 73,
     /// `NetTake(tap, buf, len) -> bytes`: the next frame to send (0: none).
     NetTake = 74,
+    /// `AudioSetVolume(audio, volume)` (P13 K18): the session's volume,
+    /// 0-100.
+    AudioSetVolume = 75,
+    /// `AudioMaster(volume, mute, power)` (P13 K18): the master volume
+    /// 0-100 and mute; needs the `POWER` capability.
+    AudioMaster = 76,
 }
 
 /// `DeviceConfig` flags (P13 K11).
@@ -302,7 +308,7 @@ pub const RANDOM_MAX: u64 = 64 * 1024;
 
 impl Syscall {
     /// Every system call, in number order.
-    pub const ALL: [Syscall; 74] = [
+    pub const ALL: [Syscall; 76] = [
         Syscall::ProcessExit,
         Syscall::ThreadExit,
         Syscall::ThreadCreate,
@@ -377,6 +383,8 @@ impl Syscall {
         Syscall::NetAttach,
         Syscall::NetDeliver,
         Syscall::NetTake,
+        Syscall::AudioSetVolume,
+        Syscall::AudioMaster,
     ];
 
     /// The call with number `raw`, if any.
@@ -1278,6 +1286,9 @@ pub mod sysinfo {
     /// per item; returns its whole length in bytes (call again with a
     /// larger buffer when it is more than fit).
     pub const HARDWARE: u64 = 9;
+    /// The sound output (P13 K18): master volume (0-100), mute (0/1) and
+    /// the sessions open, three u32; returns 1 (0 without a sound card).
+    pub const AUDIO: u64 = 10;
 
     /// Most bytes `SysInfo(CMDLINE)` returns.
     pub const CMDLINE_SIZE: usize = 256;
@@ -2146,5 +2157,16 @@ mod tests {
         );
         assert_eq!(device::WRITE, 0x100);
         assert_eq!(object_kind::CAPABILITY, 12);
+    }
+
+    #[test]
+    fn the_mixer_calls_are_fixed() {
+        // P13 K18 (docs/sound.md §4).
+        assert_eq!(
+            (Syscall::AudioSetVolume as u64, Syscall::AudioMaster as u64),
+            (75, 76)
+        );
+        assert_eq!(sysinfo::AUDIO, 10);
+        assert_eq!(Syscall::from_raw(76), Some(Syscall::AudioMaster));
     }
 }

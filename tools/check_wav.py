@@ -10,6 +10,7 @@ silent, and the loud part's zero crossings give about HZ (within 10%;
 HZ 0 skips the frequency check).
 Only the RIFF/WAVE PCM 16-bit format QEMU writes is read.
 """
+import math
 import struct
 import sys
 
@@ -17,7 +18,10 @@ import sys
 def main():
     if len(sys.argv) != 4:
         sys.exit(__doc__)
-    path, min_seconds, hz = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+    path, min_seconds = sys.argv[1], float(sys.argv[2])
+    # P13 K19: several frequencies at once ("440,880": programs mixed).
+    freqs = [float(f) for f in sys.argv[3].split(",")]
+    hz = freqs[0]
     data = open(path, "rb").read()
     if data[0:4] != b"RIFF" or data[8:12] != b"WAVE":
         sys.exit(f"check_wav: {path}: not a WAV file")
@@ -44,10 +48,34 @@ def main():
           f"{len(loud) / rate:.2f} s loud")
     if not loud or len(loud) < min_seconds * rate * 0.9:
         sys.exit("check_wav: FAIL (silent or too short)")
-    if hz == 0:
+    if hz == 0 and len(freqs) == 1:
         print("check_wav: OK")
         return
     part = left[loud[0]:loud[-1] + 1]
+    if len(freqs) > 1:
+        # Goertzel power of each frequency (and one between them, which a
+        # mix of square waves at those frequencies does not have).
+        # Short windows (about 46 ms: some 20 Hz wide, so a square wave a
+        # little off its nominal frequency still counts), summed.
+        size = 2048
+        def power(f):
+            k = 2 * math.cos(2 * math.pi * f / rate)
+            total = 0.0
+            for start in range(0, len(part) - size, size):
+                s1 = s2 = 0.0
+                for v in part[start:start + size]:
+                    s1, s2 = v + k * s1 - s2, s1
+                total += s1 * s1 + s2 * s2 - k * s1 * s2
+            return total
+        powers = [power(f) for f in freqs]
+        between = power((freqs[0] + freqs[1]) / 2)
+        for f, p in zip(freqs, powers):
+            print(f"check_wav: {f:.0f} Hz power {p:.3g}")
+        print(f"check_wav: {(freqs[0] + freqs[1]) / 2:.0f} Hz power {between:.3g}")
+        if min(powers) < max(powers) * 0.05 or between > min(powers) * 0.1:
+            sys.exit("check_wav: FAIL (the frequencies are not all there)")
+        print("check_wav: OK")
+        return
     crossings = sum(1 for a, b in zip(part, part[1:]) if (a < 0) != (b < 0))
     measured = crossings / 2 / (len(part) / rate)
     print(f"check_wav: about {measured:.0f} Hz")

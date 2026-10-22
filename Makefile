@@ -424,8 +424,11 @@ test-classic: esp ehfs-tools $(BUILD)/OVMF_VARS.fd
 		-device ide-hd,drive=disk0,bus=ide.0,bootindex=0
 	python3 tools/fb_check.py $(BUILD)/classic.ppm $(CLASSIC_CHECKS)
 	rm -f $(CLASSIC_WAV)
+	# P13 K19: with tone playing in the background (two programs mixed).
 	python3 tools/qemu_test.py --exit-code 0 --timeout 600 --log $(BUILD)/test-classic-sound.log \
-		--type "STELA shell" "run Classic.app --test-beep\n" --type "Classic exited" "shutdown\n" \
+		--type "STELA shell" "tone 440 600000 &\n" --type "tone: 440 Hz" "run Classic.app --test-beep\n" \
+		--type "Classic exited" "shutdown\n" \
+		--expect "tone: 440 Hz for 600000 ms" \
 		--expect "classic: sound on" --expect "classic: beep (sent)" --expect "classic: test done" \
 		--expect "power: turning off" \
 		-- $(QEMU) $(QEMU_BASE) -display none -serial stdio \
@@ -713,6 +716,19 @@ test-sound: esp $(BUILD)/OVMF_VARS.fd
 		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
 		-audiodev wav,id=a0,path=$(SOUND_WAV) -device intel-hda -device hda-duplex,audiodev=a0
 	python3 tools/check_wav.py $(SOUND_WAV) 1.0 440
+	# P13 K19: two programs at once, mixed (880 Hz in the background
+	# while 440 Hz plays); then the menu bar's speaker: its panel, Mute.
+	rm -f $(SOUND_WAV)
+	python3 tools/qemu_test.py --exit-code 0 --timeout 90 --log $(BUILD)/test-sound-mix.log \
+		--type "STELA shell" "tone 880 1500 &\n" --type "tone: 880 Hz" "tone 440 1000\n" \
+		--click "tone exited" 2338 20 1 --click "windowserver: volume panel" 2128 129 1 \
+		--type "windowserver: volume 100, muted" "shutdown\n" \
+		--expect "tone: 880 Hz for 1500 ms" --expect "tone: 440 Hz for 1000 ms" \
+		--expect "windowserver: volume panel" --expect "windowserver: volume 100, muted" \
+		--expect "power: turning off" \
+		-- $(QEMU) $(QEMU_FLAGS) -display none -serial stdio \
+		-audiodev wav,id=a0,path=$(SOUND_WAV) -device intel-hda -device hda-duplex,audiodev=a0
+	python3 tools/check_wav.py $(SOUND_WAV) 1.0 440,880
 
 # Boot options (docs/p520.md): the normal kernel with a boot.cfg that
 # asks for text mode and no USB; init starts the shell without the window

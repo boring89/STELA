@@ -21,7 +21,8 @@ use libstela::{Error, Handle, Message, Rights, bootstrap, println, tag};
 use toolbox::draw::{Canvas, Font, Rect, color, font_for};
 use windowserver::compose::{
     Clicks, Damage, Menu, Metrics, Part, Stack, Window, find_shortcut, ime_boxes, menu_box,
-    menu_item_at, menu_titles, parse_menus, shortcut, visible_parts,
+    menu_item_at, menu_titles, parse_audio, parse_menus, shortcut, visible_parts, volume_at,
+    volume_panel,
 };
 
 /// The pointer: `X` outline, `.` fill, space transparent (STELA's own
@@ -168,6 +169,13 @@ struct Server {
     ime: Option<Ime>,
     /// Where each window's text cursor is (`SET_CARET`: content x, y, h).
     carets: BTreeMap<u32, (i32, i32, i32)>,
+    /// The sound output's master volume and mute (P13 K19), if there is
+    /// a sound card; the speaker in the menu bar, its panel open, the
+    /// slider held.
+    volume: Option<(u8, bool)>,
+    speaker: Rect,
+    volume_open: bool,
+    volume_drag: bool,
 }
 
 fn screen_rect(s: &Server) -> Rect {
@@ -464,6 +472,8 @@ impl Server {
         };
         let clock = self.clock.clone();
         let (ime_text, ime_list) = self.ime_layout();
+        self.speaker = self.speaker_rect();
+        let (volume, speaker, volume_open) = (self.volume, self.speaker, self.volume_open);
         let ime_status = self.ime.as_ref().map(|i| i.chinese);
         let ime_draw = self.ime.as_ref().filter(|i| i.composing()).map(|i| {
             (
@@ -498,6 +508,7 @@ impl Server {
                 None,
             );
             // The IME's mode left of the clock (P13 K2): 注 or 英.
+            let mut left = x;
             if let Some(chinese) = ime_status {
                 let mark = if chinese { "注" } else { "英" };
                 let mx = x - font.text_width(mark) - 2 * font.width;
@@ -505,6 +516,62 @@ impl Server {
                     mx,
                     (m.menubar - font.height) / 2,
                     mark,
+                    font,
+                    color::BLACK,
+                    None,
+                );
+                left = mx;
+            }
+            // The speaker (P13 K19), left of that.
+            if let Some((_, muted)) = volume {
+                draw_speaker(&mut canvas, speaker, muted);
+            }
+            let _ = left;
+        }
+        if volume_open && let Some((level, muted)) = volume {
+            let (panel, track, mute) = volume_panel(speaker, font.width, font.height + 4, w as i32);
+            if panel.overlaps(&r) {
+                canvas.fill(panel.offset(3, 3), color::BLACK);
+                canvas.fill(panel, color::PARCHMENT);
+                canvas.frame(panel, color::BLACK);
+                let label = alloc::format!("Volume {level}");
+                canvas.text(
+                    panel.x + font.width,
+                    panel.y + 4,
+                    &label,
+                    font,
+                    color::BLACK,
+                    None,
+                );
+                canvas.fill(track, color::STONE);
+                canvas.frame(track, color::BLACK);
+                let knob_x = track.x + track.w * i32::from(level) / 100;
+                canvas.fill(
+                    Rect::new(knob_x - 4, track.y - 6, 8, track.h + 12),
+                    color::TERRACOTTA,
+                );
+                canvas.fill(mute, color::WHITE);
+                canvas.frame(mute, color::BLACK);
+                if muted {
+                    canvas.line(
+                        mute.x,
+                        mute.y,
+                        mute.right() - 1,
+                        mute.bottom() - 1,
+                        color::BLACK,
+                    );
+                    canvas.line(
+                        mute.right() - 1,
+                        mute.y,
+                        mute.x,
+                        mute.bottom() - 1,
+                        color::BLACK,
+                    );
+                }
+                canvas.text(
+                    mute.right() + font.width,
+                    mute.y,
+                    "Mute",
                     font,
                     color::BLACK,
                     None,
@@ -861,6 +928,75 @@ impl Server {
         )
     }
 
+    /// Where the speaker goes in the menu bar: left of the IME's mark (or
+    /// of the clock).
+    fn speaker_rect(&self) -> Rect {
+        let f = self.font;
+        let mut x = self.width - f.text_width(&self.clock) - 2 * f.width;
+        if self.ime.is_some() {
+            x -= f.text_width("注") + 2 * f.width;
+        }
+        let side = self.m.menubar - 8;
+        Rect::new(x - side - 2 * f.width, 4, side, side)
+    }
+
+    /// The volume panel's rectangles, while it is open.
+    fn volume_layout(&self) -> (Rect, Rect, Rect) {
+        volume_panel(
+            self.speaker,
+            self.font.width,
+            self.font.height + 4,
+            self.width,
+        )
+    }
+
+    /// Sets the master volume and mute (the sound driver, through POWER)
+    /// and keeps them in `Data:/.stela/audio`.
+    fn set_volume(&mut self, level: u8, muted: bool, save: bool) {
+        self.volume = Some((level, muted));
+        let _ = libstela::audio::set_master(level, muted);
+        let (panel, ..) = self.volume_layout();
+        self.mark(panel);
+        self.mark_menubar();
+        if save {
+            println!(
+                "windowserver: volume {level}{}",
+                if muted { ", muted" } else { "" }
+            );
+            let text = alloc::format!("volume={level}\nmute={}\n", u8::from(muted));
+            let _ = save_setting("audio", text.as_bytes());
+        }
+    }
+
+    /// A press on the volume panel or the speaker; true if it was one.
+    fn volume_press(&mut self, x: i32, y: i32) -> bool {
+        let Some((level, muted)) = self.volume else {
+            return false;
+        };
+        if self.volume_open {
+            let (panel, track, mute) = self.volume_layout();
+            if panel.contains(x, y) {
+                if mute.inset(-4).contains(x, y) {
+                    self.set_volume(level, !muted, true);
+                } else if track.inset(-8).contains(x, y) {
+                    self.volume_drag = true;
+                    self.set_volume(volume_at(track, x), muted, false);
+                }
+                return true;
+            }
+            self.volume_open = false;
+            self.mark(panel);
+        }
+        if self.speaker.contains(x, y) {
+            println!("windowserver: volume panel");
+            self.volume_open = true;
+            let (panel, ..) = self.volume_layout();
+            self.mark(panel);
+            return true;
+        }
+        false
+    }
+
     /// Marks the old and the new place of the composition.
     fn mark_ime(&mut self) {
         let new = self.ime_layout();
@@ -992,6 +1128,9 @@ impl Server {
     }
 
     fn press(&mut self, x: i32, y: i32, buttons: u8) {
+        if self.volume_press(x, y) {
+            return;
+        }
         let part = self.stack.hit(x, y, &self.m);
         match part {
             Part::MenuBar => {
@@ -1071,6 +1210,13 @@ impl Server {
     }
 
     fn drag_to(&mut self, x: i32, y: i32, buttons: u8) {
+        if self.volume_drag
+            && let Some((_, muted)) = self.volume
+        {
+            let (_, track, _) = self.volume_layout();
+            self.set_volume(volume_at(track, x), muted, false);
+            return;
+        }
         match self.drag {
             Some(Drag::Move {
                 id,
@@ -1155,6 +1301,13 @@ impl Server {
     }
 
     fn release(&mut self, x: i32, y: i32, buttons: u8) {
+        if self.volume_drag {
+            self.volume_drag = false;
+            if let Some((level, muted)) = self.volume {
+                self.set_volume(level, muted, true);
+            }
+            return;
+        }
         self.drag_to(x, y, buttons | button::LEFT);
         let drag = self.drag.take();
         match drag {
@@ -1802,6 +1955,42 @@ fn draw_menu(
     }
 }
 
+/// The menu bar's speaker (P13 K19): a box and a cone, crossed out when
+/// muted.
+fn draw_speaker(c: &mut Canvas, r: Rect, muted: bool) {
+    let body = Rect::new(r.x + r.w / 6, r.y + r.h / 3, r.w / 4, r.h / 3);
+    c.fill(body, color::BLACK);
+    let cone_x = body.right();
+    for i in 0..r.w / 3 {
+        let half = r.h / 6 + i * (r.h / 3) / (r.w / 3).max(1);
+        c.vline(cone_x + i, r.y + r.h / 2 - half, 2 * half, color::BLACK);
+    }
+    if muted {
+        c.line(r.x, r.y, r.right() - 1, r.bottom() - 1, color::HIGHLIGHT);
+        c.line(r.x + 1, r.y, r.right(), r.bottom() - 1, color::HIGHLIGHT);
+    } else {
+        let wave = cone_x + r.w / 3 + 2;
+        c.vline(wave, r.y + r.h / 3, r.h / 3, color::BLACK);
+        c.vline(wave + 3, r.y + r.h / 4, r.h / 2, color::BLACK);
+    }
+}
+
+/// Writes `Data:/.stela/NAME` (made if needed).
+fn save_setting(name: &str, data: &[u8]) -> Result<(), Error> {
+    let root = Owned(fs::volume_open("Data")?);
+    let dir = Owned(fs::open(
+        root.0,
+        ".stela",
+        open::READ | open::WRITE | open::CREATE | open::DIRECTORY,
+    )?);
+    let file = Owned(fs::open(
+        dir.0,
+        name,
+        open::READ | open::WRITE | open::CREATE | open::TRUNCATE,
+    )?);
+    fs::write(file.0, data, 0).map(|_| ())
+}
+
 fn draw_outline(c: &mut Canvas, r: Rect) {
     // A dotted outline (every other pixel).
     for x in (r.x..r.right()).step_by(2) {
@@ -1964,7 +2153,18 @@ pub fn main() -> i64 {
         ime_port: Handle::NONE,
         ime: None,
         carets: BTreeMap::new(),
+        volume: libstela::audio::master().map(|(v, m, _)| (v, m)),
+        speaker: Rect::new(0, 0, 0, 0),
+        volume_open: false,
+        volume_drag: false,
     };
+    // P13 K19: the volume kept from last time.
+    if server.volume.is_some()
+        && let Ok(text) = fs::read_path("Data:/.stela/audio")
+    {
+        let (level, muted) = parse_audio(&String::from_utf8_lossy(&text));
+        server.set_volume(level, muted, false);
+    }
     // P13 K2: the IME's own port, and the IME.
     match port_create() {
         Ok(port) => {

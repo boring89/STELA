@@ -74,9 +74,53 @@ pub fn from_ring(write: u32, read: u32, want: usize) -> usize {
     (write.wrapping_sub(read) as usize).min(want)
 }
 
+/// Adds `bytes` (16-bit little-endian samples) at `volume` (0-100) into
+/// `acc` (P13 K18: mixing several programs).
+pub fn mix_into(acc: &mut [i32], bytes: &[u8], volume: u8) {
+    let v = i32::from(volume.min(100));
+    for (a, s) in acc.iter_mut().zip(bytes.as_chunks::<2>().0) {
+        let sample = i32::from(i16::from_le_bytes(*s));
+        *a += sample * v / 100;
+    }
+}
+
+/// The mixed samples at the master `volume` (0-100; nothing when
+/// `muted`), clipped to 16 bits, as little-endian bytes.
+pub fn finish(acc: &[i32], volume: u8, muted: bool, out: &mut [u8]) {
+    let v = if muted { 0 } else { i32::from(volume.min(100)) };
+    for (a, o) in acc.iter().zip(out.as_chunks_mut::<2>().0) {
+        let s = (*a * v / 100).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+        *o = s.to_le_bytes();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bytes(samples: &[i16]) -> alloc::vec::Vec<u8> {
+        samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn mixing_adds_scales_and_clips() {
+        let mut acc = [0i32; 4];
+        mix_into(&mut acc, &bytes(&[1000, -1000, 30000, 0]), 100);
+        mix_into(&mut acc, &bytes(&[500, 500, 30000, -20]), 50);
+        assert_eq!(acc, [1250, -750, 45000, -10]);
+        let mut out = [0u8; 8];
+        finish(&acc, 100, false, &mut out);
+        // 45000 clips to 32767.
+        assert_eq!(out, bytes(&[1250, -750, 32767, -10]).as_slice());
+        finish(&acc, 50, false, &mut out);
+        assert_eq!(out, bytes(&[625, -375, 22500, -5]).as_slice());
+        finish(&acc, 100, true, &mut out);
+        assert_eq!(out, [0u8; 8]);
+        // A short source leaves the rest alone.
+        let mut acc = [7i32; 3];
+        mix_into(&mut acc, &bytes(&[1]), 100);
+        assert_eq!(acc, [8, 7, 7]);
+    }
 
     #[test]
     fn keeps_the_lead() {

@@ -494,6 +494,46 @@ impl Clicks {
     }
 }
 
+/// The volume panel under the menu bar's speaker (P13 K19): the panel,
+/// the slider's track and the mute box, for a font `fw` wide and lines
+/// `line` high, kept on a screen `screen_w` wide.
+pub fn volume_panel(speaker: Rect, fw: i32, line: i32, screen_w: i32) -> (Rect, Rect, Rect) {
+    let w = 16 * fw;
+    let h = 3 * line + 8;
+    let x = (speaker.right() - w).clamp(0, (screen_w - w).max(0));
+    let panel = Rect::new(x, speaker.bottom() + 2, w, h);
+    let track = Rect::new(
+        panel.x + fw,
+        panel.y + line + 4 + line / 3,
+        w - 2 * fw,
+        line / 3,
+    );
+    let mute = Rect::new(panel.x + fw, panel.y + 2 * line + 4, line - 4, line - 4);
+    (panel, track, mute)
+}
+
+/// The volume (0-100) at `x` on the slider's `track`.
+pub fn volume_at(track: Rect, x: i32) -> u8 {
+    if track.w <= 0 {
+        return 0;
+    }
+    ((x - track.x).clamp(0, track.w) * 100 / track.w) as u8
+}
+
+/// `Data:/.stela/audio` (P13 K19): `volume=N` and `mute=0|1` lines.
+pub fn parse_audio(text: &str) -> (u8, bool) {
+    let mut volume = 100;
+    let mut mute = false;
+    for line in text.lines() {
+        match line.trim().split_once('=') {
+            Some(("volume", v)) => volume = v.trim().parse::<u8>().unwrap_or(100).min(100),
+            Some(("mute", v)) => mute = v.trim() == "1",
+            _ => {}
+        }
+    }
+    (volume, mute)
+}
+
 /// Where the IME's composition goes (P13 K2, `docs/ime.md`): a box of
 /// `text_w` x `line` just below the caret (screen coordinates) and the
 /// candidate box of `list_w` x `line` (0: none) under it; both stay on the
@@ -709,5 +749,23 @@ mod tests {
         // Never over the menu bar.
         let (t, _) = ime_boxes(Rect::new(10, 30, 1, 560), 50, 60, 16, screen, 24);
         assert_eq!(t.y, 24);
+    }
+
+    #[test]
+    fn the_volume_panel() {
+        let speaker = Rect::new(2200, 0, 32, 40);
+        let (panel, track, mute) = volume_panel(speaker, 16, 36, 2560);
+        assert_eq!(panel, Rect::new(2232 - 256, 42, 256, 116));
+        assert!(panel.contains(track.x, track.y) && panel.contains(mute.x, mute.y));
+        assert_eq!(volume_at(track, track.x), 0);
+        assert_eq!(volume_at(track, track.right()), 100);
+        assert_eq!(volume_at(track, track.x + track.w / 2), 50);
+        assert_eq!(volume_at(track, -5), 0);
+        // Near the left edge: kept on the screen.
+        let (p, ..) = volume_panel(Rect::new(10, 0, 32, 40), 16, 36, 2560);
+        assert_eq!(p.x, 0);
+        assert_eq!(parse_audio("volume=40\nmute=1\n"), (40, true));
+        assert_eq!(parse_audio("volume=400"), (100, false));
+        assert_eq!(parse_audio(""), (100, false));
     }
 }

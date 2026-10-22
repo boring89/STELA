@@ -335,6 +335,15 @@ pub fn sys_info(process: &Process, kind: u64, ptr: u64, len: u64) -> Result<u64,
             out.extend_from_slice(&frame::time::wall_clock_ns().to_le_bytes());
             1
         }
+        abi::sysinfo::AUDIO => match crate::audio::master() {
+            Some((volume, muted, sessions)) => {
+                out.extend_from_slice(&u32::from(volume).to_le_bytes());
+                out.extend_from_slice(&u32::from(muted).to_le_bytes());
+                out.extend_from_slice(&(sessions as u32).to_le_bytes());
+                1
+            }
+            None => 0,
+        },
         abi::sysinfo::HARDWARE => {
             let text = crate::hwinfo::report();
             out.extend_from_slice(text.as_bytes());

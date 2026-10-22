@@ -12,7 +12,7 @@ is a reduced 68k_HAL by definition (see [classic/README.md](classic/README.md)).
 
 ## Status
 
-Early (phase P13 of [the plan](docs/architecture.md); P11, P12 and P13 are not reviewed yet): STELA's own UEFI boot loader loads the
+Early (version 0.2.0, phase P14 of [the plan](docs/architecture.md); P14 is not reviewed yet), and verified only in QEMU: STELA's own UEFI boot loader loads the
 kernel ELF and an initial RAM disk (a ustar archive of user programs), builds its page tables
 (higher-half kernel and a direct map of physical memory) and hands over a boot information
 block. The kernel sets up its GDT/TSS and exception handlers, a bitmap physical frame
@@ -89,7 +89,15 @@ opened with; several programs playing sound at once with a volume control in the
 Find, desktop patterns, display sleep, Alt-Tab and keyboard menus; QEMU tests that can run in
 parallel (`make test -jN`, CI in shards); and a user guide
 ([docs/guide.en.md](docs/guide.en.md), in Chinese [docs/guide.md](docs/guide.md); also in
-Periplus). See
+Periplus). P14 adds: a read-only `System` volume with the applications, tools, fonts and
+dictionaries (a smaller initrd), two System slots with signed images (a System key apart from
+the package key), `stela-update` and rollback, and installing STELA onto an empty disk from
+Setup; Go programs (goroutines, `net/http`), ripgrep and fd, Alpine's `rustc`, and a JIT
+capability for programs that make code (never writable and executable at once); FreeBSD's own
+`if_em` driver running unchanged on a small FreeBSD KPI shim in user space (`bsdnet`, with
+Intel's Wi-Fi driver `iwm` compiled in but not attached yet); IME settings and restarting,
+Get Info editing, file locking, per-program attributes, Setup's display page; idling with
+`mwait`; and `make release`. See
 [docs/boot.md](docs/boot.md), [docs/frame.md](docs/frame.md), [docs/irq.md](docs/irq.md),
 [docs/time.md](docs/time.md), [docs/keyboard.md](docs/keyboard.md),
 [docs/process.md](docs/process.md), [docs/syscall.md](docs/syscall.md),
@@ -103,7 +111,9 @@ Periplus). See
 [docs/bench.md](docs/bench.md), [docs/apps.md](docs/apps.md), [docs/ports.md](docs/ports.md),
 [docs/tls.md](docs/tls.md), [docs/pkg.md](docs/pkg.md), [docs/setup.md](docs/setup.md),
 [docs/ime.md](docs/ime.md), [docs/devices.md](docs/devices.md),
-[docs/sandbox.md](docs/sandbox.md) and [docs/testing.md](docs/testing.md).
+[docs/sandbox.md](docs/sandbox.md), [docs/system.md](docs/system.md),
+[docs/bsdkpi.md](docs/bsdkpi.md), [docs/release.md](docs/release.md) and
+[docs/testing.md](docs/testing.md).
 
 ## Building
 
@@ -128,6 +138,7 @@ make bench  # measurements without KVM (docs/bench.md)
 make test-fuzz    # the parsers fuzzed on the host (part of make test, about a minute)
 make test-stress  # local only: many processes, files, pipes, connections and windows; leaks checked
 make test-ports   # local only: build, package and test every port of ~/stela-ports (docs/ports.md)
+make release      # build/release/stela-VERSION/: images, ESP, packages, SHA256SUMS, notes (docs/release.md)
 ```
 
 ## License

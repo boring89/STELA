@@ -107,7 +107,7 @@ Rust：  --target x86_64-unknown-linux-musl
 - terminal 只有 SGR 顏色（`docs/window.md` §10），全螢幕的 vim／nano／less 在 STELA 的 terminal 裡畫不對；測試只用不需要游標定址的方式。
 - 下載的 tarball（`~/stela-ports/sources/`）與 SHA-256 在各自的 `port.toml`（計畫的授權事項）。
 
-## 7. P14：Rust 的大程式（K10，自動排程一次做完，**使用者尚未審核**）
+## 7. P14：Rust 的大程式（K10，自動排程一次做完，使用者已於 2026-10-26 審核）
 
 | port | 版本 | 授權 | 來源 | test.sh |
 |---|---|---|---|---|

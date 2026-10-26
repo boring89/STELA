@@ -67,7 +67,7 @@ AP 開機時是 real mode，從 Startup IPI 指定的頁開始執行（Intel SDM
 - `SysInfo(CPUS)`（7）：每顆線上 CPU 一個 u64（它處理過的 timer tick），回傳 CPU 數；libstela `process::cpus()`。
 - `SysInfo(PROCESS_CPUS)`（8）：執行中的行程與它的 CPU（成對的 u64），libstela `process::process_cpus()`。
 
-## 6.1 idle：`mwait`（P14 K19，**使用者尚未審核**）
+## 6.1 idle：`mwait`（P14 K19，使用者已於 2026-10-26 審核）
 
 沒事做的 CPU 停在 idle 執行緒（`kernel/src/task/sched.rs` 的 `idle_entry`），呼叫 `frame::halt_until_interrupt`。以前是 `sti; hlt`；現在處理器有 MONITOR/MWAIT 時改成：
 

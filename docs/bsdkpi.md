@@ -1,6 +1,6 @@
 # FreeBSD 驅動相容層（bsdkpi）
 
-> P14 D（K13–K16）由自動排程一次做完，**使用者尚未審核**。
+> P14 D（K13–K16）由自動排程一次做完，使用者已於 2026-10-26 審核。
 
 STELA 自己寫的驅動只涵蓋 QEMU 與 P520 的幾張卡。FreeBSD 有大量成熟、授權相容（BSD）的驅動，Wi-Fi 與 GPU 之外的網卡、儲存卡大多是「讀寫暫存器、管 DMA ring、處理中斷」這種形狀。bsdkpi 的做法：**FreeBSD 的驅動原始碼一個字不改**，在它下面墊一層「看起來像 FreeBSD kernel」的函式（KPI，Kernel Programming Interface），整個東西編成一個 STELA 的**使用者程式**，經 P13 的使用者空間驅動介面（`docs/devices.md`）碰硬體。
 

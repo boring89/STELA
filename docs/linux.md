@@ -628,7 +628,7 @@ musl 的動態連結器**就是** libc.so 本身：只連 libc 的程式（Alpin
 
 測試：`linux/tests/sys.c`（`make test-linux`）。
 
-## 17. Go（P14 K9，自動排程一次做完，**使用者尚未審核**）
+## 17. Go（P14 K9，自動排程一次做完，使用者已於 2026-10-26 審核）
 
 Go 的程式是靜態連結、不經過 libc 的 Linux 程式（`CGO_ENABLED=0`）：runtime 直接發 syscall，用很多 libc 程式用不到的東西——一大片 `PROT_NONE` 保留的位址、多執行緒、`epoll` 的 edge-triggered、用 `SIGURG` 在備用堆疊上搶佔 goroutine。
 
@@ -653,7 +653,7 @@ Go 的程式是靜態連結、不經過 libc 的 Linux 程式（`CGO_ENABLED=0`�
 
 限制：`epoll_wait` 每 20 ms 醒一次重讀清單（阻塞中的 netpoller 有一點 CPU）；edge-triggered 只做在 `EPOLLOUT`；Go 的 `GOMAXPROCS` 再大，一個行程的執行緒都在同一顆 CPU（`docs/smp.md`）；`os/exec`、`cgo`、race detector 沒有測。
 
-## 18. Alpine 的 rustc（P14 K11，自動排程，**使用者尚未審核**；本機專用）
+## 18. Alpine 的 rustc（P14 K11，自動排程，使用者已於 2026-10-26 審核；本機專用）
 
 計畫：Alpine 的 `rust`、`cargo` 在 STELA 上跑，上限 2 小時。**結果：rustc 可以，cargo 還不行**。
 
@@ -663,7 +663,7 @@ Go 的程式是靜態連結、不經過 libc 的 Linux 程式（`CGO_ENABLED=0`�
 - **kernel 不需要為 rustc 改什麼**（P13 的動態連結、P14 K9 的 `PROT_NONE`、K10 的 `MADV_DONTNEED` 已經夠）；計畫列的「可寫 `MAP_SHARED`、`memfd`、`F_SETLK`、`sched_setaffinity`」rustc 都沒有用到，沒有改。
 - **cargo**：`cargo build --offline`（專案與 `Data:/.cargo/config.toml` 預先放好：`rustc`、`linker`、`rustflags`）到 `Compiling proj` 後啟動 rustc 失敗：`socketpair`（syscall 53）與 `pwritev2`（328）是 `ENOSYS`，`could not execute process … (never executed): Function not implemented`。要 AF_UNIX 的 `socketpair`（可以用兩條 pipe 做），超過時限，記在待決定。
 
-## 19. JIT 能力（P14 K12，自動排程一次做完，**使用者尚未審核**）
+## 19. JIT 能力（P14 K12，自動排程一次做完，使用者已於 2026-10-26 審核）
 
 P13 起可執行的映射只能來自 lib 資料夾的檔案（與程式自己的資料夾），所以產生機器碼的程式（JIT：JavaScript 引擎、LuaJIT、Java、.NET…）跑不了。P14 K12 加一個能力 **`JIT`**（`abi::capability::JIT` = 7）：
 

@@ -1,6 +1,6 @@
 # System 卷宗與更新
 
-> P14（B，K4–K8）由自動排程一次做完，**使用者尚未審核**。
+> P14（B，K4–K8）由自動排程一次做完，使用者已於 2026-10-26 審核。
 
 STELA 的系統程式分兩處：開機一定要有的放在 **initrd**（和 kernel 一起從 ESP 載入），其他放在一個唯讀的 eHFS 卷宗 **`System`**。整個 System 卷宗是一個映像檔；更新就是換掉整個映像（之後的 A/B 兩槽，§4 起）。程式碼：`tools/make_system_image.py`、Makefile 的 `system-image`、`kernel/src/vfs/mount.rs`（`mount_system`）、`libstela::fs::read_system`／`open_system`、shell 的 `SEARCH_PATH`、Mouseion 的 `system_program`。
 

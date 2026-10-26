@@ -126,7 +126,7 @@ Mouseion 啟動的程式（bundle、單一程式、Linux 程式，雙擊文件�
 - **Mouseion > Preferences...**：桌面圖樣（Plain、Meander 回紋、Waves 波浪；`toolbox::backdrop`，草稿）存到 `Data:/.stela/desktop`（`pattern=…`，`color=RRGGBB` 可以手改），送 `SET_BACKDROP` 讓視窗伺服器換；Mouseion 自己的圖示直條用同一個圖樣、對齊同一個螢幕格線。
 - **Special > Sleep Display**：送 `BLANK`，視窗伺服器立刻把螢幕變黑（`docs/window.md` §12）。
 
-### 5.w P14 K2：Get Info 的編輯、鎖定、備註、bundle 的圖示（自動排程一次做完，**使用者尚未審核**）
+### 5.w P14 K2：Get Info 的編輯、鎖定、備註、bundle 的圖示（自動排程一次做完，使用者已於 2026-10-26 審核）
 
 - **Get Info**（Alt-I）的資訊視窗多三行：`comment:`（延伸屬性 `stela.mouseion.comment`，UTF-8，最多 3 KiB）、`locked: yes/no`、提示 `N: name  T: type  C: comment  L: lock`。視窗在前面時按 **N** 改名、**T** 改 type／creator、**C** 改備註（都是 `dialog::ask_text`，出現前印 `mouseion: asking for …`）、**L** 鎖定／解鎖（`mouseion: NAME locked`／`unlocked`）；改完資訊視窗重畫、顯示那個資料夾的視窗重新列出。計畫寫「Get Info 可編輯」——工具箱沒有多欄位的編輯視窗，所以用按鍵叫出對話框（**計畫外的簡化**）。資訊視窗自己留一個資料夾的 handle（從卷宗的根依路徑打開，所以帶 `MANAGE`；`VolumeOpenById` 給的 handle 永遠沒有 `MANAGE`），資料夾視窗先關掉也能改。
 - **鎖定**：Finder 資訊的 `fdFlags`（bytes 8–9，大端序）的 `kNameLocked` 0x1000（`abi::finder`）。HFS 真正的「locked」是目錄記錄的 `filFlags` bit 0，eHFS 沒有那一欄，所以借用 Finder 旗標（Classic 的 FSM 卷宗看得到同一個位元）。**kernel 擋**：`DirRemove`、`DirRename`（含搬進垃圾桶）與 Linux 的 `unlinkat`、`renameat`（來源與被取代的目標）遇到鎖定的項目回 `AccessDenied`（`FileSystem::check_unlocked`）；內容照樣可以寫（計畫只要求不能刪與改名）。
